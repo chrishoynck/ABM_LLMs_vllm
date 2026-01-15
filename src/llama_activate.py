@@ -24,7 +24,7 @@ warnings.filterwarnings(
 
 
 # # print(torch.cuda.is_available())
-llama_model= "meta-llama/Llama-3.2-1B-Instruct"
+llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 
 # # when setting possible enironment variables in the future
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
@@ -36,11 +36,16 @@ DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
 # set seeds for reproducibility
 SEED = 1234
-os.environ["PYTHONHASHSEED"] = str(SEED)   # best set before Python starts                # if you still use np.random.*
+# os.environ["PYTHONHASHSEED"] = str(SEED)   # best set before Python starts                # if you still use np.random.*
 set_seed(SEED)                              # seeds Python, NumPy, Torch (HF helper)
 
 # setyp initial llm
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=CACHE_DIR, use_fast=True, local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained(
+                            MODEL_ID,  
+                            cache_dir=CACHE_DIR, 
+                            use_fast=True, 
+                            # local_files_only=True
+                            )
 tokenizer.padding_side = "left"
 
 # trying this
@@ -407,27 +412,30 @@ if __name__ == "__main__":
     print(f"Simulation finished in {elapsed_time:.4f} seconds ({elapsed_time/60:.2f} minutes).")
 
     # analyze one of the networks
-    network_data = all_networks_results[states[0]][0]
-    network = network_data["network"]
-    running_fracs = network_data["running_fracs"]
-    fracs_dist_step = network_data["fracs_dist_step"]
-    path_manager = PathManager(network=network)
 
-    # Get paths
-    data_path = path_manager.get_run_directory(is_plot=False)
-    plot_path = path_manager.get_run_directory(is_plot=True)
-    data_filename = path_manager.get_network_filename()
-    plot_filename = path_manager.get_plot_name()
-    
-    print("\nVisualizing results for first network...")
-    # Clean tweet histories
-    metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
+    for i in range(len(args.seeds)):
+        network_data = all_networks_results[states[0]][i]
 
-    # Visualizations
-    call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
-    print("End of model run.")
-    #PCA
-    # pca_visualize(all_networks_results, plot_path, plot_filename, args)
+        network = network_data["network"]
+        running_fracs = network_data["running_fracs"]
+        fracs_dist_step = network_data["fracs_dist_step"]
+        path_manager = PathManager(network=network)
+
+        # Get paths
+        data_path = path_manager.get_run_directory(is_plot=False)
+        plot_path = path_manager.get_run_directory(is_plot=True)
+        data_filename = path_manager.get_network_filename()
+        plot_filename = path_manager.get_plot_name()
+        
+        print("\nVisualizing results for first network...")
+        # Clean tweet histories
+        metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
+
+        # Visualizations
+        call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
+        print("End of model run.")
+        #PCA
+        # pca_visualize(all_networks_results, plot_path, plot_filename, args)
 
  
     

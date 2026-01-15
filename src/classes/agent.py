@@ -117,8 +117,6 @@ class Agent:
         )
 
 
-
-    
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False):
         # neighbor_pairs: list of (neighbor_id, last_text)
         # own history block
@@ -137,8 +135,9 @@ class Agent:
         # agents are asked to tweet
         if force_active:
             system = (f"You are a social media user {self.ID}.\n"
-                       "Think of an interesting short tweet to post.\n"
+                       "Think of a hobby that fits your age, and an interesting short tweet to post.\n"
                        "You must post a short tweet (<= " f"{max_chars} chars).\n"
+                       "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
                        "POST FORMAT (exactly):\n"
                     #    "Start your reply with: TWEET:\n"
                     #    "Then include your tweet text on the next line:\n"
@@ -156,7 +155,7 @@ class Agent:
             system = (
             f"You are a social media user {self.ID}.\n"
             "Your task: Read the provided neighbor tweets and decide whether to post a new tweet yourself.\n\n"
-            
+            "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
             "### INSTRUCTIONS ###\n"
             f"1. Read the neigbor tweets and think of an tweet to post yourself\n"
             f"2. Make a decision: to tweet or NOT to tweet.\n"
