@@ -39,7 +39,7 @@ def print_network(network, path="", filename="default.png", save=False):
     plt.close()
     return 
 
-def print_network_phq9(network, path="", filename="default.png", save=False):
+def print_network_phq9(network, path="", filename="default.png", save=False, show_fig=False):
     """
     Print network at one single iteration
 
@@ -116,7 +116,8 @@ def print_network_phq9(network, path="", filename="default.png", save=False):
     
     if save:
         plt.savefig(f"{path}/network_snapshot_phq9_{filename}.png", dpi=300)
-    # plt.show()
+    if show_fig:
+        plt.show()
     plt.close()
     return graph
 

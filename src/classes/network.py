@@ -173,17 +173,7 @@ class _Network:
                 f"Agents w promt {len(agents_w_prompt)}, Agents: {len(self.all_agents)} "
                 f"All agents should have a prompt"
             )
-
         return prompts, agents_w_prompt
-
-
-    # def _ensure_torch_generator(self, pipe):
-    #     """
-    #     Ensure a torch.Generator is initialized for reproducible LLM sampling.
-    #     """
-    #     if self._torch_gen is None:
-    #         dev = pipe.model.device
-    #         self._torch_gen = torch.Generator(device=dev).manual_seed(self.seed)
 
     # VLLM
     def _generate_outputs(self, llm, prompts, batch_size):
@@ -588,11 +578,13 @@ class SocialDistanceAttachment(_Network):
 
         # retrieve phq9 scores if available
         phq9_scores = []
+        ages = []
         if any(agent.well_being and "phq9_sumscore" in agent.well_being for agent in self.all_agents):
             phq9_scores = [agent.well_being.get("phq9_sumscore", 0) if agent.well_being else 0 for agent in self.all_agents]
+            ages = [agent.well_being.get("age", 0) if agent.well_being else 0 for agent in self.all_agents]
 
          # generate agent positions for distance calculations
-        self.agent_positions = self.sample_positions(len(self.all_agents), space_type=self.dist_type, phq9_scores=phq9_scores)
+        self.agent_positions = self.sample_positions(len(self.all_agents), space_type=self.dist_type, phq9_scores=phq9_scores, ages=ages)
         self.dist_matrix = cdist(self.agent_positions, self.agent_positions)
         # print("Distance matrix:", self.dist_matrix)
         print("N =", len(self.all_agents), "target degree =", self.degree, "max possible =", len(self.all_agents)-1)
@@ -609,7 +601,7 @@ class SocialDistanceAttachment(_Network):
 
         self.verify_scale_free_distribution(plot)
 
-    def sample_positions(self, N, space_type, n_clusters=4, phq9_scores=[]):
+    def sample_positions(self, N, space_type, n_clusters=4, phq9_scores=[], ages=[]):
         """ Sample agent positions in a given space type.
         Args:
             N (int): number of agents
@@ -658,6 +650,8 @@ class SocialDistanceAttachment(_Network):
         # add phq9 as an additional dimension
         if len(phq9_scores) > 0:
 
+            print("Adding PHQ-9 scores as an additional dimension in social space.")
+
             # make column array to stack later
             phq9_array = np.array(phq9_scores).reshape(-1, 1)
 
@@ -667,11 +661,31 @@ class SocialDistanceAttachment(_Network):
             else:
                 phq9_norm = np.zeros_like(phq9_array)*0.5
             
-            phq9_norm = 2*phq9_norm - 1  # scale to [-1, 1]
+            # phq9_norm = 2*phq9_norm - 1  # scale to [-1, 1]
             if positions is None:
                 positions = phq9_norm
             else:
                 positions = np.hstack((positions, phq9_norm))
+        
+
+        # do same thing for ages. 
+        if len(ages) > 0:
+            print("Adding age as an additional dimension in social space.")
+
+            # add age as an additional dimension
+            age_array = np.array(ages).reshape(-1, 1)
+
+            # Normalize to [0, 1]
+            if age_array.max() > age_array.min():
+                age_norm = (age_array - age_array.min()) / (age_array.max() - age_array.min())
+            else:
+                age_norm = np.zeros_like(age_array)*0.5
+            
+            age_norm = 2*age_norm - 1  # scale to [-1, 1]
+            if positions is None:
+                positions = age_norm
+            else:
+                positions = np.hstack((positions, age_norm))
         # print(positions)
         return positions
 
@@ -739,7 +753,6 @@ class SocialDistanceAttachment(_Network):
     def generate_connections(self):
         ''' Generate connections based on social distance attachment.
         ''' 
-
         total_degree = 0
         n = len(self.all_agents)
         if self.sdc:

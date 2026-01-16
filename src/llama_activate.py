@@ -234,6 +234,10 @@ def run_simulation(args, pipe=None):
                             personas=personas, 
                             depressed_personas=depressed_personas)
     # run updates
+    if args.rounds == 0:
+        return network, [], []
+    
+     # run updates
     running_fracs, network, fracs_dist_step = update_network(network, 
                                                              pipe=pipe, 
                                                              fracs_dist_step=[], 
@@ -434,6 +438,7 @@ if __name__ == "__main__":
         # Visualizations
         call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
         print("End of model run.")
+        
         #PCA
         # pca_visualize(all_networks_results, plot_path, plot_filename, args)
 

@@ -37,7 +37,6 @@ class Agent:
         self._force_active = False
         self.tweethistory = []
         
-
         self.last_tweet: str | None = None
         self._next_activation_state = False 
 
@@ -134,19 +133,25 @@ class Agent:
 
         # agents are asked to tweet
         if force_active:
-            system = (f"You are a social media user {self.ID}.\n"
-                       "Think of a hobby that fits your age, and an interesting short tweet to post.\n"
-                       "You must post a short tweet (<= " f"{max_chars} chars).\n"
-                       "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
-                       "POST FORMAT (exactly):\n"
-                    #    "Start your reply with: TWEET:\n"
-                    #    "Then include your tweet text on the next line:\n"
-                       "Reply with \"TWEET: <your tweet text>\"\n"
-                       "Do not add anything else, do not explain.\n\n"
-                       )
+            system = (
+            f"You are a social media user {self.ID}.\n"
+            "Your task: Read the provided neighbor tweets and post a new tweet yourself.\n\n"
+            "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
+
+            "### INSTRUCTIONS ###\n"
+            f"1. Read the neigbor tweets\n"
+            f"2. Think of a topic to tweet about, and a concrete tweet to post yourself\n"
+            f"3. Make a decision: to tweet or NOT to tweet.\n"
+            f"4. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
+            f"5. Do not explain, just reply in the specified format.\n\n"
+            
+            "### OUTPUT FORMAT ###\n"
+            "[including the TWEET prefix]:\n]"
+            "TWEET: <write your tweet content here>\n\n"
+            
+        )
             user = (
                 f"Round: {round_idx}\n"
-                # f"Identity: {self.persona_prompt()}\n"
                 f"Well-being: {self.well_being_prompt(self.well_being)}\n"
             )
             
@@ -156,6 +161,7 @@ class Agent:
             f"You are a social media user {self.ID}.\n"
             "Your task: Read the provided neighbor tweets and decide whether to post a new tweet yourself.\n\n"
             "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
+            
             "### INSTRUCTIONS ###\n"
             f"1. Read the neigbor tweets and think of an tweet to post yourself\n"
             f"2. Make a decision: to tweet or NOT to tweet.\n"
