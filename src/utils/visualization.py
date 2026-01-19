@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 
-
 def print_network(network, path="", filename="default.png", save=False):
     """
     Print network at one single iteration
@@ -120,6 +119,129 @@ def print_network_phq9(network, path="", filename="default.png", save=False, sho
         plt.show()
     plt.close()
     return graph
+
+
+def print_subnetworks_phq9(network, path="", filename="default.png", save=False, show_fig=False):
+    """
+    Print network at one single iteration
+
+    Args:
+        network: The network object to visualize.
+    """
+    # Create color map based on PHQ-9 scores
+    if network.directed:
+        graph = nx.DiGraph()
+    else:
+        graph = nx.Graph()
+
+    if len(network.all_agents[0].all_phq9_sumscores) == 0:
+        graph = print_network_phq9(network=network, path=path, filename=filename, save=save, show_fig=show_fig)
+        return graph
+    else: 
+        for agent in network.all_agents:
+            score = agent.all_phq9_sumscores[0]  # Initial score at round 0
+            graph.add_node(agent.ID, mood=score) 
+
+
+    graph.clear_edges()
+    for connection in network.connections:
+        graph.add_edge(connection[0].ID, connection[1].ID)
+    
+    # Set positions and draw the graph
+    fig, axes = plt.subplots(2, 5, figsize=(15,10))
+    pos = nx.kamada_kawai_layout(graph, scale=0.6)
+
+    axes = axes.flatten()
+    cmap = plt.cm.RdYlGn_r 
+
+    if len(network.all_agents) <= 50:
+        font_size = 10
+        show_labels = True
+        node_size = 400
+    else:
+        font_size = max(2, 400 // len(network.all_agents))
+        node_size = max(20, 40000 // len(network.all_agents))
+        show_labels = False
+
+    intervals_phq9 = np.linspace(0, network.iterations, 10, dtype=int)
+    for i, when_questioned in enumerate(intervals_phq9):
+        ax = axes[i]
+        current_node_colors = []
+
+        for agent in network.all_agents:
+            
+            score = agent.all_phq9_sumscores[when_questioned]
+            
+            # Normalize score (0-27) to 0-1 range for colormap
+            normalized_score = min(max(score / 27.0, 0.0), 1.0)
+            current_node_colors.append(normalized_score)
+            graph.nodes[agent.ID]['mood'] = score
+
+        try: 
+            assortativity = nx.numeric_assortativity_coefficient(graph, 'mood')
+            print(f"PHQ-9 assortativity: {assortativity}")
+        except Exception as e:
+            print(f"Could not compute assortativity: {e}")
+
+        # Use a colormap from green (low score) to red (high score)
+        nx.draw(
+            graph,
+            pos,
+            ax=ax,
+            node_color=current_node_colors,
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            with_labels=show_labels,
+            edge_color="lightgray",
+            width=1,
+            node_size=node_size,
+            font_size= font_size,
+        )
+        ax.set_title(f"Round: {str(when_questioned)} Assortativity: {assortativity:.2f}")
+        ax.axis('off')
+    
+    plt.tight_layout()
+    fig.subplots_adjust(right=0.9) # Make room for cbar
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+
+    # Add a colorbar to indicate the scale
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=27))
+    sm.set_array([])
+    fig.colorbar(sm, cax=cbar_ax, label='PHQ-9 Score (0-27)')
+        
+    if save:
+        plt.savefig(f"{path}/network_snapshot_phq9_{filename}.png", dpi=300, bbox_inches='tight')
+    if show_fig:
+        plt.show()
+    plt.close()
+    return graph
+
+
+def plot_degree_weighted_phq9(degree_weighted_phq9, path="", filename="default.png", save=False):
+    '''
+    Plot PHQ-9 scores against degree weighted by connection weights.
+    Args:
+        network: The network object.
+    '''
+    plt.figure(figsize=(4, 4))
+    # plt.plot(degree_weighted_phq9)
+    mean_dw_phq9 = np.mean(degree_weighted_phq9, axis=0)
+    var_dw_phq9 = np.var(degree_weighted_phq9, axis=0)
+    std_dw_phq9 = np.sqrt(var_dw_phq9)
+    rounds = range(len(mean_dw_phq9))
+    plt.plot(rounds, mean_dw_phq9, label='Mean Degree-weighted PHQ-9', color='blue')
+    plt.fill_between(rounds,
+                        np.array(mean_dw_phq9) - std_dw_phq9,
+                        np.array(mean_dw_phq9) + std_dw_phq9,
+                        color='blue', alpha=0.2, label='Standard Deviation')
+
+    plt.xlabel("Round")
+    plt.title("Degree-weighted PHQ-9 score")
+    plt.grid(alpha=0.3)
+    if save:
+        plt.savefig(f"{path}/degree_weighted_phq9_{filename}.png", dpi=300)
+    plt.close()
 
 
 def distorted_info(cds_info, path="", filename="default.png", save=False):

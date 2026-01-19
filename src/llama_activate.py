@@ -2,11 +2,12 @@
 from transformers import AutoTokenizer, set_seed  #, pipeline, BitsAndBytesConfig
 import os, torch
 import sys, argparse, time
+import numpy as np
 import inspect
 from vllm import LLM, SamplingParams
 import utils.metrics as metrics
 from utils.path_manager import PathManager
-from classes.network import RandomNetwork, ScaleFreeNetwork, SocialDistanceAttachment
+from classes.network import RandomNetwork,  SocialDistanceAttachment #, ScaleFreeNetwork,
 import utils.load_personas as lp
 import utils.visualization as vis
 import utils.reading_in as ri
@@ -18,11 +19,11 @@ warnings.filterwarnings(
     category=FutureWarning, 
     module="pandas.io.spss"
 )
+
+
 ######################################################################
 ### Llama 2 Setup
 ######################################################################
-
-
 # # print(torch.cuda.is_available())
 llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -98,18 +99,18 @@ def build_network(args, personas, well_being, depressed_personas=None):
     Returns:
         network: Generated network object.
     '''
-    if args.net == "sf":
-        return ScaleFreeNetwork(
-            m=args.m,
-            num_agents=args.num_agents,
-            seed=args.seed,
-            well_being= well_being,
-            personas=personas,
-            depressed_personas=depressed_personas,
-            directed=args.directed,
-        )
+    # if args.net == "sf":
+    #     return ScaleFreeNetwork(
+    #         m=args.m,
+    #         num_agents=args.num_agents,
+    #         seed=args.seed,
+    #         well_being= well_being,
+    #         personas=personas,
+    #         depressed_personas=depressed_personas,
+    #         directed=args.directed,
+    #     )
     
-    elif args.net == "sda" or args.net == "sdc":
+    if args.net == "sda" or args.net == "sdc":
         return SocialDistanceAttachment(
             alpha=args.alpha,
             degree=args.degree,
@@ -140,7 +141,7 @@ def generate_parser():
     parser = argparse.ArgumentParser(description="Run LLM agent simulation.")
 
     # Network Settings
-    parser.add_argument("net", nargs="?", choices=["sf", "r", "sda", "sdc"], default="sf", help="Network type: sf=ScaleFree, r=Random, sda=SocialDistanceAttachment")
+    parser.add_argument("net", nargs="?", choices=["sf", "r", "sda", "sdc"], default="r", help="Network type: sf=ScaleFree, r=Random, sda=SocialDistanceAttachment")
     parser.add_argument("--rounds", type=int, default=0, help="Number of update rounds")
     parser.add_argument("--num_agents", type=int, default=10, help="Total number of agents")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -148,7 +149,7 @@ def generate_parser():
     parser.add_argument("--directed", action="store_true", help="Whether the network is directed")
 
     # Scale-free specific
-    parser.add_argument("--m", type=int, default=2, help="Edges per new node (scale-free)")
+    # parser.add_argument("--m", type=int, default=2, help="Edges per new node (scale-free)")
 
     # Random network specific
     parser.add_argument("--p", type=float, default=0.5, help="Edge probability (random network)")
@@ -191,7 +192,7 @@ def update_network(network, pipe, fracs_dist_step = [], running_fracs = [], roun
     
     for _ in range(rounds):
         # set_seed(seed + network.iterations)  # change seed each round for variability
-        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, pipe, n_grams=n_grams, distorted_tweets=distorted_tweets, time_info=True)
+        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, pipe, n_grams=n_grams, distorted_tweets=distorted_tweets, time_info=True, check_point=2)
         print(f"Round {network.iterations}: Mean running fraction of distorted agents: {mean_running_frac:.4f}, Fraction distorted this step: {frac_distorted_this_step:.4f} ")
         running_fracs.append(mean_running_frac)
         fracs_dist_step.append(frac_distorted_this_step)
@@ -310,13 +311,14 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
         fracs_dist_step: List of fractions of distorted tweets per step.
     """
     # path = path_manager.get_run_directory(is_plot=True)
-    vis.print_network_phq9(network, path, filename, save=args.save)
+    vis.print_subnetworks_phq9(network, path, filename, save=args.save, show_fig=True)
 
     print("Saving visualizations to directory:", path, "filename:", filename )
 
     # Frequency of tweeting
     tweet_histories = metrics.obtain_tweet_histories([network])
     mean_var_freqs = metrics.calculate_tweet_frequency_stats(tweet_histories)
+    
     vis.plot_tweet_frequency(mean_var_freqs['mean'], mean_var_freqs['variance'], 5, path, filename, save=args.save)
     vis.distorted_info(network.cds_info, path, filename, save=args.save)
     vis.plot_running_fracs(running_fracs, path, filename, save=args.save)
@@ -415,8 +417,9 @@ if __name__ == "__main__":
     elapsed_time = end_time - start_time
     print(f"Simulation finished in {elapsed_time:.4f} seconds ({elapsed_time/60:.2f} minutes).")
 
-    # analyze one of the networks
+    degree_weighted_phq9 = []
 
+    # analyze one of the networks
     for i in range(len(args.seeds)):
         network_data = all_networks_results[states[0]][i]
 
@@ -424,6 +427,10 @@ if __name__ == "__main__":
         running_fracs = network_data["running_fracs"]
         fracs_dist_step = network_data["fracs_dist_step"]
         path_manager = PathManager(network=network)
+        
+        #Maybe bit ugly here but aggregate degree weighted phq9 scores
+        deg_w_phq9 = metrics.degree_weighted_mean(network)
+        degree_weighted_phq9.append(deg_w_phq9)
 
         # Get paths
         data_path = path_manager.get_run_directory(is_plot=False)
@@ -437,10 +444,12 @@ if __name__ == "__main__":
 
         # Visualizations
         call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
-        print("End of model run.")
+
+    vis.plot_degree_weighted_phq9(np.array(degree_weighted_phq9), plot_path, plot_filename, save=args.save)
+    print("End of model run.")
         
-        #PCA
-        # pca_visualize(all_networks_results, plot_path, plot_filename, args)
+    #PCA
+    # pca_visualize(all_networks_results, plot_path, plot_filename, args)
 
  
     

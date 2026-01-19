@@ -48,6 +48,32 @@ def print_histories(network, file_dir, file_name, save=False):
         with open(export_file, "w", encoding="utf-8") as f:
             f.write(final_output)
         print(f"\n[Info] Tweet history saved to: {export_file}")
+    
+def degree_weighted_mean(network): 
+    """
+    Calculate the degree-weighted mean of agents phq9_sumscore at a given round.
+    
+    Args:
+        network: The network object containing agents.
+        round (int): The round number to evaluate.
+    Returns:
+        float: The degree-weighted mean phq9_sumscore.
+    """
+    
+    total_degree = len(network.connections) 
+    phq9_per_round = []
+    for roundje in range(network.iterations):
+        total_weighted_score = 0.0
+        for agent in network.all_agents:
+            degree = len(agent.agent_connections)
+            phq9_score = agent.all_phq9_sumscores[roundje]
+            total_weighted_score += phq9_score * degree
+
+        if total_degree == 0:
+            phq9_per_round.append(0.0)  # Avoid division by zero
+
+        phq9_per_round.append(total_weighted_score / total_degree)
+    return np.array(phq9_per_round)
 
 def load_ngrams_tsv(filepath: str, skip_header=True) -> set:
     """

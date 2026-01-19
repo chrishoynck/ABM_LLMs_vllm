@@ -1,4 +1,4 @@
-from classes.network import RandomNetwork, ScaleFreeNetwork, SocialDistanceAttachment
+from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
 from utils.path_manager import PathManager
 import ast, torch, os, random
 import numpy as np
@@ -19,7 +19,13 @@ def read_in_network_properties(file_path):
     for line in lines[2:]:  # Skip the header lines
         key, value = line.strip().split(": ", 1)
 
-        if key in ("Number of Agents", "Number of Edges", "Seed", "Iterations", "Agent_w_Highest_Deg", "Degree", "Dimension", "Initial Edges (m)"):
+        if key in ("Number of Agents", 
+                   "Number of Edges", 
+                   "Seed", "Iterations", 
+                   "Agent_w_Highest_Deg", 
+                   "Degree", "Dimension", 
+                   #"Initial Edges (m)"
+                    ):
             properties[key] = int(value)
 
         elif key in ( "P value", "Update Fraction", "Alpha", "B"):
@@ -47,31 +53,38 @@ def read_in_network_properties(file_path):
             properties[key] = ast.literal_eval(value)
 
         elif key == "Agents":
+            
             # Parse agents as a list of tuples
             value = value.replace("nan", "None")
             try:
                 agents = ast.literal_eval(value)
+                properties[key] = agents
+            
+            # if can't parse, raise error
             except ValueError as e:
                 print("Failed to literal_eval Agents value:")
                 print(value)
                 raise
+
         
-            parsed_agents = []
-            # ADD WELLBEING -> DONE
-            for agent_id, wellbeing, persona, activation_state, tweethistory, active_tweethistory, distorted_tweethistory, frac_distorted_neigh in agents:
-                parsed_agents.append(
-                    (
-                        int(agent_id),
-                        wellbeing,
-                        persona,
-                        activation_state,
-                        tweethistory,
-                        active_tweethistory,
-                        distorted_tweethistory,
-                        float(frac_distorted_neigh),
-                    )
-                )
-            properties[key] = parsed_agents
+            # parsed_agents = []
+
+            # # ADD WELLBEING -> DONE
+            # for agent_id, phq9_sumscores, wellbeing, persona, activation_state, tweethistory, active_tweethistory, distorted_tweethistory, frac_distorted_neigh in agents:
+            #     parsed_agents.append(
+            #         (
+            #             int(agent_id),
+            #             phq9_sumscores,
+            #             wellbeing,
+            #             persona,
+            #             activation_state,
+            #             tweethistory,
+            #             active_tweethistory,
+            #             distorted_tweethistory,
+            #             float(frac_distorted_neigh),
+            #         )
+            #     )
+            # properties[key] = parsed_agents
 
         else:
             properties[key] = value
@@ -97,9 +110,9 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         - Agents
         - P value (for RandomNetwork)
         - Degree (k) (for RandomNetwork)
-        - Initial Edges (m) (for ScaleFreeNetwork)
-        - Total Degree (for ScaleFreeNetwork)
-        - Degree Distribution (for ScaleFreeNetwork)
+        # - Initial Edges (m) (for ScaleFreeNetwork)
+        # - Total Degree (for ScaleFreeNetwork)
+        # - Degree Distribution (for ScaleFreeNetwork)
     """
     agent_info = []
     connection_IDs = []
@@ -107,9 +120,17 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
     # ADD WELLBEING ->> DONE
     # Collect agent and connection information
     for agent in network.all_agents:
-        agent_info.append((agent.ID, agent.well_being, agent.persona, agent.activation_state, 
-                           agent.tweethistory, agent.active_tweethistory,
-                           agent.distorted_tweets, agent.frac_distorted_neigh))
+        agent_info.append({
+            "id": agent.ID,
+            "phq9": agent.all_phq9_sumscores,
+            "wb": agent.well_being,
+            "persona": agent.persona,
+            "act_state": agent.activation_state,
+            "history": agent.tweethistory,
+            "active_hist": agent.active_tweethistory,
+            "distorted": agent.distorted_tweets,
+            "frac_neigh": agent.frac_distorted_neigh
+        })
     for conn in network.connections:
         connection_IDs.append((conn[0].ID, conn[1].ID))
     
@@ -144,10 +165,10 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         properties["P value"] = network.p
         properties["Degree (k)"] = network.k
 
-    # Add properties specific to ScaleFreeNetwork
-    elif isinstance(network, ScaleFreeNetwork):
-        properties["Initial Edges (m)"] = network.m
-        properties["Total Degree"] = network.total_degree
+    # # Add properties specific to ScaleFreeNetwork
+    # elif isinstance(network, ScaleFreeNetwork):
+    #     properties["Initial Edges (m)"] = network.m
+    #     properties["Total Degree"] = network.total_degree
     
     # Else social distance attachment
     elif isinstance(network, SocialDistanceAttachment):
@@ -210,15 +231,15 @@ def generate_network(args, pipe):
             p=p,
             form_connections=False
         )
-    elif "Initial Edges (m)" in props:
-        # ScaleFreeNetwork
-        m = int(props["Initial Edges (m)"])
-        network = ScaleFreeNetwork(
-            num_agents=num_agents,
-            m=m,
-            seed=seed,
-            form_connections=False
-        )
+    # elif "Initial Edges (m)" in props:
+    #     # ScaleFreeNetwork
+    #     m = int(props["Initial Edges (m)"])
+    #     network = ScaleFreeNetwork(
+    #         num_agents=num_agents,
+    #         m=m,
+    #         seed=seed,
+    #         form_connections=False
+    #     )
 
     else:
         # SocialDistanceAttachment
@@ -269,18 +290,17 @@ def generate_network(args, pipe):
     id_to_agent = {agent.ID: agent for agent in network.all_agents}
 
     # Restore agents
-    for (agent_id, wellbeing, persona, activation_state,
-         tweethistory, active_tweethistory,
-         distorted_tweethistory, frac_distorted_neigh) in props["Agents"]:
+    for agent_data in props["Agents"]:
 
-        ag = id_to_agent[agent_id]
-        ag.well_being = wellbeing
-        ag.persona = persona
-        ag.activation_state = activation_state
-        ag.tweethistory = list(tweethistory)
-        ag.active_tweethistory = list(active_tweethistory)
-        ag.distorted_tweets = list(distorted_tweethistory)
-        ag.frac_distorted_neigh = frac_distorted_neigh
+        ag = id_to_agent[agent_data["id"]]
+        ag.all_phq9_sumscores = [int(score) for score in agent_data.get("phq9", [])]
+        ag.well_being = agent_data.get("wb", {})
+        ag.persona = agent_data.get("persona", "")
+        ag.activation_state = agent_data.get("act_state", False)
+        ag.tweethistory = list(agent_data.get("history", []))
+        ag.active_tweethistory = list(agent_data.get("active_hist", []))
+        ag.distorted_tweets = list(agent_data.get("distorted", []))
+        ag.frac_distorted_neigh = agent_data.get("frac_neigh", 0.0)
         ag.agent_connections = set()  # will be populated below
 
         # rebuild degree distribution when adding connections

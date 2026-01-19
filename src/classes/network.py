@@ -113,7 +113,14 @@ class _Network:
 
         return all_outputs
     
-    def update_round(self, tokenizer, pipe, update_fraction=0.5, n_grams=[], distorted_tweets=[], time_info = False):
+    def update_round(self, 
+                     tokenizer, 
+                     pipe, 
+                     update_fraction=0.5, 
+                     n_grams=[], 
+                     distorted_tweets=[], 
+                     time_info = False, 
+                     check_point=100):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
@@ -124,17 +131,23 @@ class _Network:
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer, update_fraction)
         t1 = time.perf_counter()
 
+        update_score = False
+
+        if self.iterations % check_point== 0:
+            _= self._phq9_questionnaire(tokenizer, pipe)
+            update_score = True
+
         # seed this thing
         # Pipeline
         # if True:
         #     self._ensure_torch_generator(pipe)
         # generate outputs in parallel
-        out = self._generate_outputs(pipe, prompts, batch_size)
+        out = self._generate_outputs(pipe, prompts)
         t2 = time.perf_counter()
 
         # agents send out their tweets + state update + stats
         mean_distorted_frac, dist_this_step_norm = self._apply_outputs_and_update_state(
-            agents_w_prompt, out, n_grams, distorted_tweets
+            agents_w_prompt, out, n_grams, distorted_tweets, update_score=update_score
         )
         t3 = time.perf_counter()
         if time_info:
@@ -174,9 +187,31 @@ class _Network:
                 f"All agents should have a prompt"
             )
         return prompts, agents_w_prompt
+    
+    def _phq9_questionnaire(self, tokenizer, pipe):
+        """
+        Have all agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
+        Args:
+            tokenizer: The tokenizer for the LLM.
+            pipe: The LLM pipeline for generating responses.
+        """
+        # prepare prompts for all agents
+        prompts = []
+        for agent in self.all_agents:
+            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-20:])
+            prompts.append(prompt)
+        
+        # inference with LLM
+        out = self._generate_outputs(pipe, prompts)
+        
+        # update well-being scores based on responses
+        for agent, answer in zip(self.all_agents, out):
+            questionnaire_answers = answer.outputs[0].text.strip()
+            sum_score = agent.parse_phq9_answers(questionnaire_answers)
+            agent.update_well_being(sum_score)
 
     # VLLM
-    def _generate_outputs(self, llm, prompts, batch_size):
+    def _generate_outputs(self, llm, prompts):
         """
         Run vLLM generation. 
         Note: batch_size argument is largely ignored here because vLLM 
@@ -218,7 +253,7 @@ class _Network:
     #     out = self.inference_w_batches(pipe, prompts, batch_size=batch_size, **gen_kwargs)
     #     return out
 
-    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets):
+    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets, update_score=False):
         """
         Use LLM outputs to update agents' tweets and activation states,
         then compute distorted tweet statistics for this round.
@@ -251,7 +286,7 @@ class _Network:
         distorted_fracs = []
         num_active_agents = 0
         for agent in self.all_agents:
-            distorted = agent.commit(n_grams=n_grams)
+            distorted = agent.commit(n_grams=n_grams, update_score=update_score)
             self.cds_info.append((agent.frac_distorted_neigh, agent.activation_state, distorted))
             if agent.activation_state:
                 num_active_agents += 1
@@ -350,194 +385,6 @@ class RandomNetwork(_Network):
             # currently one persona in data 
             self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
             print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
-
-
-
-class ScaleFreeNetwork(_Network):
-    """
-    This class represents a scale-free network of agents.
-    It inherits from the _Network class and initializes the network by connecting agents in a scale-free manner.
-    """
-    def __init__(self, m=2, plot=False, depressed_personas=None, form_connections=True, **kwargs):
-        """
-        Initialize the network by connecting agents in a scale-free manner.
-        The network is initialized with `m` connections for each new agent.
-
-        Args:
-            m (int): The number of connections for each new agent.
-            plot (bool): Boolean flag to indicate whether to plot the degree distribution.
-        """
-        super().__init__(**kwargs)
-        self.m = m
-        self.plot = plot
-        self.degree_distribution = {} 
-        self.total_degree = 0
-        self.cumulative_degree_list = []
-
-        if form_connections:
-            self.initialize_network(depressed_personas=depressed_personas)
-
-    def initialize_network(self, depressed_personas=None):
-        """
-        1) Select m initial agents, fully connect them (seed network).
-        2) For each remaining agent, connect it to m existing agents with probability
-        = (agent_degree / total_degree) using _pick_agent_by_degree_global().
-        3) Assertions ensure total_degree > 0 for valid probability-based sampling.
-        MAYBE REQUIRES WORK: some checks to ensure no agents gets stuck with degree < m
-        """
-        # Basic checks
-        n = len(self.all_agents)
-        assert self.m > 0, "m must be positive."
-        assert self.m < n, "Number of connections 'm' must be less than number of agents."
-
-        # Initialize degree_distribution to 0 for all agents
-        for agent in self.all_agents:
-            self.degree_distribution[agent] = 0
-
-        # Step 1: Pick m initial agents and fully connect them
-        #m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)  # Use self.rng.choice for reproducibility
-
-        # balanced out hubs
-        m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)
-
-
-        if self.m > 1:  # Fully connect seed agents only if m > 1
-            for i in range(len(m0_agents)):
-                for j in range(i + 1, len(m0_agents)):
-                    self.add_connection(m0_agents[i], m0_agents[j])
-
-                    # if directed, enforce bidirection
-                    if self.directed:
-                        self.add_connection(m0_agents[j], m0_agents[i])
-
-        else:  # Handle the case for m=1
-            # If m=1, connect the seed agent to another random agent
-            random_agent = self.rng.choice([agent for agent in self.all_agents if agent not in m0_agents])
-            self.add_connection(m0_agents[0], random_agent)
-
-        # Ensure total_degree is initialized properly
-        assert self.total_degree > 0, "Seed network must have edges, so total_degree > 0."
-
-        # Step 2: For the remaining agents, attach each with m edges via scale-free selection
-        remaining_agents = [agent for agent in self.all_agents if agent not in m0_agents]
-        for new_agent in remaining_agents:
-            assert self.total_degree > 0, "Cannot do preferential attachment if total_degree = 0."
-
-            # Use a set to track which agents have already been chosen
-            chosen = set()
-            forbidden = {new_agent}  # Prevent self-loops
-
-            while len(chosen) < self.m:
-                candidate = self._pick_agent_by_degree_global(forbidden=forbidden, max_tries=500)
-                assert candidate is not None, "Initialization failed as no candidate for connection is found"
-                chosen.add(candidate)
-                forbidden.add(candidate)  # Ensure unique connections
-
-            # Add edges to the chosen agents
-            for target_agent in chosen:
-                self.add_connection(new_agent, target_agent)
-        
-        assert all(self.degree_distribution[agent] >= self.m for agent in remaining_agents), (
-            f"Some later added agents have degree less than m={self.m}. Check initialization logic."
-        )
-
-        self.agent_w_highest_deg = max(self.all_agents, key=lambda a: len(a.agent_connections))
-        if depressed_personas is not None:
-            # currently one persona in data 
-            self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
-            print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
-
-
-    def _pick_agent_by_degree_global(self, forbidden=set(), max_tries=100):
-        """
-        Pick an agent (not in 'forbidden') by sampling from self.cumulative_degree_list.
-        Returns the chosen agent or None if we fail after max_tries.
-        """
-        assert len(self.cumulative_degree_list) == len(self.degree_distribution), (
-            "Cumulative degree list and degree distribution lengths do not match."
-        )
-        assert self.total_degree > 0, "Total degree must be positive for preferential sampling."
-
-        for _ in range(max_tries):
-            target_sum = self.rng.random() * self.total_degree
-    
-            # Use binary search to find the index of the selected agent
-            idx = bs_norm.bisect_left(self.cumulative_degree_list, target_sum)
-            if idx >= len(self.all_agents):
-                idx = len(self.all_agents) - 1  # Safeguard against index overflow
-
-            candidate = self.all_agents[idx]
-            
-            # Check if the candidate is not in the forbidden set
-            if candidate not in forbidden:
-                return candidate
-
-        # If we fail after max_tries, return None
-        assert candidate is None, "Failed to pick a agent after max_tries."
-        return None
-
-    def add_connection(self, agent1, agent2):
-        """
-        Add an undirected connection between two agents, updating:
-            - self.connections
-            - self.degree_distribution
-            - self.total_degree
-            - self.cumulative_degree_list
-        """
-        if agent1 != agent2 and (agent1, agent2) not in self.connections:
-            agent1.add_edge(agent2)
-            self.connections.add((agent1, agent2))
-            self.degree_distribution[agent1] = self.degree_distribution.get(agent1, 0) + 1
-            self.total_degree += 1 
-
-            if not self.directed:
-                agent2.add_edge(agent1)
-                self.connections.add((agent2, agent1))
-                # Update degree distribution
-                self.degree_distribution[agent2] = self.degree_distribution.get(agent2, 0) + 1
-                self.total_degree += 1  # 2 'ends' of edges
-
-            # Rebuild the cumulative sums for probability sampling
-            self._rebuild_cumulative_list()
-
-    def remove_connection(self, agent1, agent2):
-        """
-        Remove an undirected connection between two agents (if it exists), updating:
-            - self.connections
-            - self.degree_distribution
-            - self.total_degree
-            - self.cumulative_degree_list
-        """
-        if agent1 != agent2 and (agent1, agent2) in self.connections:
-            agent1.remove_edge(agent2)
-            self.connections.remove((agent1, agent2))
-
-            # Update degree distribution
-            self.total_degree -= 1
-            self.degree_distribution[agent1] -= 1
-
-            if not self.directed:
-                agent2.remove_edge(agent1)
-                self.connections.remove((agent2, agent1))
-
-                # update degree distribution
-                self.total_degree -= 1
-                self.degree_distribution[agent2] -= 1
-
-            self._rebuild_cumulative_list()
-
-    def _rebuild_cumulative_list(self):
-        """
-        Rebuild 'cumulative_degree_list' from 'degree_distribution'.
-        cumulative_degree_list[i] = sum of degrees up to the i-th agent in iteration order.
-        This is used for efficient probability-based agent selection via bisect.
-        """
-        self.cumulative_degree_list.clear()
-        running_sum = 0
-        for deg in self.degree_distribution.values(): # IMPORTANT THIS MAINTANS ORDER
-            running_sum += deg
-            self.cumulative_degree_list.append(running_sum)
-
 
 
 class SocialDistanceAttachment(_Network):
@@ -900,4 +747,187 @@ class SocialDistanceAttachment(_Network):
 
         
 
-                
+# class ScaleFreeNetwork(_Network):
+#     """
+#     This class represents a scale-free network of agents.
+#     It inherits from the _Network class and initializes the network by connecting agents in a scale-free manner.
+#     """
+#     def __init__(self, m=2, plot=False, depressed_personas=None, form_connections=True, **kwargs):
+#         """
+#         Initialize the network by connecting agents in a scale-free manner.
+#         The network is initialized with `m` connections for each new agent.
+
+#         Args:
+#             m (int): The number of connections for each new agent.
+#             plot (bool): Boolean flag to indicate whether to plot the degree distribution.
+#         """
+#         super().__init__(**kwargs)
+#         self.m = m
+#         self.plot = plot
+#         self.degree_distribution = {} 
+#         self.total_degree = 0
+#         self.cumulative_degree_list = []
+
+#         if form_connections:
+#             self.initialize_network(depressed_personas=depressed_personas)
+
+#     def initialize_network(self, depressed_personas=None):
+#         """
+#         1) Select m initial agents, fully connect them (seed network).
+#         2) For each remaining agent, connect it to m existing agents with probability
+#         = (agent_degree / total_degree) using _pick_agent_by_degree_global().
+#         3) Assertions ensure total_degree > 0 for valid probability-based sampling.
+#         MAYBE REQUIRES WORK: some checks to ensure no agents gets stuck with degree < m
+#         """
+#         # Basic checks
+#         n = len(self.all_agents)
+#         assert self.m > 0, "m must be positive."
+#         assert self.m < n, "Number of connections 'm' must be less than number of agents."
+
+#         # Initialize degree_distribution to 0 for all agents
+#         for agent in self.all_agents:
+#             self.degree_distribution[agent] = 0
+
+#         # Step 1: Pick m initial agents and fully connect them
+#         #m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)  # Use self.rng.choice for reproducibility
+
+#         # balanced out hubs
+#         m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)
+
+
+#         if self.m > 1:  # Fully connect seed agents only if m > 1
+#             for i in range(len(m0_agents)):
+#                 for j in range(i + 1, len(m0_agents)):
+#                     self.add_connection(m0_agents[i], m0_agents[j])
+
+#                     # if directed, enforce bidirection
+#                     if self.directed:
+#                         self.add_connection(m0_agents[j], m0_agents[i])
+
+#         else:  # Handle the case for m=1
+#             # If m=1, connect the seed agent to another random agent
+#             random_agent = self.rng.choice([agent for agent in self.all_agents if agent not in m0_agents])
+#             self.add_connection(m0_agents[0], random_agent)
+
+#         # Ensure total_degree is initialized properly
+#         assert self.total_degree > 0, "Seed network must have edges, so total_degree > 0."
+
+#         # Step 2: For the remaining agents, attach each with m edges via scale-free selection
+#         remaining_agents = [agent for agent in self.all_agents if agent not in m0_agents]
+#         for new_agent in remaining_agents:
+#             assert self.total_degree > 0, "Cannot do preferential attachment if total_degree = 0."
+
+#             # Use a set to track which agents have already been chosen
+#             chosen = set()
+#             forbidden = {new_agent}  # Prevent self-loops
+
+#             while len(chosen) < self.m:
+#                 candidate = self._pick_agent_by_degree_global(forbidden=forbidden, max_tries=500)
+#                 assert candidate is not None, "Initialization failed as no candidate for connection is found"
+#                 chosen.add(candidate)
+#                 forbidden.add(candidate)  # Ensure unique connections
+
+#             # Add edges to the chosen agents
+#             for target_agent in chosen:
+#                 self.add_connection(new_agent, target_agent)
+        
+#         assert all(self.degree_distribution[agent] >= self.m for agent in remaining_agents), (
+#             f"Some later added agents have degree less than m={self.m}. Check initialization logic."
+#         )
+
+#         self.agent_w_highest_deg = max(self.all_agents, key=lambda a: len(a.agent_connections))
+#         if depressed_personas is not None:
+#             # currently one persona in data 
+#             self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
+#             print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
+
+
+#     def _pick_agent_by_degree_global(self, forbidden=set(), max_tries=100):
+#         """
+#         Pick an agent (not in 'forbidden') by sampling from self.cumulative_degree_list.
+#         Returns the chosen agent or None if we fail after max_tries.
+#         """
+#         assert len(self.cumulative_degree_list) == len(self.degree_distribution), (
+#             "Cumulative degree list and degree distribution lengths do not match."
+#         )
+#         assert self.total_degree > 0, "Total degree must be positive for preferential sampling."
+
+#         for _ in range(max_tries):
+#             target_sum = self.rng.random() * self.total_degree
+    
+#             # Use binary search to find the index of the selected agent
+#             idx = bs_norm.bisect_left(self.cumulative_degree_list, target_sum)
+#             if idx >= len(self.all_agents):
+#                 idx = len(self.all_agents) - 1  # Safeguard against index overflow
+
+#             candidate = self.all_agents[idx]
+            
+#             # Check if the candidate is not in the forbidden set
+#             if candidate not in forbidden:
+#                 return candidate
+
+#         # If we fail after max_tries, return None
+#         assert candidate is None, "Failed to pick a agent after max_tries."
+#         return None
+
+#     def add_connection(self, agent1, agent2):
+#         """
+#         Add an undirected connection between two agents, updating:
+#             - self.connections
+#             - self.degree_distribution
+#             - self.total_degree
+#             - self.cumulative_degree_list
+#         """
+#         if agent1 != agent2 and (agent1, agent2) not in self.connections:
+#             agent1.add_edge(agent2)
+#             self.connections.add((agent1, agent2))
+#             self.degree_distribution[agent1] = self.degree_distribution.get(agent1, 0) + 1
+#             self.total_degree += 1 
+
+#             if not self.directed:
+#                 agent2.add_edge(agent1)
+#                 self.connections.add((agent2, agent1))
+#                 # Update degree distribution
+#                 self.degree_distribution[agent2] = self.degree_distribution.get(agent2, 0) + 1
+#                 self.total_degree += 1  # 2 'ends' of edges
+
+#             # Rebuild the cumulative sums for probability sampling
+#             self._rebuild_cumulative_list()
+
+#     def remove_connection(self, agent1, agent2):
+#         """
+#         Remove an undirected connection between two agents (if it exists), updating:
+#             - self.connections
+#             - self.degree_distribution
+#             - self.total_degree
+#             - self.cumulative_degree_list
+#         """
+#         if agent1 != agent2 and (agent1, agent2) in self.connections:
+#             agent1.remove_edge(agent2)
+#             self.connections.remove((agent1, agent2))
+
+#             # Update degree distribution
+#             self.total_degree -= 1
+#             self.degree_distribution[agent1] -= 1
+
+#             if not self.directed:
+#                 agent2.remove_edge(agent1)
+#                 self.connections.remove((agent2, agent1))
+
+#                 # update degree distribution
+#                 self.total_degree -= 1
+#                 self.degree_distribution[agent2] -= 1
+
+#             self._rebuild_cumulative_list()
+
+#     def _rebuild_cumulative_list(self):
+#         """
+#         Rebuild 'cumulative_degree_list' from 'degree_distribution'.
+#         cumulative_degree_list[i] = sum of degrees up to the i-th agent in iteration order.
+#         This is used for efficient probability-based agent selection via bisect.
+#         """
+#         self.cumulative_degree_list.clear()
+#         running_sum = 0
+#         for deg in self.degree_distribution.values(): # IMPORTANT THIS MAINTANS ORDER
+#             running_sum += deg
+#             self.cumulative_degree_list.append(running_sum)

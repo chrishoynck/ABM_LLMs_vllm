@@ -1,5 +1,7 @@
 import numpy as np
 import utils.metrics as metrics
+import re
+
 class Agent:
     """
     A agent in the network, with a unique ID and a response threshold.
@@ -30,6 +32,8 @@ class Agent:
         self.well_being = well_being
         self.phq9_score = well_being.get("phq9_sumscore") if well_being else None
         self.age = well_being.get("age") if well_being else None
+
+        self.all_phq9_sumscores = [well_being.get("phq9_sumscore") if well_being else None]
 
         # Additional attributes for LLM interaction
         # self.rng = rng if rng else np.random.default_rng()
@@ -62,6 +66,44 @@ class Agent:
             return "moderately severe"
         else:
             return "severe"
+    
+    @staticmethod
+    def parse_phq9_answers(answers: str) -> int:
+        """
+        Parse the PHQ-9 answers from the LLM output and compute the sumscore.
+        Looks for the first digit found after the colon in each line.
+        """
+        lines = answers.strip().split("\n")
+        total_score = 0
+        
+        for line in lines:
+            # 1. Split on colon to separate "Q1" from the Answer
+            parts = line.split(":", 1) # Split only on the first colon
+            
+            if len(parts) != 2:
+                continue
+                
+            answer_part = parts[1].strip()
+            
+            # 2. Find the first single digit (0-9) in the answer text
+            match = re.search(r'\d', answer_part)
+            
+            if match:
+                try:
+                    score = int(match.group())
+                    
+                    # 3. Validate range (PHQ-9 scores must be 0, 1, 2, or 3)
+                    if 0 <= score <= 3:
+                        total_score += score
+                    else:
+                        print(f"Score out of range (found {score}) in line: {line}")
+                except ValueError:
+                    print(f"Could not convert match to int in line: {line}")
+            else:
+                print(f"No number found in answer part: {line}")
+                
+        return total_score
+
 
     def persona_prompt(self):
         if self.persona is None:
@@ -81,7 +123,8 @@ class Agent:
         )
         return base + extra
     
-    def well_being_prompt(self,well_being : dict):
+    @staticmethod
+    def well_being_prompt(well_being : dict):
 
         """
         Build a concise well-being prompt based on PHQ-9 and related fields.
@@ -114,6 +157,66 @@ class Agent:
             f"({severity} depression). The person {dep_flag} for clinically depression"
             # f"relevant depressive symptoms and {diag_flag}.{extra_txt}"
         )
+    
+    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str]):
+        """
+        build a phq9_questionnaire_prompt
+        """
+        if self.well_being is None:
+            well_being_info =  "No well-being information available."
+        else:
+            well_being_info = self.well_being_prompt(self.well_being)
+        
+        system = (
+                "You are an AI agent simulating a human. You need to answer the PHQ-9 depression screening questionnaire based strictly on your current persona and tweet history.\n\n"
+
+                "### INSTRUCTIONS ###\n"
+                "1. Analyze the provided tweet history and well-being profile.\n"
+                "2. Infer how you have been feeling over the past two weeks based on this text.\n"
+                "3. If the text does not explicitly mention a symptom (e.g., appetite), infer the answer based on the general emotional tone. If there is absolutely no evidence, choose '0'.\n"
+                "4. Do NOT provide explanations. Follow the Answer Format strictly.\n\n"
+
+                "### OPTIONS ###\n"
+                "Use these numbers for your answers:\n"
+                "0: Not at all\n"
+                "1: Several days\n"
+                "2: More than half the days\n"
+                "3: Nearly every day\n\n"
+
+                "### PHQ-9 QUESTIONS ###\n"
+                "1. Little interest or pleasure in doing things?\n"
+                "2. Feeling down, depressed, or hopeless?\n"
+                "3. Trouble falling or staying asleep, or sleeping too much?\n"
+                "4. Feeling tired or having little energy?\n"
+                "5. Poor appetite or overeating?\n"
+                "6. Feeling bad about yourself — or that you are a failure or have let yourself or your family down?\n"
+                "7. Trouble concentrating on things, such as reading the newspaper or watching television?\n"
+                "8. Moving or speaking so slowly that other people could have noticed? Or the opposite — being so fidgety or restless that you have been moving around a lot more than usual?\n"
+                "9. Thoughts that you would be better off dead or of hurting yourself in some way?\n\n"
+
+                "### ANSWER FORMAT ###\n"
+                "You must output the answers exactly as follows:\n"
+                "Q1: <\"your answer (0-3)\">\n"
+                "Q2: <\"your answer (0-3)\">\n"
+                "Q3: <\"your answer (0-3)\">\n"
+                "Q4: <\"your answer (0-3)\">\n"
+                "Q5: <\"your answer (0-3)\">\n"
+                "Q6: <\"your answer (0-3)\">\n"
+                "Q7: <\"your answer (0-3)\">\n"
+                "Q8: <\"your answer (0-3)\">\n"
+                "Q9: <\"your answer (0-3)\">\n"
+            )
+        user = (f"You are soical media user {self.ID}.\n" \
+                f"Your current well-being information: {well_being_info}\n" \
+                f"Your recent tweets (most recent last):\n" + "\n".join(tweets) + "\n"
+                )
+
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        
+        # print("PROMPT MESSAGES: ", messages)
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
 
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False):
@@ -140,7 +243,7 @@ class Agent:
 
             "### INSTRUCTIONS ###\n"
             f"1. Read the neigbor tweets\n"
-            f"2. Think of a topic to tweet about, and a concrete tweet to post yourself\n"
+            f"2. Think of an interesting topic to tweet about, and a concrete tweet to post yourself\n"
             f"3. Make a decision: to tweet or NOT to tweet.\n"
             f"4. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
             f"5. Do not explain, just reply in the specified format.\n\n"
@@ -163,11 +266,12 @@ class Agent:
             "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
             
             "### INSTRUCTIONS ###\n"
-            f"1. Read the neigbor tweets and think of an tweet to post yourself\n"
-            f"2. Make a decision: to tweet or NOT to tweet.\n"
-            f"3. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
-            f"4. If you decide NOT to tweet, simply reply with \"NO_TWEET\".\n\n"
-            f"5. Do not explain, just reply in the specified format.\n\n"
+            f"1. Read the neigbor tweets\n"
+            f"2. Think of an interesting topic to tweet about\"\n"
+            f"3. Make a decision: to tweet or NOT to tweet.\n"
+            f"4. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
+            f"5. If you decide NOT to tweet, simply reply with \"NO_TWEET\".\n\n"
+            f"6. Do not explain, just reply in the specified format.\n\n"
             
             "### OUTPUT FORMAT ###\n"
             "You must reply using ONLY one of the following two formats (do not add explanations):\n\n"
@@ -256,7 +360,7 @@ class Agent:
             self._next_activation_state = False
         
     # Finalize the activation state for this step
-    def commit(self, n_grams):
+    def commit(self, n_grams, update_score=False) -> bool:
         """
         Commit the next activation state and last tweet.
         S.T all updates happen simultaneously after all agents have decided.
@@ -272,11 +376,34 @@ class Agent:
             self.active_tweethistory.append(tweetje)
             self.active_tweethistory = self.active_tweethistory[-5:]
     
-
         self.tweethistory.append(self._next_last_tweet)
         self.last_tweet = self._next_last_tweet
         self.activation_state = self._next_activation_state
+
+        # record phq9 sumscore history (may be updated)
+        if update_score:
+            self.all_phq9_sumscores.append(self.well_being.get("phq9_sumscore") if self.well_being else None)
+
         return distorted
+    
+    def update_well_being(self, sumscore: int):
+        """
+        Update the well-being information of the agent.
+
+        Args:
+            sumscore (int): The new PHQ-9 sumscore.
+        """
+
+        print(f"Agent {self.ID} PHQ-9 sumscore updated to {sumscore} (old PHQ-9 sumscore: {self.well_being.get('phq9_sumscore') if self.well_being else 'None'}).")
+        if self.well_being is None:
+            self.well_being = {}
+        self.well_being["phq9_sumscore"] = sumscore
+        
+
+        # update diagnosis flag???
+
+        # record history
+        self.all_phq9_sumscores.append(sumscore)
 
     def reset_activation_state(self):
         '''
