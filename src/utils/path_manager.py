@@ -29,7 +29,7 @@ class PathManager:
             self.rounds = network.iterations # Or initial rounds
             self.directed = "directed" if (hasattr(network, 'directed') and network.directed) else "undirected"
         
-        self.subparams = self._get_params_from_args() 
+        self.subparams = self._get_subparams() 
         
     def _get_state(self, enforce_ngrams, depressed):
         if enforce_ngrams: return "enforced_ngrams"
@@ -44,7 +44,7 @@ class PathManager:
         return "unknown"
 
 
-    def _get_subparams_from_args(self):
+    def _get_subparams(self):
         return f"rounds{self.rounds}_seed{self.seed}_N{self.num_agents}"
     
     def _get_params_from_net(self, network):
