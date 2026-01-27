@@ -1,7 +1,19 @@
+import json
 from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
 from utils.path_manager import PathManager
 import ast, torch, os, random
 import numpy as np
+
+class NetworkEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle non-serializable objects like sets and numpy types."""
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super().default(obj)
 
 def read_in_network_properties(file_path):
     """
@@ -11,83 +23,9 @@ def read_in_network_properties(file_path):
     Returns:
         dict: A dictionary containing the properties of the network.
     """
-    properties = {}
-
     with open(file_path, "r", encoding="utf-8") as file:
-        lines = file.readlines()
+        properties = json.load(file)
     
-    for line in lines[2:]:  # Skip the header lines
-        key, value = line.strip().split(": ", 1)
-
-        if key in ("Number of Agents", 
-                   "Number of Edges", 
-                   "Seed", "Iterations", 
-                   "Agent_w_Highest_Deg", 
-                   "Degree", "Dimension", 
-                   #"Initial Edges (m)"
-                    ):
-            properties[key] = int(value)
-
-        elif key in ( "P value", "Update Fraction", "Alpha", "B"):
-            properties[key] = float(value)
-        
-        elif key in ("sdc", "directed"):
-            properties[key] = (value == "True")
-
-        # save distorted fracs as metric
-        elif key in ("Distorted Frac" , "Dist Step Frac"):
-            # value = value.replace("nan", "0")
-            distorted_fracs = ast.literal_eval(value)
-            properties[key] = [float(f) for f in distorted_fracs]
-
-        elif key == "Connections":
-            # Parse connections as a list of tuples (id1, id2)
-            connections = ast.literal_eval(value)
-            properties[key] = [(int(a), int(b)) for a, b in connections]
-
-        elif key == "CDS Info":
-            cds_info = ast.literal_eval(value)
-            properties[key] = [(float(frac_neigh), bool(act_agent), bool(distorted)) for frac_neigh, act_agent, distorted in cds_info]
-
-        elif key in ("Network RNG State", "Torch RNG State", "Python Random State"):
-            properties[key] = ast.literal_eval(value)
-
-        elif key == "Agents":
-            
-            # Parse agents as a list of tuples
-            value = value.replace("nan", "None")
-            try:
-                agents = ast.literal_eval(value)
-                properties[key] = agents
-            
-            # if can't parse, raise error
-            except ValueError as e:
-                print("Failed to literal_eval Agents value:")
-                print(value)
-                raise
-
-        
-            # parsed_agents = []
-
-            # # ADD WELLBEING -> DONE
-            # for agent_id, phq9_sumscores, wellbeing, persona, activation_state, tweethistory, active_tweethistory, distorted_tweethistory, frac_distorted_neigh in agents:
-            #     parsed_agents.append(
-            #         (
-            #             int(agent_id),
-            #             phq9_sumscores,
-            #             wellbeing,
-            #             persona,
-            #             activation_state,
-            #             tweethistory,
-            #             active_tweethistory,
-            #             distorted_tweethistory,
-            #             float(frac_distorted_neigh),
-            #         )
-            #     )
-            # properties[key] = parsed_agents
-
-        else:
-            properties[key] = value
     return properties
 
 def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
@@ -114,16 +52,32 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         # - Total Degree (for ScaleFreeNetwork)
         # - Degree Distribution (for ScaleFreeNetwork)
     """
+
     agent_info = []
     connection_IDs = []
 
-    # ADD WELLBEING ->> DONE
-    # Collect agent and connection information
+    def parse_well_being(wb_dict):
+        """Catch nans in well-being dicts."""
+        new_dict = {}
+        for key, val in wb_dict.items():
+            if isinstance(val, (float, np.floating)):
+                if np.isnan(val) or np.isinf(val):
+                    new_dict[key] = None
+                else:
+                    if isinstance(val, np.floating):
+                        new_dict[key] = float(val)
+                    else:
+                        new_dict[key] = val
+            else:
+                new_dict[key] = val
+            
+        return new_dict
+
     for agent in network.all_agents:
         agent_info.append({
             "id": agent.ID,
             "phq9": agent.all_phq9_sumscores,
-            "wb": agent.well_being,
+            "wb": parse_well_being(agent.well_being),
             "persona": agent.persona,
             "act_state": agent.activation_state,
             "history": agent.tweethistory,
@@ -131,10 +85,10 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
             "distorted": agent.distorted_tweets,
             "frac_neigh": agent.frac_distorted_neigh
         })
+    
     for conn in network.connections:
         connection_IDs.append((conn[0].ID, conn[1].ID))
-    
-    # Common properties for all network types
+
     properties = {
         "Number of Agents": len(network.all_agents),
         "Number of Edges": len(network.connections),
@@ -147,7 +101,7 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         "Dist Step Frac": [float(x) for x in dist_per_step],
         "CDS Info": network.cds_info,
         "Agent_w_Highest_Deg": network.agent_w_highest_deg.ID,
-        "directed": network.directed
+        "directed": network.directed,
     }
 
     # randomness:
@@ -164,11 +118,6 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
     if isinstance(network, RandomNetwork):
         properties["P value"] = network.p
         properties["Degree (k)"] = network.k
-
-    # # Add properties specific to ScaleFreeNetwork
-    # elif isinstance(network, ScaleFreeNetwork):
-    #     properties["Initial Edges (m)"] = network.m
-    #     properties["Total Degree"] = network.total_degree
     
     # Else social distance attachment
     elif isinstance(network, SocialDistanceAttachment):
@@ -178,17 +127,14 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         properties["Dimension"] = network.dim
         properties["B"] = network.b
     else:
-        print("Network should be either scale-free, random, or social distance attachment")
-
+        print("Network should be either random, or social distance attachment")
 
     path_manager = PathManager(network=network)
     file_output_path = path_manager.get_full_network_path()
 
     with open(file_output_path, "w", encoding="utf-8") as file:
-        file.write("Network Properties\n")
-        file.write("==================\n")
-        for key, value in properties.items():
-            file.write(f"{key}: {value}\n")
+        json.dump(properties, file, indent=4, cls=NetworkEncoder)
+        
     return file_output_path
 
 
@@ -231,15 +177,6 @@ def generate_network(args, pipe):
             p=p,
             form_connections=False
         )
-    # elif "Initial Edges (m)" in props:
-    #     # ScaleFreeNetwork
-    #     m = int(props["Initial Edges (m)"])
-    #     network = ScaleFreeNetwork(
-    #         num_agents=num_agents,
-    #         m=m,
-    #         seed=seed,
-    #         form_connections=False
-    #     )
 
     else:
         # SocialDistanceAttachment
@@ -275,16 +212,6 @@ def generate_network(args, pipe):
     # set randomness: 
     network.rng = np.random.default_rng()
     network.rng.bit_generator.state = props["Network RNG State"]
-   
-    # new trick to try and restore python random state
-    # if "Python Random State" in props:
-    #     # This restores random.randint, random.choice, etc. to the exact point they were saved
-    #     random.setstate(props["Python Random State"])
-
-    # Pipeline
-    # network._torch_gen = torch.Generator(device=pipe.model.device).manual_seed(seed)
-    # state_tensor = torch.ByteTensor(props["Torch RNG State"])
-    # network._torch_gen.set_state(state_tensor)
 
     # create a map to map index ot id, (currently index is same as id)
     id_to_agent = {agent.ID: agent for agent in network.all_agents}
@@ -320,4 +247,13 @@ def generate_network(args, pipe):
     return network, distorted_fracs, dist_per_step
 
 
+def log_network_state(network, seed, dist_per_step, distorted_fracs):
+    logged_path = read_out_network_properties(
+        network, 
+        seed, 
+        dist_per_step, 
+        distorted_fracs
+    )
+    print(f"Logged network state to {logged_path}")
+    return logged_path
     

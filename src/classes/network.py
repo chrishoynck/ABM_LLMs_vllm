@@ -125,8 +125,6 @@ class _Network:
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
         self.iterations += 1
-        batch_size = 250
-        
         t0 = time.perf_counter()
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer, update_fraction)
         t1 = time.perf_counter()
@@ -164,6 +162,12 @@ class _Network:
         prompts = []
         agents_w_prompt = []
 
+        # add some randomness. 
+        def add_salt(prompt):
+            salt = self.rng.integers(0, 1000000)
+            prompt += f"\n[Ref: {salt}]"
+            return prompt
+
         # force tweets for first round
         if self.iterations == 1:  # or len(self.activated) == 0:
             for agent in self.all_agents:
@@ -171,6 +175,7 @@ class _Network:
                 agent.send_tweet(max_chars=240, raw_tweet="NO_TWEET")
             for agent in self.rng.choice(self.all_agents, int(len(self.all_agents) * update_fraction), replace=False):
                 prompt = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
+                # prompt = add_salt(prompt)
                 prompts.append(prompt)
                 agents_w_prompt.append(agent)
 
@@ -180,6 +185,7 @@ class _Network:
             permuted = self.rng.permutation(self.all_agents)
             for agent in permuted:
                 prompt = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=False)
+                # prompt = add_salt(prompt)
                 prompts.append(prompt)
                 agents_w_prompt.append(agent)
             assert len(agents_w_prompt) == len(self.all_agents), (
@@ -198,7 +204,7 @@ class _Network:
         # prepare prompts for all agents
         prompts = []
         for agent in self.all_agents:
-            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-20:])
+            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-30:])
             prompts.append(prompt)
         
         # inference with LLM
@@ -222,36 +228,17 @@ class _Network:
         
         # Define Sampling Parameters
         sampling_params = SamplingParams(
-            temperature=0.87,
-            top_p=0.90,
+            temperature=0.8,
+            top_p=0.7,
+            # presence_penalty=0.6,
             max_tokens=256,
-            seed=self.seed + self.iterations  # vLLM handles seeding here
+            seed= None #self.seed + self.iterations  # vLLM handles seeding here
         )
 
         # VLLM does batching for us. 
         outputs = llm.generate(prompts, sampling_params)
         
         return outputs
-
-    # PIPELINE
-    # def _generate_outputs(self, pipe, prompts, batch_size):
-    #     """
-    #     Run the LLM in batches over the given prompts.
-    #     """
-    #     if not prompts:
-    #         return []
-        
-    #     gen_kwargs = dict(
-    #         do_sample=True,
-    #         temperature=0.8,
-    #         top_p=0.95,
-    #         max_new_tokens=256,
-    #         kwargs={"generator": self._torch_gen},
-    #     )
-
-
-    #     out = self.inference_w_batches(pipe, prompts, batch_size=batch_size, **gen_kwargs)
-    #     return out
 
     def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets, update_score=False):
         """

@@ -169,17 +169,32 @@ def generate_parser():
 
     # Load existing network
     parser.add_argument("--use_saved_network",
-    nargs="?",           
-    const=0,             
-    type=int,             
-    help=(
-        "Use saved network properties to reload network. "
-        "If provided without a value, just load the network. "
-        "If provided with an integer, run that many extra rounds."
-    ))
+                        nargs="?",           
+                        const=0,             
+                        type=int,             
+                        help=(
+                            "Use saved network properties to reload network. "
+                            "If provided without a value, just load the network. "
+                            "If provided with an integer, run that many extra rounds."
+                        ))
+
+    parser.add_argument("--log", 
+                        nargs="?",
+                        const=30, 
+                        type =int,
+                        help="Log network state every N iterations (default: 30)")
     return parser.parse_args()
 
-def update_network(network, pipe, fracs_dist_step = [], running_fracs = [], rounds=1, seed=42, enforce_ngrams = False):
+
+
+def update_network(network, 
+                    pipe, 
+                    fracs_dist_step = [], 
+                    running_fracs = [], 
+                    rounds=1, 
+                    seed=42, 
+                    enforce_ngrams = False, 
+                    log = False):
     """Update the network for one round and return the mean fraction of distorted tweets."""
 
     # only enforce n-grams if specified
@@ -188,16 +203,34 @@ def update_network(network, pipe, fracs_dist_step = [], running_fracs = [], roun
     else:
         distorted_tweets = []
     
+    log_path = None
+    log_iteration = log if isinstance(log, int) else 30
+    
     n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
     
     for _ in range(rounds):
         # set_seed(seed + network.iterations)  # change seed each round for variability
-        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, pipe, n_grams=n_grams, distorted_tweets=distorted_tweets, time_info=True, check_point=2)
+        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, 
+                                                                           pipe, 
+                                                                           n_grams=n_grams, 
+                                                                           distorted_tweets=distorted_tweets, 
+                                                                           time_info=False, 
+                                                                           check_point=30)
         print(f"Round {network.iterations}: Mean running fraction of distorted agents: {mean_running_frac:.4f}, Fraction distorted this step: {frac_distorted_this_step:.4f} ")
         running_fracs.append(mean_running_frac)
         fracs_dist_step.append(frac_distorted_this_step)
         if network.iterations % 10 == 0:
             print(f"finished round {network.iterations}")
+        
+        if log and network.iterations % log_iteration == 0: 
+            new_dir = ri.log_network_state(network, seed, running_fracs, fracs_dist_step)
+            # cleanup old log
+            if log_path is not None:
+                os.remove(log_path)  
+                os.rmdir(os.path.dirname(log_path))
+
+            log_path = new_dir
+
     return running_fracs, network, fracs_dist_step
 
 def run_simulation(args, pipe=None):
@@ -218,8 +251,8 @@ def run_simulation(args, pipe=None):
     
     personas = None
     # load personas
-    if False:
-        personas = lp.load_personas_from_file("data/personas_10k.csv", args.num_agents, seed=args.seed)
+    if True:
+        personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
     
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
 
@@ -245,7 +278,8 @@ def run_simulation(args, pipe=None):
                                                              running_fracs=[], 
                                                              rounds=args.rounds,
                                                              seed=args.seed, 
-                                                             enforce_ngrams=args.enforce_ngrams)
+                                                             enforce_ngrams=args.enforce_ngrams, 
+                                                             log = args.log)
     return network, running_fracs, fracs_dist_step
 
 def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_step=[]):
@@ -324,6 +358,7 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
     vis.plot_running_fracs(running_fracs, path, filename, save=args.save)
     vis.plot_distorted_fracs(fracs_dist_step, path, filename, save=args.save)
 
+
 def pca_visualize(all_networks_results, path, filename, args):
     """Perform PCA visualization on TF-IDF results across different network states.
 
@@ -335,16 +370,30 @@ def pca_visualize(all_networks_results, path, filename, args):
     n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
     path = path_manager.get_run_directory(is_plot=True)
     # wrapper dealing with multiple networks per setting
-    
-    meanvar_tf_idf_per_setting, all_mats_per_setting = metrics.tf_idf_for_runs(all_networks_results, 
-                                                                               num_steps=100, 
-                                                                               shift=5, 
+
+    sbert = True
+    mentalbert = True
+    shift = 10
+    num_steps = 30
+    n_components = 2
+
+    # still need to process variance better instead of taking var between runs 
+    if sbert:
+        mean_embedding_per_setting, var_embedding_per_setting, all_mats_per_setting = metrics.sbert_for_runs(all_networks_results, 
+                                                      num_steps=num_steps, 
+                                                      shift=shift, mentalbert=mentalbert)
+    else:
+        mean_embedding_per_setting, all_mats_per_setting = metrics.tf_idf_for_runs(all_networks_results, 
+                                                                               num_steps=num_steps, 
+                                                                               shift=shift, 
                                                                                n_grams=n_grams)
     
-    mean_traj, pca = metrics.pca_on_means(meanvar_tf_idf_per_setting, n_components=2)
+    mean_traj, pca = metrics.pca_on_means(mean_embedding_per_setting, n_components=n_components)
     std_traj, _ = metrics.traj_variance_in_pca_space(all_mats_per_setting, pca)
+
     # vis.plot_tf_idf_PCA(mean_traj, std_traj, num_steps=100, shift=5, save= args.save)
-    vis.plot_tf_idf_PCA_runs(mean_traj, std_traj, num_steps=100, shift=5, save= args.save, path=path, filename=filename)
+    vis.plot_embedding_PCA_runs(mean_traj, std_traj, num_steps=num_steps, shift=shift, sbert=sbert,  save= args.save, path=path, filename=filename)
+
 
 def main(args, pipe, states):
 
@@ -384,8 +433,6 @@ def main(args, pipe, states):
 
 if __name__ == "__main__":
 
-    #PIPELINE
-    # pipe = get_pipe()
 
     # VLLM
     pipe = get_llm()
@@ -449,7 +496,7 @@ if __name__ == "__main__":
     print("End of model run.")
         
     #PCA
-    # pca_visualize(all_networks_results, plot_path, plot_filename, args)
+    pca_visualize(all_networks_results, plot_path, plot_filename, args)
 
  
     

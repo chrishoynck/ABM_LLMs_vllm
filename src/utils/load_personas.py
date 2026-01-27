@@ -1,15 +1,63 @@
 import ast
 import math
 import os
+import re
 import pandas as pd
 from datasets import load_dataset
-ds = load_dataset("nvidia/Nemotron-Personas")
-ds_small = ds["train"].shuffle(seed=42).select(range(10000))
-df = ds_small.to_pandas()
+from langdetect import detect
+
 
 # Clip every string field to max 120 chars
 MAX_LEN = 200
 NEW = True
+
+def parse_persona_traits():
+    ds_pers = load_dataset("SynthLabsAI/PERSONA", split="train")
+    ds_small = ds_pers.shuffle(seed=42).select(range(10000))
+    df = ds_small.to_pandas()
+
+    if "personas_traits_10k.csv" not in os.listdir("data/") or NEW:
+        columns_keep = ['Age', 'Sex', 'Race', 'Occupation', 'Big Five Traits', 'Quirks', 'Personal Time', 'Lifestyle' ]
+        df.to_csv("data/personas_traits_10k.csv", columns=columns_keep, index=False)
+    df = pd.read_csv("data/personas_traits_10k.csv")
+    
+    print(df.columns)
+    print(df.head())
+
+def short_personas(seed=42):
+    ds_pers = load_dataset("proj-persona/PersonaHub", 'persona', split="train")
+    ds_small = ds_pers.shuffle(seed=seed).select(range(10000))
+    df = ds_small.to_pandas()
+
+    def clean_and_check_english(text):
+        if not isinstance(text, str):
+            return False
+        try:
+            is_en = detect(text) == 'en'
+        except:
+            is_en = False
+        return is_en
+
+    def clean_stubborn_quotes(text):
+        clean = str(text)
+        clean = clean.strip()
+        while clean.startswith('"') or clean.startswith('“'):
+            clean = clean[1:]
+        while clean.endswith('"') or clean.endswith('”'):
+            clean = clean[:-1]
+        return clean
+    
+    df['persona'] = df['persona'].astype(str)
+    df['persona'] = df['persona'].apply(clean_stubborn_quotes)
+    df['persona'] = df['persona'].apply(lambda x: f'"{x}"')
+    df = df[df['persona'].apply(clean_and_check_english)]
+
+    if "personas_short_10k.csv" not in os.listdir("data/") or NEW:
+        df.to_csv("data/personas_short_10k.csv", index=False)
+        df = pd.read_csv("data/personas_short_10k.csv")
+
+    print(df.columns)
+    print(df.head())
 
 
 def _clip_cell(x, n=MAX_LEN):
@@ -30,14 +78,18 @@ def age_of_person(row):
         return False
     else:
         return True
-    
-df = df.map(_clip_cell)
-df = df[df.apply(age_of_person, axis=1)]
-columns_keep = ['persona', 'age', 'marital_status', 'hobbies_and_interests_list', 'skills_and_expertise_list','sex','bachelors_field', 'occupation', 'city' ]
 
-if "personas_10k.csv" not in os.listdir("data/") or NEW:
-    df.to_csv("data/personas_10k.csv", columns=columns_keep, index=False)
-df = pd.read_csv("data/personas_10k.csv")
+def parse_persons(): 
+    ds = load_dataset("nvidia/Nemotron-Personas")
+    ds_small = ds["train"].shuffle(seed=42).select(range(10000))
+    df = ds_small.to_pandas()
+    df = df.map(_clip_cell)
+    df = df[df.apply(age_of_person, axis=1)]
+    columns_keep = ['persona', 'age', 'marital_status', 'hobbies_and_interests_list', 'skills_and_expertise_list','sex','bachelors_field', 'occupation', 'city' ]
+
+    if "personas_10k.csv" not in os.listdir("data/") or NEW:
+        df.to_csv("data/personas_10k.csv", columns=columns_keep, index=False)
+    df = pd.read_csv("data/personas_10k.csv")
 
 
 def parse_list_field(v):
@@ -80,10 +132,13 @@ def load_depressed_personas(filepath="data/depressed.csv", personass_to_load=1, 
     df = pd.read_csv(filepath)
     return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=True, random_state=seed).iterrows()]
 
-def load_personas_from_file(filepath="data/personas_10k.csv", personass_to_load=10, seed=42):
-    df = pd.read_csv(filepath)
-    return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=False, random_state=seed).iterrows()]
+# def load_personas_from_file(filepath="data/personas_short_10k.csv", personass_to_load=10, seed=42):
+#     df = pd.read_csv(filepath)
+#     return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=False, random_state=seed).iterrows()]
 
+def load_personas_from_file(filepath="data/personas_short_10k.csv", personass_to_load=10, seed=42):
+    df = pd.read_csv(filepath)
+    return [row["persona"] for _, row in df.sample(n=personass_to_load, replace=False, random_state=seed).iterrows()]
 
 def parse_phq9(row, dataset="H1"):
     return {
@@ -139,4 +194,4 @@ def write_phq9_to_file(filepath= "data/phq9/mood_data.csv", personas_to_write=10
 
 
 if __name__ == "__main__":
-    write_phq9_to_file()
+    short_personas()

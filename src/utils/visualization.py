@@ -163,7 +163,7 @@ def print_subnetworks_phq9(network, path="", filename="default.png", save=False,
         node_size = max(20, 40000 // len(network.all_agents))
         show_labels = False
 
-    intervals_phq9 = np.linspace(0, network.iterations, 10, dtype=int)
+    intervals_phq9 = np.linspace(0, network.iterations-1, 10, dtype=int)
     for i, when_questioned in enumerate(intervals_phq9):
         ax = axes[i]
         current_node_colors = []
@@ -361,25 +361,33 @@ def plot_tf_idf_PCA(reduced_runs,
     plt.close()
 
 
-def plot_tf_idf_PCA_runs(mean_traj,
+def plot_embedding_PCA_runs(mean_traj,
                         std_traj=None, 
                         num_steps=100, 
                         shift=5, 
                         path="",
                         filename="default.png",
+                        sbert= False,
                         save=False):
     """
     Plot PCA-reduced TF-IDF trajectories.
 
     Args:
-        mean_traj: dict[setting] -> array (T, 2)
-        std_traj:  dict[setting] -> array (T, 2), optional
-        num_steps: TF-IDF window size
-        shift:     TF-IDF shift
-        save:      whether to save the figure
+        mean_traj (dict[setting]): mean embedding trajectory (T, 2)
+        std_traj (dict[setting], optional): standard deviation of embedding trajectory (T, 2)
+        num_steps (int): window size
+        shift (int): shift of window
+        sbert (bool): whether SBERT embeddings were used
+        path (str): path to save the figure
+        filename (str): filename to save the figure
+        save (bool): whether to save the figure
     """
     plt.figure(figsize=(3, 3))
-    plt.title(f"TF-IDF PCA\n(window={num_steps}, shift={shift})")
+    if sbert:
+        embedding = "SBERT"
+    else:
+        embedding = "TF-IDF"
+    plt.title(f"{embedding} PCA\n(window={num_steps}, shift={shift})")
 
     for setting, traj in mean_traj.items():
         traj = np.asarray(traj)  # (T, 2)
@@ -400,8 +408,10 @@ def plot_tf_idf_PCA_runs(mean_traj,
     plt.legend()
     plt.grid(alpha=0.3)
     # plt.show()
+
+    print(f"Saving PCA plot to folder {path} with filename {filename}")
     if save:
-        plt.savefig(f"{path}/tf_idf_pca_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300) 
+        plt.savefig(f"{path}/{embedding.lower()}_pca_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300) 
     plt.close()
 
 def check_degree_distribution(unique_degrees, frequencies):

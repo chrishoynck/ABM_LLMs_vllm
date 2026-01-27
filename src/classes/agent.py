@@ -104,7 +104,7 @@ class Agent:
                 
         return total_score
 
-
+    
     def persona_prompt(self):
         if self.persona is None:
             return "You have no specific persona."
@@ -255,6 +255,7 @@ class Agent:
         )
             user = (
                 f"Round: {round_idx}\n"
+                f"Your identity: {self.persona}\n"
                 f"Well-being: {self.well_being_prompt(self.well_being)}\n"
             )
             
@@ -284,7 +285,7 @@ class Agent:
         )
             user = (
                 f"Round: {round_idx}\n"
-                # f"Identity: {self.persona_prompt()}\n"
+                f"Your identity: {self.persona}\n"
                 f"Well-being: {self.well_being_prompt(self.well_being)}\n"
                 f"Neighbor tweets:\n{neighbor_block}\n"
                 f"Your recent previous tweets:\n{own_block}\n"
@@ -381,7 +382,7 @@ class Agent:
         self.activation_state = self._next_activation_state
 
         # record phq9 sumscore history (may be updated)
-        if update_score:
+        if True: #update_score:
             self.all_phq9_sumscores.append(self.well_being.get("phq9_sumscore") if self.well_being else None)
 
         return distorted
@@ -489,7 +490,7 @@ class Agent:
         Returns:
             int: The hash of the agent.
         """
-        return hash((self.ID, self.persona['name'] if self.persona else None)) 
+        return hash((self.ID, self.persona if self.persona else None)) 
 
     def __eq__(self, other):
         """

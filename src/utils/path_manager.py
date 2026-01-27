@@ -74,7 +74,7 @@ class PathManager:
 
     def get_network_filename(self):
         """Returns the standard filename for the network text file."""
-        return f"net_{self.seed}.txt"
+        return f"net.json"
 
     def get_full_network_path(self):
         return self.get_run_directory(is_plot=False) / self.get_network_filename()
