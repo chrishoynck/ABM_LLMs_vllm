@@ -228,8 +228,8 @@ class _Network:
         
         # Define Sampling Parameters
         sampling_params = SamplingParams(
-            temperature=0.8,
-            top_p=0.7,
+            temperature=1.1,
+            top_p=0.85,
             # presence_penalty=0.6,
             max_tokens=256,
             seed= None #self.seed + self.iterations  # vLLM handles seeding here

@@ -1,6 +1,7 @@
 import numpy as np
 import utils.metrics as metrics
 import re
+import json
 
 class Agent:
     """
@@ -23,20 +24,17 @@ class Agent:
             agent_connections (set): The set of agents that the agent is connected to.
         """
         self.ID = ID
-        # self.identity: str = identity
         self.agent_connections = set()
         self.activation_state = False
         self._next_last_tweet: str  = "NO_TWEET"
-        # self.response_threshold = rng.random() if rng else np.random.random()
         self.persona = persona
         self.well_being = well_being
         self.phq9_score = well_being.get("phq9_sumscore") if well_being else None
         self.age = well_being.get("age") if well_being else None
-
         self.all_phq9_sumscores = [well_being.get("phq9_sumscore") if well_being else None]
 
-        # Additional attributes for LLM interaction
-        # self.rng = rng if rng else np.random.default_rng()
+        with open('data/prompts.json', 'r') as f:
+           self._PROMPTS = json.load(f)
 
         self._force_active = False
         self.tweethistory = []
@@ -55,7 +53,6 @@ class Agent:
             s = float(score)
         except (TypeError, ValueError):
             return "unknown"
-
         if s <= 4:
             return "none/minimal"
         elif s <= 9:
@@ -153,8 +150,8 @@ class Agent:
 
         return (
             f"You are {well_being['age']} years old."
-            f"Current well-being: PHQ-9 score {score:.4f} "
-            f"({severity} depression). The person {dep_flag} for clinically depression"
+            f"Current well-being: PHQ-9 score {score:.4f} ({severity} depression) "
+            # f"({severity} depression). The person {dep_flag} for clinically depression"
             # f"relevant depressive symptoms and {diag_flag}.{extra_txt}"
         )
     
@@ -167,49 +164,12 @@ class Agent:
         else:
             well_being_info = self.well_being_prompt(self.well_being)
         
-        system = (
-                "You are an AI agent simulating a human. You need to answer the PHQ-9 depression screening questionnaire based strictly on your current persona and tweet history.\n\n"
-
-                "### INSTRUCTIONS ###\n"
-                "1. Analyze the provided tweet history and well-being profile.\n"
-                "2. Infer how you have been feeling over the past two weeks based on this text.\n"
-                "3. If the text does not explicitly mention a symptom (e.g., appetite), infer the answer based on the general emotional tone. If there is absolutely no evidence, choose '0'.\n"
-                "4. Do NOT provide explanations. Follow the Answer Format strictly.\n\n"
-
-                "### OPTIONS ###\n"
-                "Use these numbers for your answers:\n"
-                "0: Not at all\n"
-                "1: Several days\n"
-                "2: More than half the days\n"
-                "3: Nearly every day\n\n"
-
-                "### PHQ-9 QUESTIONS ###\n"
-                "1. Little interest or pleasure in doing things?\n"
-                "2. Feeling down, depressed, or hopeless?\n"
-                "3. Trouble falling or staying asleep, or sleeping too much?\n"
-                "4. Feeling tired or having little energy?\n"
-                "5. Poor appetite or overeating?\n"
-                "6. Feeling bad about yourself — or that you are a failure or have let yourself or your family down?\n"
-                "7. Trouble concentrating on things, such as reading the newspaper or watching television?\n"
-                "8. Moving or speaking so slowly that other people could have noticed? Or the opposite — being so fidgety or restless that you have been moving around a lot more than usual?\n"
-                "9. Thoughts that you would be better off dead or of hurting yourself in some way?\n\n"
-
-                "### ANSWER FORMAT ###\n"
-                "You must output the answers exactly as follows:\n"
-                "Q1: <\"your answer (0-3)\">\n"
-                "Q2: <\"your answer (0-3)\">\n"
-                "Q3: <\"your answer (0-3)\">\n"
-                "Q4: <\"your answer (0-3)\">\n"
-                "Q5: <\"your answer (0-3)\">\n"
-                "Q6: <\"your answer (0-3)\">\n"
-                "Q7: <\"your answer (0-3)\">\n"
-                "Q8: <\"your answer (0-3)\">\n"
-                "Q9: <\"your answer (0-3)\">\n"
-            )
-        user = (f"You are soical media user {self.ID}.\n" \
-                f"Your current well-being information: {well_being_info}\n" \
-                f"Your recent tweets (most recent last):\n" + "\n".join(tweets) + "\n"
-                )
+        system = self._PROMPTS["phq9"]["system"]
+        user = self._PROMPTS["phq9"]["user_template"].format(
+            agent_id=self.ID,
+            well_being_info=well_being_info,
+            tweets_block="\n".join(tweets)
+        )
 
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         
@@ -220,85 +180,47 @@ class Agent:
 
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False):
-        # neighbor_pairs: list of (neighbor_id, last_text)
+
         # own history block
         own_block = "" 
         if len(self.tweethistory) == 0:
             own_block = "(no own previous tweets)"
         else:
-            recent = list(reversed(self.tweethistory[-2:]))  # newest first
+            recent = list(reversed(self.tweethistory[-5:]))  # newest first
             own_block = "\n".join(f"- {t[:max_chars]}" for t in recent)
         
         # neighbor_pairs = self.rng.permutation(neighbor_pairs)  # shuffle neighbor tweets
         neighbor_block = "(no neighbor tweets)" if len(neighbor_pairs) == 0 else "\n".join(
-            f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs[:5]  # limit to first 5 neighbors
+            f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs 
         )
 
-        # agents are asked to tweet
-        if force_active:
-            system = (
-            f"You are a social media user {self.ID}.\n"
-            "Your task: Read the provided neighbor tweets and post a new tweet yourself.\n\n"
-            "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
-
-            "### INSTRUCTIONS ###\n"
-            f"1. Read the neigbor tweets\n"
-            f"2. Think of an interesting topic to tweet about, and a concrete tweet to post yourself\n"
-            f"3. Make a decision: to tweet or NOT to tweet.\n"
-            f"4. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
-            f"5. Do not explain, just reply in the specified format.\n\n"
-            
-            "### OUTPUT FORMAT ###\n"
-            "[including the TWEET prefix]:\n]"
-            "TWEET: <write your tweet content here>\n\n"
-            
-        )
-            user = (
-                f"Round: {round_idx}\n"
-                f"Your identity: {self.persona}\n"
-                f"Well-being: {self.well_being_prompt(self.well_being)}\n"
+        prompt_cfg = self._PROMPTS["tweet_gen"]
+        system_str = prompt_cfg["system_forced"] if force_active else prompt_cfg["system_standard"]
+        
+        system_content = system_str.format(max_chars=max_chars)
+        if not force_active:
+            user_content = prompt_cfg["user_template"].format(
+                agent_id = self.ID,
+                persona=self.persona,
+                well_being=self.well_being_prompt(self.well_being),
+                neighbor_block=neighbor_block,
+                own_block=own_block
             )
-            
-        # The agents may decide not to tweet
         else:
-            system = (
-            f"You are a social media user {self.ID}.\n"
-            "Your task: Read the provided neighbor tweets and decide whether to post a new tweet yourself.\n\n"
-            "You are given well-being information about yourself, your tone can be influenced by it, but the content may not.\n\n"
-            
-            "### INSTRUCTIONS ###\n"
-            f"1. Read the neigbor tweets\n"
-            f"2. Think of an interesting topic to tweet about\"\n"
-            f"3. Make a decision: to tweet or NOT to tweet.\n"
-            f"4. If you decide to tweet, the tweet must start with \"TWEET\" and be <= {max_chars} characters.\n\n"
-            f"5. If you decide NOT to tweet, simply reply with \"NO_TWEET\".\n\n"
-            f"6. Do not explain, just reply in the specified format.\n\n"
-            
-            "### OUTPUT FORMAT ###\n"
-            "You must reply using ONLY one of the following two formats (do not add explanations):\n\n"
-            
-            "[If you decide to tweet]:\n"
-            "TWEET: <write your tweet content here>\n\n"
-            
-            "[If you decide NOT to tweet]:\n"
-            "NO_TWEET\n"
-        )
-            user = (
-                f"Round: {round_idx}\n"
-                f"Your identity: {self.persona}\n"
-                f"Well-being: {self.well_being_prompt(self.well_being)}\n"
-                f"Neighbor tweets:\n{neighbor_block}\n"
-                f"Your recent previous tweets:\n{own_block}\n"
+            user_content = prompt_cfg["user_template_forced"].format(
+                agent_id = self.ID,
+                persona=self.persona,
+                well_being=self.well_being_prompt(self.well_being),
             )
 
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
         
         # print("PROMPT MESSAGES: ", messages)
         return tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
     
-    def step_llm_tweet(self, tokenizer, rng, round_idx:int, max_chars = 240, force_active=False):
+    def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars = 240, force_active=False):
         """
         Use the LLM to decide whether to tweet or not.
 
@@ -324,7 +246,7 @@ class Agent:
         else:
             self.frac_distorted_neigh = 0
             
-        neighbor_msgs = rng.permutation(neighbor_msgs)[:5]  # limit to first 5 neighbors
+        neighbor_msgs = rng.permutation(neighbor_msgs)[:10]  # limit to first 10 neighbors
 
         # force tweet if needed
         self._force_active = force_active
@@ -343,8 +265,8 @@ class Agent:
             max_chars (int): The maximum number of characters for the tweet.
             raw_tweet (str): The raw tweet output from the LLM.
         '''
-        if self._force_active:
-            print (f"Agent {self.ID} FORCED TWEET OUTPUT: {raw_tweet}")
+        # if self._force_active:
+            # print (f"Agent {self.ID} FORCED TWEET OUTPUT: {raw_tweet}")
 
         do_tweet, tweet = self.parse_tweet_decision(raw_tweet)
         if do_tweet:

@@ -12,6 +12,8 @@ import utils.load_personas as lp
 import utils.visualization as vis
 import utils.reading_in as ri
 import warnings
+from utils.test_phq9_llms import TestLLMs
+
 
 # Suppress the specific ChainedAssignmentError warning from pandas
 warnings.filterwarnings(
@@ -61,7 +63,7 @@ def get_llm():
     print(f"Loading vLLM model: {MODEL_ID}...")
     llm = LLM(
         model=MODEL_ID,
-        dtype="bfloat16",         # vLLM handles types efficiently
+        dtype="bfloat16",         
         trust_remote_code=True,
         # tensor_parallel_size=1, # Use >1 if you have multiple GPUs
         gpu_memory_utilization=0.90, # Reserve 90% of GPU for vLLM
@@ -69,32 +71,12 @@ def get_llm():
     )
     return llm
 
-
-# def get_pipe():
-#     """Set up the LLM pipeline with specified configurations.
-#     Returns:
-#         pipe: Configured LLM pipeline.
-#     """
-#     # Pipeline configuration
-#     pipe = pipeline(
-#     "text-generation",
-#     model=MODEL_ID,
-#     tokenizer=tokenizer,
-#     batch_size=250,
-#     # local_files_only = True,
-#     torch_dtype=DTYPE,
-#     device_map="auto",                        # shard/assign automatically
-#     trust_remote_code=True,
-#     max_new_tokens=256,
-#     return_full_text=False,                        
-#     )
-#     return pipe
-
 def build_network(args, personas, well_being, depressed_personas=None):
     '''Build network based on given arguments.
     Args:
         args: Argument namespace containing network parameters.
         personas: List of personas for agents.
+        well_being: List of well-being scores for agents.
         depressed_personas: List of depressed personas for agents.
     Returns:
         network: Generated network object.
@@ -148,6 +130,12 @@ def generate_parser():
     parser.add_argument("--seeds", nargs="+", type=int, default=[42], help="List of seeds to run (e.g., --seeds 42 43 44)")
     parser.add_argument("--directed", action="store_true", help="Whether the network is directed")
 
+    #test args
+    parser.add_argument("--test_llms", action="store_true", help="Test LLMs on PHQ-9 questionnaire")
+    parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling parameter for LLM")
+    parser.add_argument("--temp", type=float, default=1.0, help="Temperature sampling parameter for LLM")
+    parser.add_argument("--check_point", type=int, default=10, help="Checkpoint for PHQ-9 questionnaire")
+    
     # Scale-free specific
     # parser.add_argument("--m", type=int, default=2, help="Edges per new node (scale-free)")
 
@@ -209,13 +197,13 @@ def update_network(network,
     n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
     
     for _ in range(rounds):
-        # set_seed(seed + network.iterations)  # change seed each round for variability
+        set_seed(seed + network.iterations)  # change seed each round for variability
         mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, 
                                                                            pipe, 
                                                                            n_grams=n_grams, 
                                                                            distorted_tweets=distorted_tweets, 
                                                                            time_info=False, 
-                                                                           check_point=30)
+                                                                           check_point=5)
         print(f"Round {network.iterations}: Mean running fraction of distorted agents: {mean_running_frac:.4f}, Fraction distorted this step: {frac_distorted_this_step:.4f} ")
         running_fracs.append(mean_running_frac)
         fracs_dist_step.append(frac_distorted_this_step)
@@ -431,12 +419,43 @@ def main(args, pipe, states):
             })
     return all_networks_results
 
+def test_llms(args, pipe):
+
+    well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
+    for i in range(len(well_being)):
+        well_being[i]["phq9_sumscore"] = 0
+
+     # load personas
+    personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
+    tester = TestLLMs(well_being=well_being, num_agents=args.num_agents, seed=args.seed, personas=personas)
+
+    temp = args.temp
+    top_p = args.top_p
+    checkpoint = args.check_point
+
+    rounds = checkpoint *28 + 1 
+    
+    all_bias, bias_per_phq9, accuracy_per_phq9, all_accuracy = tester.run_simulation(tokenizer=tokenizer, 
+                                                                                     pipe=pipe, 
+                                                                                     n_rounds=rounds, 
+                                                                                     check_point=checkpoint,
+                                                                                     temp=temp,
+                                                                                     top_p=top_p)
+
+    directory_for_test = f"plots/test/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
+    if not os.path.exists(directory_for_test):
+        os.makedirs(directory_for_test)
+    vis.plot_bias(bias_per_phq9, all_bias, directory_for_test)
+    vis.plot_accuracy(accuracy_per_phq9, all_accuracy, directory_for_test)
+    
+    return all_accuracy, accuracy_per_phq9
+
+
 if __name__ == "__main__":
 
 
     # VLLM
     pipe = get_llm()
-
     args = generate_parser()
 
     if args.depressed:
@@ -445,6 +464,13 @@ if __name__ == "__main__":
         states = ["enforced_ngrams"]
     else:
         states = ["basis"]
+    testje = True
+
+    #experiment
+    # states = ["basis", "depressed", "enforce_ngrams"]
+    if args.test_llms:
+        all_accuracy, accuracy_phq9 = test_llms(args, pipe)
+        sys.exit(0)
 
     print("\n")
     print("="*40)
@@ -497,6 +523,7 @@ if __name__ == "__main__":
         
     #PCA
     pca_visualize(all_networks_results, plot_path, plot_filename, args)
+    sys.exit(0)
 
  
     

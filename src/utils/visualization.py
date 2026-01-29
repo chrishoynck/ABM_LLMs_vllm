@@ -1,3 +1,4 @@
+import seaborn as sns
 import os
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -330,6 +331,8 @@ def plot_running_fracs(running_fracs,
     plt.close()
     # plt.show()
 
+#============ PCA Visualization =============#
+
 def plot_tf_idf_PCA(reduced_runs, 
                     states, 
                     num_steps=100, 
@@ -414,6 +417,8 @@ def plot_embedding_PCA_runs(mean_traj,
         plt.savefig(f"{path}/{embedding.lower()}_pca_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300) 
     plt.close()
 
+#============ Network Analysis Visualization =============#
+
 def check_degree_distribution(unique_degrees, frequencies):
     """
     Plot the degree distribution on a log-log scale.
@@ -428,6 +433,9 @@ def check_degree_distribution(unique_degrees, frequencies):
     plt.ylabel('Frequency')
     # plt.show()
     plt.close()
+
+
+#============ Tweet Frequency Visualization =============#
 
 def plot_tweet_frequency(mean_freqs, var_freqs, window_size=5, file_path="", filename="default.png", save=False ):
     """
@@ -460,3 +468,102 @@ def plot_tweet_frequency(mean_freqs, var_freqs, window_size=5, file_path="", fil
         plt.savefig(f"{file_path}/tweet_freq_window{window_size}_{filename}.png", dpi=300)
     # plt.show()
     plt.close()
+
+#============= TESTING LLMS FOR PHQ-9 =============#
+def plot_bias(bias_per_phq9, all_bias, directory="plots"):
+    """
+    Visualizes the mean bias per PHQ-9 score.
+    """
+    scores = sorted(bias_per_phq9.keys())
+    biases = [bias_per_phq9[s] for s in scores]
+    
+    # Color code: Red for overestimating, Blue for underestimating
+    colors = ['#ff6666' if b > 0 else '#6666ff' for b in biases]
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(scores, biases, color=colors, edgecolor='black', alpha=0.8)
+    
+    # Zero line represents perfect accuracy
+    plt.axhline(0, color='black', linestyle='-', linewidth=1.5)
+    
+    plt.xlabel('Ground Truth $PHQ-9$ Score')
+    plt.ylabel('Mean Bias')
+    plt.title(f'LLM Bias (total bias: {(all_bias)}) ')
+    plt.xticks(range(0, 28))
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    
+    # Annotations for clarity
+    # plt.text(0.5, max(biases) if biases and max(biases) > 0 else 2, 
+    #          "Overestimating Depression ↑", color='red', fontsize=10, fontweight='bold')
+    # plt.text(0.5, min(biases) if biases and min(biases) < 0 else -2, 
+    #          "Underestimating Depression ↓", color='blue', fontsize=10, fontweight='bold')
+    
+    filename = os.path.join(directory, "llm_bias_per_phq9.png")
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"Visualization saved to {filename}")
+
+def plot_accuracy(acc_per_phq9, all_accuracy, directory="plots"):
+    """
+    Visualizes the mean accuracy per PHQ-9 score.
+    """
+    scores = sorted(acc_per_phq9.keys())
+    accuracies = [acc_per_phq9[s] for s in scores]
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(scores, accuracies, color = '#66b3ff', edgecolor='black', alpha=0.8)
+    
+    plt.xlabel('Ground Truth $PHQ-9$ Score')
+    plt.ylabel('Mean Absolute Error')
+    plt.title(f'LLM Accuracy per PHQ-9 Score (total accuracy: {(all_accuracy)})')
+    plt.xticks(range(0, 28))
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+
+    filename = os.path.join(directory, "llm_accuracy_per_phq9.png")
+
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"Visualization saved to {filename}")
+
+#============= Causality Detection Visualization =============#
+def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", path="", filename="default.png"):
+    """
+    Plots heatmaps for Variance and Autocorrelation across all agents.
+    Agents are sorted on the Y-axis by their final PHQ-9 score.
+    """
+    # Prepare sorting criteria (Final PHQ9 score per agent)
+    agent_scores = []
+    for agent in network.all_agents:
+        final_score = agent.well_being.get("phq9_sumscore", 0)
+        agent_scores.append((agent.ID, final_score))
+    
+    # Sort agents by score (low to high)
+    sorted_agents = sorted(agent_scores, key=lambda x: x[1])
+    sorted_ids = [a[0] for a in sorted_agents]
+    
+    # Reshape data into matrices (Rows = Agents, Cols = Time)
+    var_matrix = []
+    auto_matrix = []
+    
+    for agent_id in sorted_ids:
+        var_matrix.append(cd_results[agent_id]['variance'])
+        auto_matrix.append(cd_results[agent_id]['autocorrelation'])
+        
+    var_matrix = np.array(var_matrix)
+    auto_matrix = np.array(auto_matrix)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    
+    # Heatmap for variance
+    sns.heatmap(var_matrix, ax=ax1, cmap="YlOrRd", cbar_kws={'label': 'Variance'})
+    ax1.set_title(f'Rolling Variance of {metric_name}')
+    ax1.set_ylabel('Agents (Low to High PHQ-9)')
+
+    # Heatmap for Autocorrelation
+    sns.heatmap(auto_matrix, ax=ax2, cmap="YlGnBu", cbar_kws={'label': 'Autocorr'})
+    ax2.set_title(f'Autocorrelation of {metric_name}')
+    ax2.set_ylabel('Agents (Low to High PHQ-9)')
+    ax2.set_xlabel('Time Steps (Rounds)')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(path, f"window_{window}_{filename}"))

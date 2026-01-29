@@ -623,3 +623,81 @@ def obtain_tweet_histories(networks):
     return all_histories
 
 
+# =========================Critical Slowing Down analysis=========================
+
+def calculate_agent_cd(sequence, window_size):
+    """
+    Calculates rolling variance and lag-1 autocorrelation using NumPy.
+    """
+    seq = np.array(sequence)
+    n = len(seq)
+    
+    # Initialize arrays with NaNs (to represent the 'warm-up' period)
+    variances = np.full(n, np.nan)
+    autocorrs = np.full(n, np.nan)
+    
+    for i in range(window_size, n + 1):
+        # Extract the current window
+        window = seq[i - window_size : i]
+        
+        # Variance calculation
+        variances[i-1] = np.var(window, ddof=1)
+        
+        # Lag-1 Autocorrelation
+        if len(window) > 1:
+            # Current values vs lagged values
+            x = window[1:]
+            y = window[:-1]
+            
+            corr_matrix = np.corrcoef(x, y)
+            autocorrs[i-1] = corr_matrix[0, 1]
+            
+    return variances, autocorrs
+
+# Example:
+def all_agent__tweet_cd(network, window_size):
+    """
+    Calculate rolling variance and lag-1 autocorrelation for all agents in the network.
+    
+    Args:
+        network: The network object containing agents.
+        window_size (int): The size of the rolling window.
+    
+    Returns:
+        dict: {agent_id: {'variance': list, 'autocorrelation': list}}
+    """
+    cd_results = {}
+    for agent in network.all_agents:
+        history = getattr(agent, "tweethistory", [])
+        # Convert tweet history to binary sequence (1 if tweeted, 0 if NO_TWEET)
+        binary_sequence = [1 if tweet != "NO_TWEET" else 0 for tweet in history]
+        
+        variances, autocorrs = calculate_agent_cd(binary_sequence, window_size)
+        
+        cd_results[agent.ID] = {
+            'variance': variances.tolist(),
+            'autocorrelation': autocorrs.tolist()
+        }
+    return cd_results
+
+def all_agent_phq9_cd(network, window_size):
+    """
+    Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
+    
+    Args:
+        network: The network object containing agents.
+        window_size (int): The size of the rolling window.
+    Returns:
+        dict: {agent_id: {'variance': list, 'autocorrelation': list}}
+    """
+    cd_results = {}
+    for agent in network.all_agents:
+        phq9_scores = agent.all_phq9_sumscores
+        
+        variances, autocorrs = calculate_agent_cd(phq9_scores, window_size)
+        
+        cd_results[agent.ID] = {
+            'variance': variances.tolist(),
+            'autocorrelation': autocorrs.tolist()
+        }
+    return cd_results
