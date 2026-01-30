@@ -4,6 +4,7 @@ from sklearn.decomposition import PCA
 import numpy as np
 from sentence_transformers import models
 from sentence_transformers import SentenceTransformer as sbert
+import umap
 
 def print_histories(network, file_dir, file_name, save=False):
     """
@@ -40,7 +41,8 @@ def print_histories(network, file_dir, file_name, save=False):
     final_output = "\n".join(output_lines)
     
     # Print to console
-    print(final_output)
+    if not save:
+        print(final_output)
 
     if save:
         if not os.path.exists(file_dir):
@@ -505,19 +507,19 @@ def tf_idf_for_runs(networks_per_setting: dict, num_steps=30, shift=5, n_grams=N
 
 #=========================PCA functions=========================
     
-def reduce_dimensionality(tf_idf_matrices, n_components=2):
+def reduce_dimensionality(embedding_matrices, n_components=2):
     '''Reduce dimensionality of TF-IDF matrix using PCA.
     Args:
-        tf_idf_matrices (np.array): TF-IDF matrix.
+        embedding_matrices (np.array): TF-IDF matrix.
         n_components (int): Number of PCA components.
     Returns:
         reduced_runs (np.array): PCA-reduced data.
     '''
-    assert n_components <= tf_idf_matrices[0].shape[1], "n_components must be <= number of features"
-    tf_idf_stacked = np.vstack(tf_idf_matrices)
+    assert n_components <= embedding_matrices[0].shape[1], "n_components must be <= number of features"
+    embedding_stacked = np.vstack(embedding_matrices)
     pca = PCA(n_components=n_components)
-    pca.fit(tf_idf_stacked)
-    reduced_runs = [pca.transform(tf_idf_matrix) for tf_idf_matrix in tf_idf_matrices]
+    pca.fit(embedding_stacked)
+    reduced_runs = [pca.transform(embedding_matrix) for embedding_matrix in embedding_matrices]
     return reduced_runs
 
 def pca_on_means(embedding_per_setting, n_components=2):
@@ -563,6 +565,37 @@ def traj_variance_in_pca_space(runs_embedding_per_setting, pca):
         std_traj[setting] = stacked.std(axis=0)           # (T, D)
 
     return std_traj, var_traj
+
+# =========================UMAP functions=========================
+def reduce_dimensionality_umap(embedding_matrices, n_components=2, n_neighbors=15, min_dist=0.1):
+    '''Reduce dimensionality using UMAP.'''
+    embedding_stacked = np.vstack(embedding_matrices)
+    
+    # Initialize umap
+    reducer = umap.UMAP(n_components=n_components, 
+                        n_neighbors=n_neighbors, 
+                        min_dist=min_dist,
+                        random_state=42)
+    
+    reducer.fit(embedding_stacked)
+    
+    reduced_runs = [reducer.transform(embedding_matrix) for embedding_matrix in embedding_matrices]
+    return reduced_runs, reducer
+
+def umap_on_means(embedding_per_setting, n_components=2):
+    settings = list(embedding_per_setting.keys())
+    mean_matrices = [embedding_per_setting[setting] for setting in settings]
+    embedding_stacked = np.vstack(mean_matrices)
+    
+    reducer = umap.UMAP(n_components=n_components, random_state=42)
+    reducer.fit(embedding_stacked)
+
+    mean_traj = {
+        s: reducer.transform(embedding_per_setting[s])
+        for s in settings
+    }
+    return mean_traj, reducer
+
 
 
 # =============================Tweet frequency statistics===============================
@@ -654,8 +687,33 @@ def calculate_agent_cd(sequence, window_size):
             
     return variances, autocorrs
 
-# Example:
-def all_agent__tweet_cd(network, window_size):
+
+
+def all_agent_phq9_cd(network, window_size, shift=1):
+    """
+    Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
+    
+    Args:
+        network: The network object containing agents.
+        window_size (int): The size of the rolling window.
+    Returns:
+        dict: {agent_id: {'variance': list, 'autocorrelation': list}}
+    """
+    cd_results = {}
+    for agent in network.all_agents:
+        phq9_scores = agent.all_phq9_sumscores[::shift]
+        
+        variances, autocorrs = calculate_agent_cd(phq9_scores, window_size)
+        
+        cd_results[agent.ID] = {
+            'variance': variances.tolist(),
+            'autocorrelation': autocorrs.tolist()
+        }
+    return cd_results
+
+
+
+def all_agent__tweet_cd(network, window_size, shift=1):
     """
     Calculate rolling variance and lag-1 autocorrelation for all agents in the network.
     
@@ -672,7 +730,7 @@ def all_agent__tweet_cd(network, window_size):
         # Convert tweet history to binary sequence (1 if tweeted, 0 if NO_TWEET)
         binary_sequence = [1 if tweet != "NO_TWEET" else 0 for tweet in history]
         
-        variances, autocorrs = calculate_agent_cd(binary_sequence, window_size)
+        variances, autocorrs = calculate_agent_cd(binary_sequence, window_size, shift)
         
         cd_results[agent.ID] = {
             'variance': variances.tolist(),
@@ -680,24 +738,4 @@ def all_agent__tweet_cd(network, window_size):
         }
     return cd_results
 
-def all_agent_phq9_cd(network, window_size):
-    """
-    Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
-    
-    Args:
-        network: The network object containing agents.
-        window_size (int): The size of the rolling window.
-    Returns:
-        dict: {agent_id: {'variance': list, 'autocorrelation': list}}
-    """
-    cd_results = {}
-    for agent in network.all_agents:
-        phq9_scores = agent.all_phq9_sumscores
-        
-        variances, autocorrs = calculate_agent_cd(phq9_scores, window_size)
-        
-        cd_results[agent.ID] = {
-            'variance': variances.tolist(),
-            'autocorrelation': autocorrs.tolist()
-        }
-    return cd_results
+

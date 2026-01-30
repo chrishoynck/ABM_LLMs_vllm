@@ -241,6 +241,8 @@ def run_simulation(args, pipe=None):
     # load personas
     if True:
         personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
+        for i in range(len(personas)):
+            print("persona:", personas[i])
     
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
 
@@ -356,7 +358,6 @@ def pca_visualize(all_networks_results, path, filename, args):
         args: Argument namespace containing visualization parameters.
     """
     n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
-    path = path_manager.get_run_directory(is_plot=True)
     # wrapper dealing with multiple networks per setting
 
     sbert = True

@@ -140,7 +140,7 @@ class _Network:
         # if True:
         #     self._ensure_torch_generator(pipe)
         # generate outputs in parallel
-        out = self._generate_outputs(pipe, prompts)
+        out = self._generate_outputs(pipe, prompts, phq9=False)
         t2 = time.perf_counter()
 
         # agents send out their tweets + state update + stats
@@ -208,7 +208,7 @@ class _Network:
             prompts.append(prompt)
         
         # inference with LLM
-        out = self._generate_outputs(pipe, prompts)
+        out = self._generate_outputs(pipe, prompts, phq9=True)
         
         # update well-being scores based on responses
         for agent, answer in zip(self.all_agents, out):
@@ -217,7 +217,7 @@ class _Network:
             agent.update_well_being(sum_score)
 
     # VLLM
-    def _generate_outputs(self, llm, prompts):
+    def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False):
         """
         Run vLLM generation. 
         Note: batch_size argument is largely ignored here because vLLM 
@@ -226,16 +226,25 @@ class _Network:
         if not prompts:
             return []
         
+        if phq9: 
+            sampling_params_clinical = SamplingParams(
+                    temperature=0.8, 
+                    top_p=0.8,
+                    max_tokens=100,   # Keep it short; you only need the scores
+                    seed=None 
+                )
+            outputs = llm.generate(prompts, sampling_params_clinical)
+            return outputs
+    
         # Define Sampling Parameters
         sampling_params = SamplingParams(
-            temperature=1.1,
-            top_p=0.85,
-            # presence_penalty=0.6,
+            temperature=1.0,
+            top_p=1.0,
             max_tokens=256,
             seed= None #self.seed + self.iterations  # vLLM handles seeding here
         )
 
-        # VLLM does batching for us. 
+        # VLLM does batching automatically. 
         outputs = llm.generate(prompts, sampling_params)
         
         return outputs

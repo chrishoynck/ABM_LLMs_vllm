@@ -525,8 +525,8 @@ def plot_accuracy(acc_per_phq9, all_accuracy, directory="plots"):
     plt.savefig(filename)
     print(f"Visualization saved to {filename}")
 
-#============= Causality Detection Visualization =============#
-def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", path="", filename="default.png"):
+#============= Critical slowing down Visualization =============#
+def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", path="", filename="default.png", shift=1):
     """
     Plots heatmaps for Variance and Autocorrelation across all agents.
     Agents are sorted on the Y-axis by their final PHQ-9 score.
@@ -544,26 +544,36 @@ def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", pat
     # Reshape data into matrices (Rows = Agents, Cols = Time)
     var_matrix = []
     auto_matrix = []
+    phq9_matrix = []
+
+    id_to_agent = {agent.ID: agent for agent in network.all_agents}
     
     for agent_id in sorted_ids:
+        phq9_matrix.append(id_to_agent[agent_id].all_phq9_sumscores[::shift])
         var_matrix.append(cd_results[agent_id]['variance'])
         auto_matrix.append(cd_results[agent_id]['autocorrelation'])
         
     var_matrix = np.array(var_matrix)
     auto_matrix = np.array(auto_matrix)
+    phq9_matrix = np.array(phq9_matrix)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10,7), sharex=True)
     
     # Heatmap for variance
     sns.heatmap(var_matrix, ax=ax1, cmap="YlOrRd", cbar_kws={'label': 'Variance'})
     ax1.set_title(f'Rolling Variance of {metric_name}')
-    ax1.set_ylabel('Agents (Low to High PHQ-9)')
+    ax1.set_ylabel('Agents')
 
     # Heatmap for Autocorrelation
     sns.heatmap(auto_matrix, ax=ax2, cmap="YlGnBu", cbar_kws={'label': 'Autocorr'})
     ax2.set_title(f'Autocorrelation of {metric_name}')
-    ax2.set_ylabel('Agents (Low to High PHQ-9)')
-    ax2.set_xlabel('Time Steps (Rounds)')
+    ax2.set_ylabel('Agents')
 
+    sns.heatmap(phq9_matrix, ax=ax3, cmap="RdYlGn_r", cbar_kws={'label': 'PHQ-9 Score'})
+    ax3.set_title(f'{metric_name} Scores Over Time')
+    ax3.set_ylabel('Agents')
+    ax3.set_xlabel('Time Steps (Rounds)')
+
+    plt.suptitle(f'Critical Slowing Down (Agents sorted on PHQ-9)', fontsize=16)
     plt.tight_layout()
     plt.savefig(os.path.join(path, f"window_{window}_{filename}"))
