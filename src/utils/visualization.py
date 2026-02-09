@@ -530,23 +530,24 @@ def plot_bias(bias_per_phq9, all_bias, directory="plots"):
     plt.savefig(filename)
     print(f"Visualization saved to {filename}")
 
-def plot_accuracy(acc_per_phq9, all_accuracy, directory="plots"):
+def plot_phq9_error(mae_per_phq9, total_mae, directory="plots"):
     """
-    Visualizes the mean accuracy per PHQ-9 score.
+    Visualizes the mean absolute error (MAE) per PHQ-9 score.
+    Lower values indicate better performance.
     """
-    scores = sorted(acc_per_phq9.keys())
-    accuracies = [acc_per_phq9[s] for s in scores]
+    scores = sorted(mae_per_phq9.keys())
+    errors = [mae_per_phq9[s] for s in scores]
     
     plt.figure(figsize=(10, 6))
-    plt.bar(scores, accuracies, color = '#66b3ff', edgecolor='black', alpha=0.8)
+    plt.bar(scores, errors, color='#66b3ff', edgecolor='black', alpha=0.8)
     
     plt.xlabel('Ground Truth $PHQ-9$ Score')
-    plt.ylabel('Mean Absolute Error')
-    plt.title(f'LLM Accuracy per PHQ-9 Score (total accuracy: {(all_accuracy)})')
+    plt.ylabel('Mean Absolute Error (PHQ-9 points)')
+    plt.title(f'LLM PHQ-9 error per score (total MAE: {total_mae:.3f})')
     plt.xticks(range(0, 28))
     plt.grid(axis='y', linestyle='--', alpha=0.3)
 
-    filename = os.path.join(directory, "llm_accuracy_per_phq9.png")
+    filename = os.path.join(directory, "llm_error_per_phq9.png")
 
     plt.tight_layout()
     plt.savefig(filename)
@@ -609,91 +610,153 @@ def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", pat
 
 
     # ====================== LLM Bias and Accuracy Visualization ====================== #
-    def plot_model_comparison_by_settings(
+def plot_model_comparison_by_settings(
     data=None,
     csv_path=None,
     directory="plots/test",
-    save=True,
-):
+    save=True):
     """
-    Bar chart: models colour-coded, different bars for each (temp, top_p) setting.
+    Visualization for PHQ-9 performance of the LLMs across different settings.
+
+    Produces two vertically stacked subplots:
+      1) Total PHQ-9 MAE (mean absolute error; lower is better)
+      2) Mean PHQ-9 bias (signed; positive = overestimation, negative = underestimation)
 
     Args:
-        data: list of dicts with keys "model_id", "temp", "top_p", "accuracy"
+        data: list of dicts with keys
+              "model_name", "temp", "top_p", "total_mae", "avg_phq9_change"
               (optional if csv_path is given).
-        csv_path: path to results CSV with columns model_name, temp, top_p, total_accuracy
-                  (optional if data is given).
+        csv_path: path to results CSV with columns
+              model_name, temp, top_p, total_mae, avg_phq9_change.
         directory: folder to save the figure.
         save: whether to save to disk.
     """
     import pandas as pd
 
+    # check data or paths are provided
     if data is None and csv_path is None:
         raise ValueError("Provide either data or csv_path")
+
+    # read in data from csv if data is not provided
     if data is None:
         df = pd.read_csv(csv_path)
-        df = df.rename(columns={"model_name": "model_id", "total_accuracy": "accuracy"})
-        data = df[["model_id", "temp", "top_p", "accuracy"]].to_dict("records")
+        required_cols = ["model_name", "temp", "top_p", "total_mae", "avg_phq9_change"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns in results CSV: {missing}")
+        data = df[required_cols].to_dict("records")
 
+    # model specifics
     rows = [
         {
-            "model_id": str(r["model_id"]),
+            "model": str(r["model_name"]),
             "temp": float(r["temp"]),
             "top_p": float(r["top_p"]),
-            "accuracy": float(r["accuracy"]),
+            "mae": float(r["total_mae"]),
+            "bias": float(r["avg_phq9_change"]),
         }
         for r in data
     ]
 
-    def short_name(model_id):
-        s = model_id.split("/")[-1] if "/" in model_id else model_id
+    # helper function to fix model names
+    def short_name(model):
+        s = model.split("/")[-1] if "/" in model else model
         return s.replace("-Instruct", "").replace("_", " ")[:24]
 
-    models = sorted(set(r["model_id"] for r in rows))
+    # get models and settings
+    models = sorted(set(r["model"] for r in rows))
     settings = sorted(set((r["temp"], r["top_p"]) for r in rows), key=lambda x: (x[0], x[1]))
     n_models = len(models)
     n_settings = len(settings)
     if n_models == 0 or n_settings == 0:
         return
 
+    # create mapping of models and settings to indices
     model_to_idx = {m: i for i, m in enumerate(models)}
     setting_to_idx = {s: j for j, s in enumerate(settings)}
-    acc = np.full((n_models, n_settings), np.nan)
+    mae_mat = np.full((n_models, n_settings), np.nan)
+    bias_mat = np.full((n_models, n_settings), np.nan)
     for r in rows:
-        i = model_to_idx[r["model_id"]]
+        i = model_to_idx[r["model"]]
         j = setting_to_idx[(r["temp"], r["top_p"])]
-        acc[i, j] = r["accuracy"]
+        mae_mat[i, j] = r["mae"]
+        bias_mat[i, j] = r["bias"]
 
-    colors = plt.cm.tab10(np.linspace(0, 1, max(n_models, 1)))[:n_models] if n_models <= 10 else plt.cm.tab20(np.linspace(0, 1, n_models))[:n_models]
+    # create colourmap
+    if n_settings <= 10:
+        colors = plt.cm.tab10(np.linspace(0, 1, max(n_settings, 1)))[:n_settings]
+    else:
+        colors = plt.cm.tab20(np.linspace(0, 1, n_settings))[:n_settings]
+
     hatches = ["", "//", "\\\\", "||", "--", "++", "xx", "..", "**", "oo"][:n_settings]
 
-    fig, ax = plt.subplots(figsize=(max(8, n_models * (1.5 + 0.5 * n_settings)), 6))
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2, 1, sharex=True,
+        figsize=(max(8, n_models * (1.5 + 0.5 * n_settings)), 9)
+    )
     x = np.arange(n_models)
     total_width = 0.8
+
+    # plot bars with some distance apart for each setting
     bar_width = total_width / n_settings
     for j, (t, p) in enumerate(settings):
         off = (j - (n_settings - 1) / 2) * bar_width
         for i in range(n_models):
-            val = acc[i, j]
-            if np.isnan(val):
-                continue
-            ax.bar(x[i] + off, val, bar_width, color=colors[i], edgecolor="gray", hatch=hatches[j])
+            mae_val = mae_mat[i, j]
+            bias_val = bias_mat[i, j]
+            if not np.isnan(mae_val):
+                ax_top.bar(
+                    x[i] + off,
+                    mae_val,
+                    bar_width,
+                    color=colors[i],
+                    edgecolor="gray",
+                    hatch=hatches[j],
+                )
+            if not np.isnan(bias_val):
+                ax_bottom.bar(
+                    x[i] + off,
+                    bias_val,
+                    bar_width,
+                    color=colors[i],
+                    edgecolor="gray",
+                    hatch=hatches[j],
+                )
 
+    # match the model name with the color and hatch
     legend_handles = []
     for i, m in enumerate(models):
-        legend_handles.append(plt.matplotlib.patches.Patch(facecolor=colors[i], edgecolor="gray", label=short_name(m)))
+        legend_handles.append(
+            plt.matplotlib.patches.Patch(
+                facecolor=colors[i], edgecolor="gray", label=short_name(m)
+            )
+        )
     for j, (t, p) in enumerate(settings):
         legend_handles.append(
-            plt.matplotlib.patches.Patch(facecolor="white", edgecolor="gray", hatch=hatches[j], label=f"T={t}, p={p}")
+            plt.matplotlib.patches.Patch(
+                facecolor="white",
+                edgecolor="gray",
+                hatch=hatches[j],
+                label=f"T={t}, p={p}",
+            )
         )
-    ax.legend(handles=legend_handles, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
-    ax.set_xticks(x)
-    ax.set_xticklabels([short_name(m) for m in models], rotation=45, ha="right")
-    ax.set_ylabel("Total accuracy")
-    ax.set_xlabel("Model")
-    ax.set_title("Model comparison by settings (colour = model, hatch = temp / top_p)")
-    ax.set_ylim(0, 1.0)
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    # set specifics for top subplot (MAE)
+    ax_top.legend(handles=legend_handles, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    ax_top.set_ylabel("Total MAE (PHQ-9 points,\nlower is better)")
+    ax_top.set_title("Model comparison by settings – PHQ-9 error (MAE)")
+    ax_top.set_ylim(0, 1.0)
+    ax_top.grid(axis="y", linestyle="--", alpha=0.3)
+
+    # set specifics for bottom subplot (bias)
+    ax_bottom.set_xticks(x)
+    ax_bottom.set_xticklabels([short_name(m) for m in models], rotation=45, ha="right")
+    ax_bottom.set_ylabel("Mean PHQ-9 bias\n(positive = overestimate)")
+    ax_bottom.set_xlabel("Model")
+    ax_bottom.set_title("Model comparison by settings – PHQ-9 bias")
+    ax_bottom.axhline(0, color="black", linewidth=1.0)
+    ax_bottom.grid(axis="y", linestyle="--", alpha=0.3)
+
     plt.tight_layout()
     if save:
         os.makedirs(directory, exist_ok=True)

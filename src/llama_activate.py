@@ -1,5 +1,6 @@
 
 from transformers import AutoTokenizer, set_seed  #, pipeline, BitsAndBytesConfig
+import gc
 import os, torch
 import sys, argparse, time
 import numpy as np
@@ -33,6 +34,15 @@ llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
 models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
+
+# Short names for --test_llms_model (optional; full HuggingFace IDs also work)
+MODEL_ALIASES = {
+    "qwen4": "Qwen/Qwen3-4B-Instruct-2507",
+    "qwen14": "Qwen/Qwen3-14B-Instruct",
+    "gemma12": "google/gemma-3-12b-it",
+    "llama8": "meta-llama/Llama-3.1-8B-Instruct",
+    "mistral7": "mistralai/Mistral-7B-Instruct-v0.3",
+}
 
 DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 # DTYPE_STR = "bfloat16" if torch.cuda.is_available() else "float32"
@@ -136,6 +146,7 @@ def generate_parser():
 
     #test args
     parser.add_argument("--test_llms", action="store_true", help="Test LLMs on PHQ-9 questionnaire")
+    parser.add_argument("--test_llms_model", type=str, default=None, metavar="MODEL", help="With --test_llms: run only this model. Use short alias (qwen4, qwen14, gemma12, llama8, mistral7) or full HuggingFace ID. If omitted, test all models.")
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling parameter for LLM")
     parser.add_argument("--temp", type=float, default=1.0, help="Temperature sampling parameter for LLM")
     parser.add_argument("--check_point", type=int, default=10, help="Checkpoint for PHQ-9 questionnaire")
@@ -475,7 +486,7 @@ def test_llms(args, pipe, model_name, tokenizer=None):
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
 
-    all_bias, bias_per_phq9, accuracy_per_phq9, all_accuracy = tester.run_simulation(
+    all_bias, bias_per_phq9, mae_per_phq9, total_mae = tester.run_simulation(
         tokenizer=tok,
         pipe=pipe,
         n_rounds=rounds,
@@ -491,9 +502,35 @@ def test_llms(args, pipe, model_name, tokenizer=None):
     if not os.path.exists(directory_for_test):
         os.makedirs(directory_for_test)
     vis.plot_bias(bias_per_phq9, all_bias, directory_for_test)
-    vis.plot_accuracy(accuracy_per_phq9, all_accuracy, directory_for_test)
+    vis.plot_phq9_error(mae_per_phq9, total_mae, directory_for_test)
 
-    return all_accuracy, accuracy_per_phq9
+    return total_mae, mae_per_phq9
+
+
+def run_llm_tests(args):
+    """Run PHQ-9 tests for one model (--test_llms_model) or all models; prints summary and exits."""
+    if args.test_llms_model:
+        model_id = MODEL_ALIASES.get(args.test_llms_model.strip().lower(), args.test_llms_model.strip())
+        models_to_run = [model_id]
+        print(f"Testing single model (--test_llms_model): {model_id}")
+    else:
+        models_to_run = models
+    results = {}
+    for model_id in models_to_run:
+        print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
+        tok = get_tokenizer(model_id)
+        pipe = get_llm(model_id=model_id)
+        total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok)
+        results[model_id] = {"total_mae": total_mae, "mae_per_phq9": mae_per_phq9}
+        del pipe
+        gc.collect()
+        torch.cuda.empty_cache()
+    print("\nTest summary (total PHQ-9 MAE per model; lower is better):")
+    for mid, res in results.items():
+        print(f"  {mid}: {res['total_mae']:.4f}")
+    if len(results) > 1:
+        vis.plot_model_comparison_by_settings(csv_path="data/test/results.csv", directory="plots/test", save=args.save)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
@@ -508,20 +545,7 @@ if __name__ == "__main__":
         states = ["basis"]
 
     if args.test_llms:
-        # Run PHQ-9 test for each model in models
-        results = {}
-        for model_id in models:
-            print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
-            tok = get_tokenizer(model_id)
-            pipe = get_llm(model_id=model_id)
-            acc, acc_phq9 = test_llms(args, pipe, model_id, tokenizer=tok)
-            results[model_id] = {"accuracy": acc, "accuracy_per_phq9": acc_phq9}
-            del pipe  # free GPU before loading next model
-        print("\nTest summary (total accuracy per model):")
-        for mid, res in results.items():
-            print(f"  {mid}: {res['accuracy']:.4f}")
-        vis.plot_model_comparison_by_settings(csv_path="data/test/results.csv", directory="plots/test", save=args.save)
-        sys.exit(0)
+        run_llm_tests(args)
 
     # Main simulation: load default model once
     pipe = get_llm()

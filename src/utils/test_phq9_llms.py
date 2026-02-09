@@ -142,29 +142,31 @@ class TestLLMs:
         total_bias = []
         bias_per_phq9 = {}
 
-        total_acc = []
-        acc_per_phq9 = {}
+        # Mean absolute error (MAE) in PHQ-9 points, not accuracy.
+        total_mae = []
+        mae_per_phq9 = {}
 
         for old_score, changes in mistake_dict.items():
             bias_per_phq9[old_score] = np.mean(changes) if changes else 0
             total_bias.extend(changes)
-            acc_per_phq9[old_score] = np.mean(np.abs(np.array(changes))) if changes else 0
-            total_acc.extend(np.abs(np.array(changes)))
+            mae_per_phq9[old_score] = np.mean(np.abs(np.array(changes))) if changes else 0
+            total_mae.extend(np.abs(np.array(changes)))
         
         if total_bias:
             avg_change = sum(total_bias) / len(total_bias)
         else:
             avg_change = 0
         
-        if total_acc:
-            total_acc = sum(total_acc) / len(total_acc)
+        if total_mae:
+            total_mae = sum(total_mae) / len(total_mae)
         else:
-            total_acc = 0
+            total_mae = 0
         
-        return avg_change, bias_per_phq9, acc_per_phq9, total_acc
+        # Return mean bias, per-score MAE, and overall MAE (misnamed "accuracy" previously).
+        return avg_change, bias_per_phq9, mae_per_phq9, total_mae
 
     def log_results_to_csv(self, file_path, model_name, temp, top_p, check_point, 
-                           avg_change, total_acc, bias_per_phq9, acc_per_phq9):
+                           avg_change, total_mae, bias_per_phq9, mae_per_phq9):
         """
         Logs the simulation parameters and results into a CSV file.
         Appends to the file if it already exists.
@@ -179,15 +181,14 @@ class TestLLMs:
             "top_p": top_p,
             "check_point": check_point,
             "avg_phq9_change": avg_change,
-            "total_accuracy": total_acc,
-            "iterations": self. 
-        }
+            "total_mae": total_mae,
+            "iterations": self.iterations}
 
         for score, val in bias_per_phq9.items():
             data[f"bias_phq9_{score}"] = val
 
-        for score, val in acc_per_phq9.items():
-            data[f"acc_phq9_{score}"] = val
+        for score, val in mae_per_phq9.items():
+            data[f"mae_phq9_{score}"] = val
 
         df = pd.DataFrame([data])
 
@@ -213,16 +214,16 @@ class TestLLMs:
                               temp=temp, 
                               top_p=top_p)
         
-        avg_change, bias_per_phq9, acc_per_phq9, total_acc = self.assess_performance(mistake_dict)
+        avg_change, bias_per_phq9, mae_per_phq9, total_mae = self.assess_performance(mistake_dict)
         self.log_results_to_csv("data/test/results.csv", model_name, 
                                 temp=temp, 
                                 top_p=top_p, 
                                 check_point=check_point, 
                                 avg_change=avg_change, 
-                                total_acc=total_acc, 
+                                total_mae=total_mae, 
                                 bias_per_phq9=bias_per_phq9, 
-                                acc_per_phq9=acc_per_phq9)
+                                mae_per_phq9=mae_per_phq9)
 
-        return avg_change, bias_per_phq9, acc_per_phq9, total_acc
+        return avg_change, bias_per_phq9, mae_per_phq9, total_mae
         
         
