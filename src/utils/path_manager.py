@@ -45,7 +45,8 @@ class PathManager:
 
 
     def _get_subparams(self):
-        return f"rounds{self.rounds}_seed{self.seed}_N{self.num_agents}"
+        """Parameter part of path without seed (parent folder for all seeds)."""
+        return f"rounds{self.rounds}_N{self.num_agents}"
     
     def _get_params_from_net(self, network):
         # Logic to extract m/p/alpha from network object
@@ -64,12 +65,21 @@ class PathManager:
         if "SocialDistanceAttachment" in str(type(network)) and getattr(network, 'sdc', False): return "sdc"
         return "sda"
 
-    def get_run_directory(self, is_plot=False):
-        """Returns the folder path: data/networks/{state}/{type}/{params}/{subparams}/"""
+    def _get_parent_directory(self, is_plot=False):
+        """Parent directory (parameters only, no seed): .../rounds{N}_N{agents}/"""
         base = self.base_plots if is_plot else self.base_data
-        path = base / self.state / self.net_type /self.directed/ self.params/ self.subparams
-        
-        path.mkdir(parents=True, exist_ok=True) # Automatically create folders
+        return base / self.state / self.net_type / self.directed / self.params / self.subparams
+
+    def get_run_directory(self, is_plot=False):
+        """Run-specific directory: .../rounds{N}_N{agents}/seed_{seed}/"""
+        path = self._get_parent_directory(is_plot=is_plot) / f"seed_{self.seed}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_aggregate_directory(self, is_plot=False):
+        """Parent directory for aggregate (over-runs) plots. Creates dir if needed."""
+        path = self._get_parent_directory(is_plot=is_plot)
+        path.mkdir(parents=True, exist_ok=True)
         return path
 
     def get_network_filename(self):
@@ -80,5 +90,10 @@ class PathManager:
         return self.get_run_directory(is_plot=False) / self.get_network_filename()
     
     def get_plot_name(self):
-        """Returns a standard filename for plots."""
-        return f"_{self.seed}.png"
+        """Returns filename suffix for run-specific plots (vis code appends .png)."""
+        return f"_{self.seed}"
+
+    def get_aggregate_plot_name(self, seeds):
+        """Returns filename suffix for aggregate plots (vis code appends .png)."""
+        seeds_str = "_".join(map(str, seeds))
+        return f"_seeds_{seeds_str}"

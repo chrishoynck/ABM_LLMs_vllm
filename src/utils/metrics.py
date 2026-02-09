@@ -28,12 +28,12 @@ def print_histories(network, file_dir, file_name, save=False):
         
         # Only add agents who actually tweeted
         if valid_tweets:
-            header = f"\n🔹 Agent {agent.ID} (Tweeted {len(valid_tweets)} times, phq9: {agent.well_being.get('phq9_sumscore')})"
+            header = f"\n🔹 Agent {agent.ID} (Tweeted {len(valid_tweets)} times, phq9: {agent.well_being.get('phq9_sumscore')}, persona: {agent.persona})"
             output_lines.append(header)
             for r_idx, text in valid_tweets:
                 output_lines.append(f"   [Round {r_idx}]: \"{text}\"")
         else:
-             output_lines.append(f"\n🔸 Agent {agent.ID} (Silent throughout simulation),  phq9: {agent.well_being.get('phq9_sumscore')}")
+             output_lines.append(f"\n🔸 Agent {agent.ID} (Silent throughout simulation),  phq9: {agent.well_being.get('phq9_sumscore')}, persona: {agent.persona}")
 
     output_lines.append(f"\n{'='*60}")
     
@@ -47,7 +47,8 @@ def print_histories(network, file_dir, file_name, save=False):
     if save:
         if not os.path.exists(file_dir):
             os.makedirs(file_dir)
-        filename = f"tweet_histories_{file_name}"
+        filename = file_name.replace("json", "txt")
+        filename = f"tweet_histories_{filename}"
         export_file = os.path.join(file_dir, filename)
         with open(export_file, "w", encoding="utf-8") as f:
             f.write(final_output)
@@ -245,16 +246,18 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
     """Computes SBERT embeddings using Mean Pooling over time windows for a list of networks.
     Args:
         model: Loaded SentenceTransformer model
-        all_networks: List of network objects.
+        all_networks: List of network objects (each with "network" key).
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
     Returns:
-        global_sbert_means: List of (Time, 384) arrays for each network
-        global_sbert_vars: List of (Time, 384) arrays for each network
+        global_sbert_means: List of (Time, dim) arrays for each network
+        global_sbert_vars: List of (Time, dim) arrays for each network
+        global_phq9_means: List of (Time,) arrays: average PHQ-9 across agents at end of each window
     """
 
     global_sbert_means = []
     global_sbert_vars = []
+    global_phq9_means = []
 
     embedding_dim = model.get_sentence_embedding_dimension()
     
@@ -272,10 +275,24 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
         # collect one trajectory per agent, then average them to get the "Network Trajectory"
         mean_net_window_vectors = [] 
         var_net_window_vectors = []
+        phq9_per_window = []
 
         for w in range(num_windows):
             start_t = w * shift
             end_t = start_t + num_steps
+            # Round index at end of window (for PHQ-9 at that time)
+            round_idx = min(end_t - 1, max_iters - 1)
+
+            # Average PHQ-9 across agents at this time
+            scores = []
+            for agent in net.all_agents:
+                hist = getattr(agent, "all_phq9_sumscores", [])
+                if round_idx < len(hist) and hist[round_idx] is not None:
+                    scores.append(float(hist[round_idx]))
+            if scores:
+                phq9_per_window.append(np.mean(scores))
+            else:
+                phq9_per_window.append(np.nan)
             
             # Collect all valid tweets from all agents in this specific time window
             tweets_in_window = []
@@ -309,12 +326,13 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
             mean_net_window_vectors.append(window_centroid)
             var_net_window_vectors.append(window_variance)
         
-        # Stack to create (Time, 384) matrix for this specific network run
+        # Stack to create (Time, dim) matrix for this specific network run
         global_sbert_means.append(np.stack(mean_net_window_vectors))
         global_sbert_vars.append(np.stack(var_net_window_vectors))
+        global_phq9_means.append(np.array(phq9_per_window))
 
 
-    return global_sbert_means, global_sbert_vars
+    return global_sbert_means, global_sbert_vars, global_phq9_means
 
 
 def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert=True):
@@ -323,30 +341,35 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
     
     Args:
         networks_per_setting: Dictionary of {setting_name: [list_of_networks]}
-        model: Loaded SentenceTransformer model
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
+        mentalbert (bool): If True, use MentalBERT; else use default SBERT.
         
     Returns:
-        mean_sbert_per_setting: {setting: (Time, 384) array} -> Average trajectory
-        all_mats_per_setting:   {setting: List of (Time, 384) arrays} -> Individual runs
+        mean_sbert_per_setting: {setting: (Time, dim) array} -> Average trajectory
+        var_sbert_per_setting:  {setting: (Time, dim) array} -> Variance
+        all_mats_per_setting:  {setting: List of (Time, dim) arrays} -> Individual runs
+        mean_phq9_per_setting: {setting: (Time,) array} -> Mean PHQ-9 at end of each window (for coloring)
     """
     # Flatten networks and get slices
     all_networks, setting_slices = network_list_w_slices(networks_per_setting)
 
-    # Compute SBERT embeddings for all networks
+    # Compute SBERT embeddings for all networks (and per-window average PHQ-9)
     model = generate_sbert_model(mentalbert=mentalbert)
-    global_sbert_means, global_sbert_vars = mean_sbert_per_networks(model, all_networks, num_steps=num_steps, shift=shift)
+    global_sbert_means, global_sbert_vars, global_phq9_means = mean_sbert_per_networks(
+        model, all_networks, num_steps=num_steps, shift=shift
+    )
 
     # Group by setting and compute mean trajectories
     mean_sbert_per_setting = {}
     var_sbert_per_setting = {}
-
+    mean_phq9_per_setting = {}
     all_mats_per_setting = {}
     
     for setting, (start, end) in setting_slices.items():
         matrices_over_runs = global_sbert_means[start:end]
         matrices_vars_over_runs = global_sbert_vars[start:end]
+        phq9_over_runs = global_phq9_means[start:end]
         
         if not matrices_over_runs:
             continue
@@ -355,6 +378,7 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
         min_len = min(m.shape[0] for m in matrices_over_runs)
         cut_short_means = [m[:min_len] for m in matrices_over_runs]
         cut_short_vars = [m[:min_len] for m in matrices_vars_over_runs]
+        cut_short_phq9 = [p[:min_len] for p in phq9_over_runs]
         
         # Stack: (Num_Runs, time_window, Embedding_Dim)
         embedding_per_setting = np.stack(cut_short_means, axis=0)
@@ -363,13 +387,19 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
         # Calculate Mean Trajectory over the runs
         mean_sbert_per_setting[setting] = np.mean(embedding_per_setting, axis=0)
         var_sbert_per_setting[setting] = np.mean(embedding_vars_per_setting, axis=0)
+        # Mean PHQ-9 over runs (nanmean in case some windows have no scores)
+        mean_phq9_per_setting[setting] = np.nanmean(np.stack(cut_short_phq9, axis=0), axis=0)
         
         if setting not in all_mats_per_setting:
             all_mats_per_setting[setting] = []
 
         all_mats_per_setting[setting].extend(cut_short_means)
 
-    return mean_sbert_per_setting, var_sbert_per_setting, all_mats_per_setting
+    # Scalar per time: mean within-run variance (average over embedding dim)
+    mean_within_var_per_setting = {
+        s: np.mean(var_sbert_per_setting[s], axis=1) for s in var_sbert_per_setting
+    }
+    return mean_sbert_per_setting, var_sbert_per_setting, all_mats_per_setting, mean_phq9_per_setting, mean_within_var_per_setting
 
 
 #=========================TF-IDF functions=========================
@@ -382,11 +412,13 @@ def retrieve_windowed_data(networks_data, num_steps= 30, shift=5, n_grams= None)
         shift (int): Shift between windows.
     Returns:
         all_tweets_extracted (List(str)): All tweets extracted for TF-IDF fitting.
-        docs_per_network (List(List(str))): List of documents (one per time window) per network.
+        docs_per_network (List(List(str))): List of documents (one joined string per time window) per network.
+        docs_per_network_tweets (List(List(List(str)))): List of (network -> window -> list of tweet strings) for within-window variance.
     '''
     all_tweets_extracted = []
     docs_per_network = []
-  
+    docs_per_network_tweets = []
+
     for i,  network_data in enumerate(networks_data):
         network = network_data["network"]
         # calculate number of windows
@@ -411,25 +443,28 @@ def retrieve_windowed_data(networks_data, num_steps= 30, shift=5, n_grams= None)
                 all_tweets_extracted.extend(n_grams)
     
         filtered_window_texts = []
+        filtered_window_tweets = []  # list of lists of tweet strings per window (for within-window variance)
         w = 0
         while w < len(window_list):
             window_list[w] = [t for t in window_list[w] if t != "NO_TWEET"]
-            window_list[w] = " ".join(window_list[w])
-            # remove empty tweet lists
-            if window_list[w] == "":
+            tweets_this_window = list(window_list[w])
+            joined = " ".join(window_list[w])
+            if joined == "":
                 print("WARNING: Empty tweet list for window ", w)
                 window_list.pop(w)
             else:
-                filtered_window_texts.append(window_list[w])
-                w+=1
+                filtered_window_texts.append(joined)
+                filtered_window_tweets.append(tweets_this_window)
+                w += 1
 
         docs_per_network.append(filtered_window_texts)
+        docs_per_network_tweets.append(filtered_window_tweets)
     
     all_tweets_extracted = [t for t in all_tweets_extracted if t!= "NO_TWEET"]
 
     if len(all_tweets_extracted) == 0:
         raise ValueError("No valid tweets found in the network for TF-IDF computation.")
-    return all_tweets_extracted, docs_per_network
+    return all_tweets_extracted, docs_per_network, docs_per_network_tweets
 
 # TF-IDF computation
 def compute_tf_idf(all_tweets):
@@ -451,58 +486,78 @@ def compute_tf_idf(all_tweets):
     vocab = np.array(vectorizer.get_feature_names_out())
     return  vocab, vectorizer
 
-def retrieve_tf_idf(networks, num_steps= 30, shift=5, n_grams= None):
-    all_tweets_extracted, docs_per_network = retrieve_windowed_data(networks, num_steps=num_steps, shift=shift, n_grams=n_grams)
+def retrieve_tf_idf(networks, num_steps=30, shift=5, n_grams=None):
+    all_tweets_extracted, docs_per_network, docs_per_network_tweets = retrieve_windowed_data(
+        networks, num_steps=num_steps, shift=shift, n_grams=n_grams
+    )
 
-    # test with n-grams added to vocab
     print("using n-gram as vocab in TF-IDF: ")
     all_tweets_extracted = n_grams
     vocab, vectorizer = compute_tf_idf(all_tweets_extracted)
 
+    # One vector per window (joined doc) - for mean trajectory
     global_tf_idf = [vectorizer.transform(doc).toarray() for doc in docs_per_network]
 
-    # global_tf_idf = global_tf_idf.toarray()
-    return global_tf_idf, vocab, vectorizer
+    # Within-window variance: per window, transform each tweet -> (n_tweets, V), then var(axis=0) -> (V,)
+    global_tf_idf_vars = []
+    for net_tweets in docs_per_network_tweets:
+        var_list = []
+        for window_tweets in net_tweets:
+            if len(window_tweets) == 0:
+                V = len(vectorizer.get_feature_names_out())
+                var_list.append(np.zeros(V))
+            elif len(window_tweets) == 1:
+                V = len(vectorizer.get_feature_names_out())
+                var_list.append(np.zeros(V))
+            else:
+                mat = vectorizer.transform(window_tweets).toarray()  # (n_tweets, V)
+                var_list.append(np.var(mat, axis=0))
+        global_tf_idf_vars.append(np.stack(var_list))
+    return global_tf_idf, global_tf_idf_vars, vocab, vectorizer
 
 
 def tf_idf_for_runs(networks_per_setting: dict, num_steps=30, shift=5, n_grams=None):
-    '''Compute TF-IDF matrices for multiple network runs.
+    '''Compute TF-IDF matrices for multiple network runs, with mean within-run variance.
     Args:
-        networks: List of network objects.
+        networks_per_setting: Dict of {setting: [list of network dicts]}.
         num_steps (int): Number of steps used in TF-IDF retrieval.
         shift (int): Shift between windows.
     Returns:
-        meanvar_tf_idf_per_setting: {setting: mean_tf_idf_matrix}
-        all_mats_per_setting: {setting: List of tf_idf_matrices}
+        mean_tf_idf_per_setting: {setting: (T, V) mean TF-IDF matrix}
+        all_mats_per_setting: {setting: List of (T, V) matrices}
+        mean_within_var_per_setting: {setting: (T,) mean within-window variance (scalar per time)}
     '''
-    # flatten networks and get slices
     all_networks, setting_slices = network_list_w_slices(networks_per_setting)
 
-    tf_idf_matrices, vocab, vectorizer = retrieve_tf_idf(
-        all_networks, num_steps=num_steps, shift=shift, n_grams=n_grams)
-    
+    tf_idf_matrices, tf_idf_vars, vocab, vectorizer = retrieve_tf_idf(
+        all_networks, num_steps=num_steps, shift=shift, n_grams=n_grams
+    )
+
     mean_tf_idf_per_setting = {}
+    mean_within_var_per_setting = {}
     all_mats_per_setting = {}
     for setting, (start, end) in setting_slices.items():
+        matrices_over_runs = tf_idf_matrices[start:end]
+        vars_over_runs = tf_idf_vars[start:end]
 
-        # returns tf-idf matrices for runs in this setting
-        matrixjes_over_runs = tf_idf_matrices[start:end]
+        min_length = min(m.shape[0] for m in matrices_over_runs)
+        trimmed_matrices = [m[:min_length] for m in matrices_over_runs]
+        trimmed_vars = [v[:min_length] for v in vars_over_runs]
+        print("min_length for setting ", setting, ": ", min_length)
 
-        # makes sure all matrices have the same length (number of time windows)
-        min_length = min(m.shape[0] for m in matrixjes_over_runs)
-        trimmed_matrices = [m[:min_length] for m in matrixjes_over_runs]
-        print("mim_length for setting ", setting, ": ", min_length)
-
-        # compute mean tf-idf over runs
         stacked_matrices = np.stack(trimmed_matrices, axis=0)
-        mean_tf_idf = np.mean(stacked_matrices, axis=0)
+        mean_tf_idf_per_setting[setting] = np.mean(stacked_matrices, axis=0)
 
-        mean_tf_idf_per_setting[setting] = mean_tf_idf
+        # Mean within-run variance: average over runs, then scalar per time (mean over vocab dim)
+        stacked_vars = np.stack(trimmed_vars, axis=0)  # (R, T, V)
+        mean_var_tv = np.mean(stacked_vars, axis=0)   # (T, V)
+        mean_within_var_per_setting[setting] = np.mean(mean_var_tv, axis=1)  # (T,)
+
         if setting not in all_mats_per_setting:
             all_mats_per_setting[setting] = []
         all_mats_per_setting[setting].extend(trimmed_matrices)
 
-    return mean_tf_idf_per_setting, all_mats_per_setting
+    return mean_tf_idf_per_setting, all_mats_per_setting, mean_within_var_per_setting
 
 
 #=========================PCA functions=========================

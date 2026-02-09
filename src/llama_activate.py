@@ -32,7 +32,7 @@ llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 # # when setting possible enironment variables in the future
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
-
+models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
 
 DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 # DTYPE_STR = "bfloat16" if torch.cuda.is_available() else "float32"
@@ -42,32 +42,46 @@ SEED = 1234
 # os.environ["PYTHONHASHSEED"] = str(SEED)   # best set before Python starts                # if you still use np.random.*
 set_seed(SEED)                              # seeds Python, NumPy, Torch (HF helper)
 
-# setyp initial llm
-tokenizer = AutoTokenizer.from_pretrained(
-                            MODEL_ID,  
-                            cache_dir=CACHE_DIR, 
-                            use_fast=True, 
-                            # local_files_only=True
-                            )
-tokenizer.padding_side = "left"
-
 # trying this
 os.environ["VLLM_BATCH_INVARIANT"] = "1"
 
-# Ensure a pad token exists (prevents fallback messages)
-if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
 
-def get_llm():
-    """Set up the vLLM engine."""
-    print(f"Loading vLLM model: {MODEL_ID}...")
+def get_tokenizer(model_id=None):
+    """Load tokenizer for a model. If model_id is None, use MODEL_ID. Sets padding side and pad token."""
+    load_id = model_id if model_id is not None else MODEL_ID
+    tok = AutoTokenizer.from_pretrained(
+        load_id,
+        cache_dir=CACHE_DIR,
+        use_fast=True,
+    )
+    tok.padding_side = "left"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return tok
+
+
+# Default tokenizer for main simulation (and single-model test fallback)
+tokenizer = get_tokenizer(MODEL_ID)
+
+
+def how_many_gpus():
+    number_of_gpus = torch.cuda.device_count()
+    print(f"Number of GPUs: {number_of_gpus}")
+    return number_of_gpus
+
+def get_llm(model_id=None):
+    """Set up the vLLM engine. If model_id is given, load that model; else use MODEL_ID."""
+    load_id = model_id if model_id is not None else MODEL_ID
+    print(f"Loading vLLM model: {load_id}...")
+    gpus_count = how_many_gpus()
     llm = LLM(
-        model=MODEL_ID,
-        dtype="bfloat16",         
+        model=load_id,
+        dtype="bfloat16",
         trust_remote_code=True,
-        # tensor_parallel_size=1, # Use >1 if you have multiple GPUs
-        gpu_memory_utilization=0.90, # Reserve 90% of GPU for vLLM
+        tensor_parallel_size=gpus_count,
+        gpu_memory_utilization=0.90,
         seed=SEED,
+        max_model_len=8192,
     )
     return llm
 
@@ -81,16 +95,6 @@ def build_network(args, personas, well_being, depressed_personas=None):
     Returns:
         network: Generated network object.
     '''
-    # if args.net == "sf":
-    #     return ScaleFreeNetwork(
-    #         m=args.m,
-    #         num_agents=args.num_agents,
-    #         seed=args.seed,
-    #         well_being= well_being,
-    #         personas=personas,
-    #         depressed_personas=depressed_personas,
-    #         directed=args.directed,
-    #     )
     
     if args.net == "sda" or args.net == "sdc":
         return SocialDistanceAttachment(
@@ -182,7 +186,8 @@ def update_network(network,
                     rounds=1, 
                     seed=42, 
                     enforce_ngrams = False, 
-                    log = False):
+                    log = False,
+                    check_point = 10):
     """Update the network for one round and return the mean fraction of distorted tweets."""
 
     # only enforce n-grams if specified
@@ -203,7 +208,7 @@ def update_network(network,
                                                                            n_grams=n_grams, 
                                                                            distorted_tweets=distorted_tweets, 
                                                                            time_info=False, 
-                                                                           check_point=5)
+                                                                           check_point=check_point)
         print(f"Round {network.iterations}: Mean running fraction of distorted agents: {mean_running_frac:.4f}, Fraction distorted this step: {frac_distorted_this_step:.4f} ")
         running_fracs.append(mean_running_frac)
         fracs_dist_step.append(frac_distorted_this_step)
@@ -241,8 +246,8 @@ def run_simulation(args, pipe=None):
     # load personas
     if True:
         personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
-        for i in range(len(personas)):
-            print("persona:", personas[i])
+        # for i in range(len(personas)):
+        #     print("persona:", personas[i])
     
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
 
@@ -269,7 +274,8 @@ def run_simulation(args, pipe=None):
                                                              rounds=args.rounds,
                                                              seed=args.seed, 
                                                              enforce_ngrams=args.enforce_ngrams, 
-                                                             log = args.log)
+                                                             log = args.log,
+                                                             check_point=args.check_point)
     return network, running_fracs, fracs_dist_step
 
 def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_step=[]):
@@ -291,7 +297,9 @@ def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_st
                                                              running_fracs=running_fracs, 
                                                              rounds=args.rounds, 
                                                              seed=args.seed, 
-                                                             enforce_ngrams=args.enforce_ngrams)
+                                                             enforce_ngrams=args.enforce_ngrams,
+                                                             log=args.log,
+                                                             check_point=args.check_point)
 
     # tweet_history = [(a.ID, a.tweethistory) for a in network.all_agents]
     if args.save:
@@ -362,26 +370,48 @@ def pca_visualize(all_networks_results, path, filename, args):
 
     sbert = True
     mentalbert = True
-    shift = 10
-    num_steps = 30
+    use_umap = True
+    shift = 5
+    num_steps = 10
     n_components = 2
 
-    # still need to process variance better instead of taking var between runs 
+    # Use mean within-run variance for marker size (not between-run variance)
     if sbert:
-        mean_embedding_per_setting, var_embedding_per_setting, all_mats_per_setting = metrics.sbert_for_runs(all_networks_results, 
-                                                      num_steps=num_steps, 
-                                                      shift=shift, mentalbert=mentalbert)
+        mean_embedding_per_setting, var_embedding_per_setting, all_mats_per_setting, mean_phq9_per_setting, mean_within_var_per_setting = metrics.sbert_for_runs(
+            all_networks_results,
+            num_steps=num_steps,
+            shift=shift,
+            mentalbert=mentalbert,
+        )
     else:
-        mean_embedding_per_setting, all_mats_per_setting = metrics.tf_idf_for_runs(all_networks_results, 
-                                                                               num_steps=num_steps, 
-                                                                               shift=shift, 
-                                                                               n_grams=n_grams)
-    
-    mean_traj, pca = metrics.pca_on_means(mean_embedding_per_setting, n_components=n_components)
-    std_traj, _ = metrics.traj_variance_in_pca_space(all_mats_per_setting, pca)
+        mean_embedding_per_setting, all_mats_per_setting, mean_within_var_per_setting = metrics.tf_idf_for_runs(
+            all_networks_results,
+            num_steps=num_steps,
+            shift=shift,
+            n_grams=n_grams,
+        )
+        mean_phq9_per_setting = None
 
-    # vis.plot_tf_idf_PCA(mean_traj, std_traj, num_steps=100, shift=5, save= args.save)
-    vis.plot_embedding_PCA_runs(mean_traj, std_traj, num_steps=num_steps, shift=shift, sbert=sbert,  save= args.save, path=path, filename=filename)
+    if use_umap:
+        mean_traj, _reducer = metrics.umap_on_means(mean_embedding_per_setting, n_components=n_components)
+        reduction = "umap"
+    else:
+        mean_traj, _ = metrics.pca_on_means(mean_embedding_per_setting, n_components=n_components)
+        reduction = "pca"
+
+    vis.plot_embedding_PCA_runs(
+        mean_traj,
+        mean_within_var_per_setting=mean_within_var_per_setting,
+        mean_phq9_per_setting=mean_phq9_per_setting,
+        num_steps=num_steps,
+        shift=shift,
+        sbert=sbert,
+        mentalbert=mentalbert if sbert else False,
+        reduction=reduction,
+        save=args.save,
+        path=path,
+        filename=filename,
+    )
 
 
 def main(args, pipe, states):
@@ -420,43 +450,54 @@ def main(args, pipe, states):
             })
     return all_networks_results
 
-def test_llms(args, pipe):
+def _sanitize_model_name(model_id):
+    """Sanitize model ID for use in file paths (e.g. 'org/name-1.0' -> 'org_name-1.0')."""
+    return model_id.replace("/", "_").replace("\\", "_")
+
+
+def test_llms(args, pipe, model_name, tokenizer=None):
+    """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level tokenizer."""
+    tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
 
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
     for i in range(len(well_being)):
         well_being[i]["phq9_sumscore"] = 0
 
-     # load personas
     personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
     tester = TestLLMs(well_being=well_being, num_agents=args.num_agents, seed=args.seed, personas=personas)
 
     temp = args.temp
     top_p = args.top_p
     checkpoint = args.check_point
+    rounds = checkpoint * 28 + 1
 
-    rounds = checkpoint *28 + 1 
-    
-    all_bias, bias_per_phq9, accuracy_per_phq9, all_accuracy = tester.run_simulation(tokenizer=tokenizer, 
-                                                                                     pipe=pipe, 
-                                                                                     n_rounds=rounds, 
-                                                                                     check_point=checkpoint,
-                                                                                     temp=temp,
-                                                                                     top_p=top_p)
+    data_dir = "data/test/"
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
 
-    directory_for_test = f"plots/test/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
+    all_bias, bias_per_phq9, accuracy_per_phq9, all_accuracy = tester.run_simulation(
+        tokenizer=tok,
+        pipe=pipe,
+        n_rounds=rounds,
+        check_point=checkpoint,
+        temp=temp,
+        top_p=top_p,
+        model_name=model_name,
+    )
+
+    # Per-model subdir so multiple models don't overwrite
+    safe_name = _sanitize_model_name(model_name)
+    directory_for_test = f"plots/test/{safe_name}/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
     if not os.path.exists(directory_for_test):
         os.makedirs(directory_for_test)
     vis.plot_bias(bias_per_phq9, all_bias, directory_for_test)
     vis.plot_accuracy(accuracy_per_phq9, all_accuracy, directory_for_test)
-    
+
     return all_accuracy, accuracy_per_phq9
 
 
 if __name__ == "__main__":
 
-
-    # VLLM
-    pipe = get_llm()
     args = generate_parser()
 
     if args.depressed:
@@ -465,13 +506,25 @@ if __name__ == "__main__":
         states = ["enforced_ngrams"]
     else:
         states = ["basis"]
-    testje = True
 
-    #experiment
-    # states = ["basis", "depressed", "enforce_ngrams"]
     if args.test_llms:
-        all_accuracy, accuracy_phq9 = test_llms(args, pipe)
+        # Run PHQ-9 test for each model in models
+        results = {}
+        for model_id in models:
+            print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
+            tok = get_tokenizer(model_id)
+            pipe = get_llm(model_id=model_id)
+            acc, acc_phq9 = test_llms(args, pipe, model_id, tokenizer=tok)
+            results[model_id] = {"accuracy": acc, "accuracy_per_phq9": acc_phq9}
+            del pipe  # free GPU before loading next model
+        print("\nTest summary (total accuracy per model):")
+        for mid, res in results.items():
+            print(f"  {mid}: {res['accuracy']:.4f}")
+        vis.plot_model_comparison_by_settings(csv_path="data/test/results.csv", directory="plots/test", save=args.save)
         sys.exit(0)
+
+    # Main simulation: load default model once
+    pipe = get_llm()
 
     print("\n")
     print("="*40)
@@ -512,18 +565,22 @@ if __name__ == "__main__":
         data_filename = path_manager.get_network_filename()
         plot_filename = path_manager.get_plot_name()
         
-        print("\nVisualizing results for first network...")
+        print(f"\nVisualizing results for seed {network.seed}...")
         # Clean tweet histories
         metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
 
         # Visualizations
         call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
 
-    vis.plot_degree_weighted_phq9(np.array(degree_weighted_phq9), plot_path, plot_filename, save=args.save)
+    # Aggregate plots (over runs): save in parent folder with seeds in filename
+    parent_plot_path = path_manager.get_aggregate_directory(is_plot=True)
+    aggregate_filename = path_manager.get_aggregate_plot_name(args.seeds)
+    vis.plot_degree_weighted_phq9(np.array(degree_weighted_phq9), parent_plot_path, aggregate_filename, save=args.save)
     print("End of model run.")
-        
-    #PCA
-    pca_visualize(all_networks_results, plot_path, plot_filename, args)
+
+    # PCA/UMAP over runs
+    pca_visualize(all_networks_results, parent_plot_path, aggregate_filename, args)
+    del pipe
     sys.exit(0)
 
  

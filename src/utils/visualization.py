@@ -298,13 +298,14 @@ def plot_distorted_fracs(frac_distorted_this_step,
     Args:
         distorted_fracs(List(Float)): List of CDS fractions per round
     '''
-    plt.plot(frac_distorted_this_step, marker='o', markersize=2)
+    plt.plot(frac_distorted_this_step, marker='o', markersize=1, linewidth=0.8)
     plt.xlabel("Round")
-    plt.ylabel("Fraction of distorted tweets")
+    plt.ylabel("Fraction of active tweets distorted (this round)")
+    plt.title("Fraction distorted per round (among agents who tweeted)")
     plt.ylim(0, 1)
     plt.grid(alpha=0.3)
     if save:    
-        plt.savefig(f"{path}/distorted_step_fracs_{filename}.png", dpi=300)
+        plt.savefig(f"{path}/frac_distorted_per_round_{filename}.png", dpi=300)
     plt.close()
     
     # plt.show()
@@ -318,16 +319,17 @@ def plot_running_fracs(running_fracs,
     Args:
         running_fracs(List(Float)): List of running mean fractions over rounds
     '''
-    plt.plot(running_fracs, marker='o')
+    plt.plot(running_fracs, marker='o', markersize=1, linewidth=0.8)
     plt.xlabel("Round")
-    plt.ylabel("Mean fraction of distorted active tweets (all agents)")
+    plt.ylabel("Mean (over agents) of distortion rate (last 5 tweets)")
+    plt.title("Running mean per-agent distortion rate (5-tweet window)")
     plt.ylim(0, 1)
     plt.grid(alpha=0.3)
 
     if not os.path.exists(path):
         os.makedirs(path)
     if save:
-        plt.savefig(f"{path}/running_fracs_{filename}.png", dpi=300)
+        plt.savefig(f"{path}/mean_agent_distortion_rate_{filename}.png", dpi=300)
     plt.close()
     # plt.show()
 
@@ -365,56 +367,81 @@ def plot_tf_idf_PCA(reduced_runs,
 
 
 def plot_embedding_PCA_runs(mean_traj,
-                        std_traj=None, 
-                        num_steps=100, 
-                        shift=5, 
+                        mean_within_var_per_setting=None,
+                        mean_phq9_per_setting=None,
+                        num_steps=100,
+                        shift=5,
                         path="",
                         filename="default.png",
-                        sbert= False,
+                        sbert=False,
+                        mentalbert=False,
+                        reduction="pca",
                         save=False):
     """
-    Plot PCA-reduced TF-IDF trajectories.
+    Plot PCA- or UMAP-reduced embedding trajectories. Points can be colored by PHQ-9; marker size by mean within-run variance.
 
     Args:
         mean_traj (dict[setting]): mean embedding trajectory (T, 2)
-        std_traj (dict[setting], optional): standard deviation of embedding trajectory (T, 2)
+        mean_within_var_per_setting (dict[setting], optional): (T,) mean within-window variance per time; used for marker size
+        mean_phq9_per_setting (dict[setting], optional): (T,) average PHQ-9 at each time point; used for scatter colors
         num_steps (int): window size
         shift (int): shift of window
-        sbert (bool): whether SBERT embeddings were used
+        sbert (bool): whether sentence-embedding model was used (vs TF-IDF)
+        mentalbert (bool): if True, label as MentalBERT; else SBERT
+        reduction (str): "pca" or "umap" for title and filename
         path (str): path to save the figure
         filename (str): filename to save the figure
         save (bool): whether to save the figure
     """
-    plt.figure(figsize=(3, 3))
+    plt.figure(figsize=(5, 4))
     if sbert:
-        embedding = "SBERT"
+        embedding = "MentalBERT" if mentalbert else "SBERT"
     else:
         embedding = "TF-IDF"
-    plt.title(f"{embedding} PCA\n(window={num_steps}, shift={shift})")
+    reduc_label = reduction.upper()
+    plt.title(f"{embedding} {reduc_label}\n(window={num_steps}, shift={shift})")
 
+    sc = None
     for setting, traj in mean_traj.items():
         traj = np.asarray(traj)  # (T, 2)
 
-        if std_traj is not None and setting in std_traj:
-            std = np.asarray(std_traj[setting])           # (T, 2)
-            std_norm = np.linalg.norm(std, axis=1)        # (T,)
-            # scale marker size a bit with std (optional)
-            s = 5 + 20 * (std_norm / (std_norm.max() + 1e-8))
+        if mean_within_var_per_setting is not None and setting in mean_within_var_per_setting:
+            mwv = np.asarray(mean_within_var_per_setting[setting])
+            if mwv.shape[0] == traj.shape[0]:
+                mwv_max = mwv.max()
+                s = 5 + 20 * (mwv / (mwv_max + 1e-8)) if mwv_max > 0 else np.full_like(mwv, 10)
+            else:
+                s = 10
         else:
             s = 10
 
-        plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
-        plt.plot(traj[:, 0], traj[:, 1], alpha=0.5)
+        # Color by average PHQ-9 if provided (PHQ-9 range 0–27 for consistent colorbar)
+        if mean_phq9_per_setting is not None and setting in mean_phq9_per_setting:
+            phq9 = np.asarray(mean_phq9_per_setting[setting])
+            if phq9.shape[0] == traj.shape[0]:
+                sc = plt.scatter(
+                    traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, label=setting,
+                    cmap="viridis", vmin=0, vmax=27
+                )
+            else:
+                plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
+        else:
+            plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
+        plt.plot(traj[:, 0], traj[:, 1], alpha=0.5, color="gray")
 
-    plt.xlabel("PCA Component 1")
-    plt.ylabel("PCA Component 2")
+    plt.xlabel(f"{reduc_label} 1")
+    plt.ylabel(f"{reduc_label} 2")
     plt.legend()
     plt.grid(alpha=0.3)
+    if mean_phq9_per_setting is not None and sc is not None:
+        cbar = plt.colorbar(sc, shrink=0.6)
+        cbar.set_label("Mean PHQ-9 (system)")
     # plt.show()
 
-    print(f"Saving PCA plot to folder {path} with filename {filename}")
+    print(f"Saving {reduc_label} plot to folder {path} with filename {filename}")
     if save:
-        plt.savefig(f"{path}/{embedding.lower()}_pca_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300) 
+        emb_file = embedding.lower().replace("-", "_")
+        plt.savefig(f"{path}/{emb_file}_{reduction}_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300)
     plt.close()
 
 #============ Network Analysis Visualization =============#
@@ -577,3 +604,100 @@ def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", pat
     plt.suptitle(f'Critical Slowing Down (Agents sorted on PHQ-9)', fontsize=16)
     plt.tight_layout()
     plt.savefig(os.path.join(path, f"window_{window}_{filename}"))
+
+
+
+
+    # ====================== LLM Bias and Accuracy Visualization ====================== #
+    def plot_model_comparison_by_settings(
+    data=None,
+    csv_path=None,
+    directory="plots/test",
+    save=True,
+):
+    """
+    Bar chart: models colour-coded, different bars for each (temp, top_p) setting.
+
+    Args:
+        data: list of dicts with keys "model_id", "temp", "top_p", "accuracy"
+              (optional if csv_path is given).
+        csv_path: path to results CSV with columns model_name, temp, top_p, total_accuracy
+                  (optional if data is given).
+        directory: folder to save the figure.
+        save: whether to save to disk.
+    """
+    import pandas as pd
+
+    if data is None and csv_path is None:
+        raise ValueError("Provide either data or csv_path")
+    if data is None:
+        df = pd.read_csv(csv_path)
+        df = df.rename(columns={"model_name": "model_id", "total_accuracy": "accuracy"})
+        data = df[["model_id", "temp", "top_p", "accuracy"]].to_dict("records")
+
+    rows = [
+        {
+            "model_id": str(r["model_id"]),
+            "temp": float(r["temp"]),
+            "top_p": float(r["top_p"]),
+            "accuracy": float(r["accuracy"]),
+        }
+        for r in data
+    ]
+
+    def short_name(model_id):
+        s = model_id.split("/")[-1] if "/" in model_id else model_id
+        return s.replace("-Instruct", "").replace("_", " ")[:24]
+
+    models = sorted(set(r["model_id"] for r in rows))
+    settings = sorted(set((r["temp"], r["top_p"]) for r in rows), key=lambda x: (x[0], x[1]))
+    n_models = len(models)
+    n_settings = len(settings)
+    if n_models == 0 or n_settings == 0:
+        return
+
+    model_to_idx = {m: i for i, m in enumerate(models)}
+    setting_to_idx = {s: j for j, s in enumerate(settings)}
+    acc = np.full((n_models, n_settings), np.nan)
+    for r in rows:
+        i = model_to_idx[r["model_id"]]
+        j = setting_to_idx[(r["temp"], r["top_p"])]
+        acc[i, j] = r["accuracy"]
+
+    colors = plt.cm.tab10(np.linspace(0, 1, max(n_models, 1)))[:n_models] if n_models <= 10 else plt.cm.tab20(np.linspace(0, 1, n_models))[:n_models]
+    hatches = ["", "//", "\\\\", "||", "--", "++", "xx", "..", "**", "oo"][:n_settings]
+
+    fig, ax = plt.subplots(figsize=(max(8, n_models * (1.5 + 0.5 * n_settings)), 6))
+    x = np.arange(n_models)
+    total_width = 0.8
+    bar_width = total_width / n_settings
+    for j, (t, p) in enumerate(settings):
+        off = (j - (n_settings - 1) / 2) * bar_width
+        for i in range(n_models):
+            val = acc[i, j]
+            if np.isnan(val):
+                continue
+            ax.bar(x[i] + off, val, bar_width, color=colors[i], edgecolor="gray", hatch=hatches[j])
+
+    legend_handles = []
+    for i, m in enumerate(models):
+        legend_handles.append(plt.matplotlib.patches.Patch(facecolor=colors[i], edgecolor="gray", label=short_name(m)))
+    for j, (t, p) in enumerate(settings):
+        legend_handles.append(
+            plt.matplotlib.patches.Patch(facecolor="white", edgecolor="gray", hatch=hatches[j], label=f"T={t}, p={p}")
+        )
+    ax.legend(handles=legend_handles, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([short_name(m) for m in models], rotation=45, ha="right")
+    ax.set_ylabel("Total accuracy")
+    ax.set_xlabel("Model")
+    ax.set_title("Model comparison by settings (colour = model, hatch = temp / top_p)")
+    ax.set_ylim(0, 1.0)
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.tight_layout()
+    if save:
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "model_comparison_by_settings.png")
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved {path}")
+    plt.close()

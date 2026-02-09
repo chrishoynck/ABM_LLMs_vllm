@@ -95,23 +95,6 @@ class _Network:
             if not self.directed:
                 self.connections.remove((agent2, agent1))
 
-    def inference_w_batches(self,pipe, prompts, batch_size, **gen_kwargs):
-        """
-        Run LLM pipeline on a list of prompts in mini-batches.
-        Returns a flat list of outputs, same order as prompts.
-        """
-        if len(prompts) == 0:
-            return []
-        
-        if True:
-            all_outputs = []
-            for i in range(0, len(prompts), batch_size):
-                batch_prompts = prompts[i:i + batch_size]
-                batch_outputs = pipe(batch_prompts, **gen_kwargs)
-                all_outputs.extend(batch_outputs)
-            
-
-        return all_outputs
     
     def update_round(self, 
                      tokenizer, 
@@ -120,7 +103,7 @@ class _Network:
                      n_grams=[], 
                      distorted_tweets=[], 
                      time_info = False, 
-                     check_point=100):
+                     check_point=10):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
@@ -229,9 +212,9 @@ class _Network:
         if phq9: 
             sampling_params_clinical = SamplingParams(
                     temperature=0.8, 
-                    top_p=0.8,
+                    top_p=0.6,
                     max_tokens=100,   # Keep it short; you only need the scores
-                    seed=None 
+                    seed= self.seed + self.iterations
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
             return outputs
@@ -239,9 +222,11 @@ class _Network:
         # Define Sampling Parameters
         sampling_params = SamplingParams(
             temperature=1.0,
-            top_p=1.0,
+            top_p=0.9,
+            presence_penalty=0.4,
+            repetition_penalty=1.05,
             max_tokens=256,
-            seed= None #self.seed + self.iterations  # vLLM handles seeding here
+            seed= self.seed + self.iterations  # vLLM handles seeding here
         )
 
         # VLLM does batching automatically. 
@@ -349,7 +334,7 @@ class RandomNetwork(_Network):
         Initialize the network
         """
         if self.k >0:
-            print(f"A Wattz-Strogatz network is initialized with beta value {self.p} and regular network degree {self.k}, and correlation {self.correlation}")
+            print(f"A  network is initialized with beta value {self.p} and regular network degree {self.k}, and correlation {self.correlation}")
             # If degree `k` is provided, ensure each agent has exactly `k` connections.
             # This creates a regular network first, and then we adjust using `p`.
             for agent1 in self.all_agents:

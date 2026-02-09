@@ -2,6 +2,11 @@ import numpy as np
 import torch
 from classes.agent import Agent
 from vllm import LLM, SamplingParams
+import os
+import pandas as pd
+import numpy as np
+import torch
+from datetime import datetime
 
 
 class TestLLMs:
@@ -13,6 +18,8 @@ class TestLLMs:
         self.all_agents = [Agent(i, rng=np.random.default_rng(seed + i), persona=personas[i], 
                               well_being=self.well_being[i]) for i in range(int(num_agents))]
         self.iterations = 0
+        self.seed = seed
+        self.num_agents = num_agents
 
     def _prepare_prompts(self, tokenizer) -> list:
         prompts = []
@@ -43,9 +50,9 @@ class TestLLMs:
     
         # Define Sampling Parameters
         sampling_params = SamplingParams(
-            temperature=temp,
-            top_p=top_p,
-            # presence_penalty=0.6,
+            temperature=1.0,
+            top_p=1.0,
+            presence_penalty=0.6,
             max_tokens=256,
             seed= None #self.seed + self.iterations  # vLLM handles seeding here
         )
@@ -120,7 +127,7 @@ class TestLLMs:
             update_score = True
         
         # generate outputs in parallel
-        out = self._generate_outputs(pipe, prompts, temp=temp)
+        out = self._generate_outputs(pipe, prompts)
 
         # agents send out their tweets + state update + stats
         self._apply_outputs_and_update_state(
@@ -155,8 +162,42 @@ class TestLLMs:
             total_acc = 0
         
         return avg_change, bias_per_phq9, acc_per_phq9, total_acc
+
+    def log_results_to_csv(self, file_path, model_name, temp, top_p, check_point, 
+                           avg_change, total_acc, bias_per_phq9, acc_per_phq9):
+        """
+        Logs the simulation parameters and results into a CSV file.
+        Appends to the file if it already exists.
+        """
+        # Prepare the data row
+        data = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model_name": model_name,
+            "seed": self.seed,
+            "num_agents": self.num_agents,
+            "temp": temp,
+            "top_p": top_p,
+            "check_point": check_point,
+            "avg_phq9_change": avg_change,
+            "total_accuracy": total_acc,
+            "iterations": self. 
+        }
+
+        for score, val in bias_per_phq9.items():
+            data[f"bias_phq9_{score}"] = val
+
+        for score, val in acc_per_phq9.items():
+            data[f"acc_phq9_{score}"] = val
+
+        df = pd.DataFrame([data])
+
+        # If file doesn't exists, make header
+        file_exists = os.path.isfile(file_path)
+        df.to_csv(file_path, mode='a', index=False, header=not file_exists)
+        
+        print(f"Results logged to {file_path}")
     
-    def run_simulation(self, tokenizer, pipe, n_rounds=100, n_grams=[], check_point=20, temp=1.0, top_p=1.0):
+    def run_simulation(self, tokenizer, pipe, n_rounds=100, n_grams=[], check_point=20, temp=1.0, top_p=1.0, model_name="llama_3_8b_instruct"):
         """
         Run the full simulation for a specified number of rounds.
         """
@@ -164,9 +205,23 @@ class TestLLMs:
         mistake_dict = {i: [] for i in range(0, 28)}  # PHQ-9 scores range from 0 to 27
 
         for round_idx in range(n_rounds):
-            self.update_round(mistake_dict, tokenizer, pipe, n_grams=n_grams, check_point=check_point, temp=temp, top_p=top_p)
+            self.update_round(mistake_dict, 
+                              tokenizer, 
+                              pipe, 
+                              n_grams=n_grams, 
+                              check_point=check_point, 
+                              temp=temp, 
+                              top_p=top_p)
         
         avg_change, bias_per_phq9, acc_per_phq9, total_acc = self.assess_performance(mistake_dict)
+        self.log_results_to_csv("data/test/results.csv", model_name, 
+                                temp=temp, 
+                                top_p=top_p, 
+                                check_point=check_point, 
+                                avg_change=avg_change, 
+                                total_acc=total_acc, 
+                                bias_per_phq9=bias_per_phq9, 
+                                acc_per_phq9=acc_per_phq9)
 
         return avg_change, bias_per_phq9, acc_per_phq9, total_acc
         

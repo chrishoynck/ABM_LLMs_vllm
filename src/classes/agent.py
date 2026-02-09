@@ -186,7 +186,7 @@ class Agent:
         if len(self.tweethistory) == 0:
             own_block = "(no own previous tweets)"
         else:
-            recent = list(reversed(self.tweethistory[-5:]))  # newest first
+            recent = list(reversed(self.tweethistory[-1:]))  # newest first
             own_block = "\n".join(f"- {t[:max_chars]}" for t in recent)
         
         # neighbor_pairs = self.rng.permutation(neighbor_pairs)  # shuffle neighbor tweets
@@ -246,7 +246,7 @@ class Agent:
         else:
             self.frac_distorted_neigh = 0
             
-        neighbor_msgs = rng.permutation(neighbor_msgs)[:10]  # limit to first 10 neighbors
+        neighbor_msgs = rng.permutation(neighbor_msgs)[:5]  # limit to first 10 neighbors
 
         # force tweet if needed
         self._force_active = force_active
@@ -362,7 +362,7 @@ class Agent:
         # fallback: if any non-empty content, treat as tweet
         return (len(t) > 0), t
         
-    def respond(self) -> set:
+    def respond(self) -> list:
         """
         Determine which connected agents are activated (sent out tweet).
         
