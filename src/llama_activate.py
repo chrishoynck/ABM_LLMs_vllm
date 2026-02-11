@@ -498,11 +498,24 @@ def test_llms(args, pipe, model_name, tokenizer=None):
 
     # Per-model subdir so multiple models don't overwrite
     safe_name = _sanitize_model_name(model_name)
+
+    # Plot directory
     directory_for_test = f"plots/test/{safe_name}/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
     if not os.path.exists(directory_for_test):
         os.makedirs(directory_for_test)
     vis.plot_bias(bias_per_phq9, all_bias, directory_for_test)
     vis.plot_phq9_error(mae_per_phq9, total_mae, directory_for_test)
+
+    # print tweets with phq9 to txt file
+    data_directory_for_test = f"data/test/{safe_name}/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
+    tweets_txt_path = os.path.join(data_directory_for_test, "tweets_with_phq9.txt")
+    tester.export_tweets_with_phq9_txt(
+        file_path=tweets_txt_path,
+        check_point=checkpoint,
+        temp=temp,
+        top_p=top_p,
+        model_name=model_name,
+    )
 
     return total_mae, mae_per_phq9
 

@@ -21,6 +21,16 @@ class TestLLMs:
         self.seed = seed
         self.num_agents = num_agents
 
+        # For testing: assign each agent its own permutation of PHQ-9 scores (0..27)
+        # that acts as the "true" target sequence across questionnaires.
+        scores = np.arange(28)
+        self.phq9_sequences = {}
+        self.phq9_indices = {}
+        for agent in self.all_agents:
+            self.phq9_sequences[agent.ID] = self.rng.permutation(scores).tolist()
+            self.phq9_indices[agent.ID] = 0
+            agent.update_well_being(self.phq9_sequences[agent.ID][0]) 
+
     def _prepare_prompts(self, tokenizer) -> list:
         prompts = []
         for agent in self.all_agents:
@@ -42,7 +52,7 @@ class TestLLMs:
             sampling_params_clinical = SamplingParams(
                     temperature=temp, 
                     top_p=top_p,
-                    max_tokens=100,   # Keep it short; you only need the scores
+                    max_tokens=300,   # 9 Q&A lines ~45 tokens, but allow buffer for preamble/explanations the LLM may add
                     seed=None 
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
@@ -51,10 +61,11 @@ class TestLLMs:
         # Define Sampling Parameters
         sampling_params = SamplingParams(
             temperature=1.0,
-            top_p=1.0,
-            presence_penalty=0.6,
+            top_p=0.9,
+            presence_penalty=0.4,
+            repetition_penalty=1.05,
             max_tokens=256,
-            seed= None #self.seed + self.iterations  # vLLM handles seeding here
+            seed= self.seed + self.iterations  # vLLM handles seeding here
         )
 
         # VLLM does batching automatically. 
@@ -75,28 +86,38 @@ class TestLLMs:
         # prepare prompts for all agents
         prompts = []
         for agent in self.all_agents:
-            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-(check_point):])
+            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-(check_point):], force_active=True)
             prompts.append(prompt)
         
         # inference with LLM
-        out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p)
+        out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
         # update well-being scores based on responses
         for agent, answer in zip(self.all_agents, out):
+            if agent.ID == 0:
+                print("answer agent 0: ", answer.outputs[0].text.strip(), "\n\n")
             questionnaire_answers = answer.outputs[0].text.strip()
             sum_score = agent.parse_phq9_answers(questionnaire_answers)
 
-            old_sum_score = agent.well_being.get("phq9_sumscore", None)
-            if old_sum_score is not None:
-                change = sum_score - old_sum_score
-                mistakes[old_sum_score].append(change)
+            # Determine this agent's current true PHQ-9 score from its own permutation sequence.
+            sequence_phq9 = self.phq9_sequences[agent.ID]
+            idx_sequence = self.phq9_indices[agent.ID]
+            true_score = sequence_phq9[idx_sequence]
 
-                # do sumscore with one higher
-                sum_score = max(0, min(27, old_sum_score + 1))  # Ensure score is within valid range
-            agent.update_well_being(sum_score)
+            # Record the LLM's error (mae, bias)
+            change = sum_score - true_score
+            mistakes[true_score].append(change)
+
+            # increase index (wrap around if we ever exceed the permutation length)
+            self.phq9_indices[agent.ID] = (idx_sequence + 1) % len(sequence_phq9)
+            idx_sequence = self.phq9_indices[agent.ID]
+            next_score = sequence_phq9[idx_sequence]
+
+            # update well-being score
+            agent.update_well_being(next_score)
 
         return mistakes
 
-    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, update_score):
+    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, update_score=False):
         """
         Use LLM outputs to update agents' tweets and activation states,
         then compute distorted tweet statistics for this round.
@@ -117,23 +138,21 @@ class TestLLMs:
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
-        self.iterations += 1
-        batch_size = 8
+        self.iterations +=1
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer)
-        update_score = False
-
-        if self.iterations % check_point== 0:
-            mistake_dict = self._phq9_questionnaire(tokenizer, pipe, mistake_dict, check_point, temp=temp, top_p=top_p)
-            update_score = True
-        
         # generate outputs in parallel
         out = self._generate_outputs(pipe, prompts)
 
         # agents send out their tweets + state update + stats
         self._apply_outputs_and_update_state(
-            agents_w_prompt, out, n_grams, update_score=update_score
+            agents_w_prompt, out, n_grams
         )
 
+        if self.iterations % check_point  == 0:
+            mistake_dict = self._phq9_questionnaire(tokenizer, pipe, mistake_dict, check_point, temp=temp, top_p=top_p)
+  
+        
+    
            
     def assess_performance(self, mistake_dict):
         """
@@ -169,7 +188,10 @@ class TestLLMs:
                            avg_change, total_mae, bias_per_phq9, mae_per_phq9):
         """
         Logs the simulation parameters and results into a CSV file.
-        Appends to the file if it already exists.
+
+        For a given combination of model, seed and settings, only the most recent
+        run is kept (the previous row is replaced). Runs with different seeds
+        still appear as separate lines.
         """
         # Prepare the data row
         data = {
@@ -190,11 +212,27 @@ class TestLLMs:
         for score, val in mae_per_phq9.items():
             data[f"mae_phq9_{score}"] = val
 
-        df = pd.DataFrame([data])
+        new_row = pd.DataFrame([data])
+        
+        if os.path.isfile(file_path):
+            # Load existing results and drop any previous row with the same
+            # (model_name, seed, check_point, temp, top_p) so that only the
+            # latest run for this configuration is kept.
+            existing = pd.read_csv(file_path)
+            same_config = (
+                (existing.get("model_name") == model_name) &
+                (existing.get("seed") == self.seed) &
+                (existing.get("check_point") == check_point) &
+                (existing.get("temp") == temp) &
+                (existing.get("top_p") == top_p)
+            )
+            # drop previous row with the same configuration
+            existing = existing.loc[~same_config]
+            df_out = pd.concat([existing, new_row], ignore_index=True)
+        else:
+            df_out = new_row
 
-        # If file doesn't exists, make header
-        file_exists = os.path.isfile(file_path)
-        df.to_csv(file_path, mode='a', index=False, header=not file_exists)
+        df_out.to_csv(file_path, index=False)
         
         print(f"Results logged to {file_path}")
     
@@ -225,5 +263,50 @@ class TestLLMs:
                                 mae_per_phq9=mae_per_phq9)
 
         return avg_change, bias_per_phq9, mae_per_phq9, total_mae
-        
-        
+
+    def export_tweets_with_phq9_txt(self, file_path, check_point, temp, top_p, model_name):
+        """
+        Write a plain-text log for this TestLLMs run, with tweet history and
+        PHQ-9 values per agent, and explicit markers when PHQ-9 changes.
+
+        Format (per file):
+        - Header with run settings (model, seed, temp, top_p, check_point, num_agents)
+        - Then, for each agent:
+            === Agent <id> ===
+            initial_phq9: <value or None>
+            step <i>: phq9=<val>  tweet="<text>" [CHANGED from <old>]
+        """
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        lines: list[str] = []
+        # Run-level header
+        lines.append(f"model_name: {model_name}")
+        lines.append(f"seed: {self.seed}")
+        lines.append(f"num_agents: {self.num_agents}")
+        lines.append(f"temp: {temp}")
+        lines.append(f"top_p: {top_p}")
+        lines.append(f"check_point: {check_point}")
+        lines.append("")  # blank line
+
+        for agent in self.all_agents:
+            lines.append(f"=== Agent {agent.ID} persona: {agent.persona} ===")
+            # (both start empty, both get one entry per commit()).
+            phq_series = list(agent.all_phq9_sumscores)
+            tweets = list(agent.tweethistory)
+            lines.append(f"initial_phq9: {phq_series[0] if phq_series else None}")
+
+            prev = None
+            for idx, value in enumerate(phq_series):
+                tweet = tweets[idx] if idx < len(tweets) else ""
+                # Collapse newlines so each step stays on one line in the file
+                tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
+                line = f"step {idx}: phq9={value}  tweet=\"{tweet}\""
+                if prev is not None and value != prev:
+                    line += f"  (CHANGED from {prev})"
+                lines.append(line)
+                prev = value
+
+            lines.append("")  # blank line between agents
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))

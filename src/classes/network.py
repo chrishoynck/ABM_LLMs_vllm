@@ -106,31 +106,35 @@ class _Network:
                      check_point=10):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
+
+        Order (aligned with TestLLMs):
+        1. Prepare prompts  (reads current well_being for tweet tone)
+        2. Generate tweets
+        3. Commit tweets    (records tweet + current PHQ-9 together)
+        4. If checkpoint: run PHQ-9 questionnaire → updates well_being
+                          for the NEXT block of tweets
         """
         self.iterations += 1
         t0 = time.perf_counter()
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer, update_fraction)
         t1 = time.perf_counter()
 
-        update_score = False
-
-        if self.iterations % check_point== 0:
-            _= self._phq9_questionnaire(tokenizer, pipe)
-            update_score = True
-
-        # seed this thing
-        # Pipeline
-        # if True:
-        #     self._ensure_torch_generator(pipe)
         # generate outputs in parallel
         out = self._generate_outputs(pipe, prompts, phq9=False)
         t2 = time.perf_counter()
 
         # agents send out their tweets + state update + stats
         mean_distorted_frac, dist_this_step_norm = self._apply_outputs_and_update_state(
-            agents_w_prompt, out, n_grams, distorted_tweets, update_score=update_score
+            agents_w_prompt, out, n_grams, distorted_tweets
         )
         t3 = time.perf_counter()
+
+        # PHQ-9 questionnaire AFTER commit so that:
+        #  - all_phq9_sumscores[i] matches the PHQ-9 that prompted tweethistory[i]
+        #  - the questionnaire sees the current round's tweet in tweethistory
+        if self.iterations % check_point == 0:
+            self._phq9_questionnaire(tokenizer, pipe, check_point=check_point)
+
         if time_info:
             print(f"Time to prepare prompts: {t1 - t0:.4f} seconds")
             print(f"Time to generate outputs: {t2 - t1:.4f} seconds")
@@ -177,7 +181,7 @@ class _Network:
             )
         return prompts, agents_w_prompt
     
-    def _phq9_questionnaire(self, tokenizer, pipe):
+    def _phq9_questionnaire(self, tokenizer, pipe, check_point=20):
         """
         Have all agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
         Args:
@@ -187,7 +191,7 @@ class _Network:
         # prepare prompts for all agents
         prompts = []
         for agent in self.all_agents:
-            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-30:])
+            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-check_point:]) #CHECK THIS VALUE
             prompts.append(prompt)
         
         # inference with LLM
@@ -213,7 +217,7 @@ class _Network:
             sampling_params_clinical = SamplingParams(
                     temperature=0.8, 
                     top_p=0.6,
-                    max_tokens=100,   # Keep it short; you only need the scores
+                    max_tokens=300,   # 9 Q&A lines ~45 tokens, but allow buffer for preamble/explanations the LLM may add
                     seed= self.seed + self.iterations
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
@@ -234,7 +238,7 @@ class _Network:
         
         return outputs
 
-    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets, update_score=False):
+    def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets):
         """
         Use LLM outputs to update agents' tweets and activation states,
         then compute distorted tweet statistics for this round.
@@ -267,7 +271,7 @@ class _Network:
         distorted_fracs = []
         num_active_agents = 0
         for agent in self.all_agents:
-            distorted = agent.commit(n_grams=n_grams, update_score=update_score)
+            distorted = agent.commit(n_grams=n_grams)
             self.cds_info.append((agent.frac_distorted_neigh, agent.activation_state, distorted))
             if agent.activation_state:
                 num_active_agents += 1

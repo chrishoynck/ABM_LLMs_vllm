@@ -31,7 +31,7 @@ class Agent:
         self.well_being = well_being
         self.phq9_score = well_being.get("phq9_sumscore") if well_being else None
         self.age = well_being.get("age") if well_being else None
-        self.all_phq9_sumscores = [well_being.get("phq9_sumscore") if well_being else None]
+        self.all_phq9_sumscores = []
 
         with open('data/prompts.json', 'r') as f:
            self._PROMPTS = json.load(f)
@@ -155,7 +155,7 @@ class Agent:
             # f"relevant depressive symptoms and {diag_flag}.{extra_txt}"
         )
     
-    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str]):
+    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str], force_active=False):
         """
         build a phq9_questionnaire_prompt
         """
@@ -165,11 +165,18 @@ class Agent:
             well_being_info = self.well_being_prompt(self.well_being)
         
         system = self._PROMPTS["phq9"]["system"]
-        user = self._PROMPTS["phq9"]["user_template"].format(
-            agent_id=self.ID,
-            well_being_info=well_being_info,
-            tweets_block="\n".join(tweets)
-        )
+
+        if force_active:
+            user = self._PROMPTS["phq9"]["user_template_forced"].format(
+                agent_id=self.ID,
+                tweets_block="\n".join(tweets)
+            )
+        else:
+            user = self._PROMPTS["phq9"]["user_template"].format(
+                agent_id=self.ID,
+                well_being_info=well_being_info,
+                tweets_block="\n".join(tweets)
+            )
 
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         
@@ -207,10 +214,21 @@ class Agent:
                 own_block=own_block
             )
         else:
+            # Build optional previous-tweet block so the LLM avoids repetition
+            if self.last_tweet and self.last_tweet != "NO_TWEET":
+                previous_tweet_block = (
+                    f"\nYour previous tweet: \"{self.last_tweet[:max_chars]}\"\n"
+                    f"(Do NOT adopt the same topic or reuse the same words. "
+                    f"Be original and vary your content.)"
+                )
+            else:
+                previous_tweet_block = ""
+
             user_content = prompt_cfg["user_template_forced"].format(
                 agent_id = self.ID,
                 persona=self.persona,
                 well_being=self.well_being_prompt(self.well_being),
+                previous_tweet_block=previous_tweet_block,
             )
 
         messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
@@ -326,7 +344,7 @@ class Agent:
         # update diagnosis flag???
 
         # record history
-        self.all_phq9_sumscores.append(sumscore)
+        # self.all_phq9_sumscores.append(sumscore)
 
     def reset_activation_state(self):
         '''
@@ -356,8 +374,17 @@ class Agent:
         # prefer the explicit "TWEET:" pattern
         idx = low.find("tweet:")
         if idx != -1:
-    
-            return True, t[idx:].strip()
+            raw = t[idx:].strip()
+            # Strip any leaked prompt/persona content that the LLM may
+            # have echoed back after the tweet (e.g. "ID: …", "Persona: …").
+            cleaned_lines = []
+            for ln in raw.split("\n"):
+                stripped = ln.strip()
+                low_ln = stripped.lower()
+                if low_ln.startswith("id:") or low_ln.startswith("persona:"):
+                    break  # stop before leaked prompt content
+                cleaned_lines.append(ln)
+            return True, "\n".join(cleaned_lines).strip()
         
         # fallback: if any non-empty content, treat as tweet
         return (len(t) > 0), t
