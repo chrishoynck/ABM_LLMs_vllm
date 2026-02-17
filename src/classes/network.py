@@ -5,8 +5,6 @@ from scipy.spatial.distance import cdist
 from powerlaw import Fit
 
 from vllm import LLM, SamplingParams
-
-
 import time
 import bisect as bs_norm
 from scipy.optimize import bisect

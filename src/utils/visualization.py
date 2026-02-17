@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import pandas as pd
 
 def print_network(network, path="", filename="default.png", save=False):
     """
@@ -401,6 +402,14 @@ def plot_embedding_PCA_runs(mean_traj,
     reduc_label = reduction.upper()
     plt.title(f"{embedding} {reduc_label}\n(window={num_steps}, shift={shift})")
 
+    # Compute global min/max PHQ-9 across all settings for dynamic color scaling
+    phq9_global_min, phq9_global_max = None, None
+    if mean_phq9_per_setting is not None:
+        all_phq9 = [np.asarray(v) for v in mean_phq9_per_setting.values()]
+        if all_phq9:
+            phq9_global_min = float(np.min([p.min() for p in all_phq9]))
+            phq9_global_max = float(np.max([p.max() for p in all_phq9]))
+
     sc = None
     for setting, traj in mean_traj.items():
         traj = np.asarray(traj)  # (T, 2)
@@ -415,13 +424,13 @@ def plot_embedding_PCA_runs(mean_traj,
         else:
             s = 10
 
-        # Color by average PHQ-9 if provided (PHQ-9 range 0–27 for consistent colorbar)
+        # Color by average PHQ-9 if provided (scaled to data range for visibility)
         if mean_phq9_per_setting is not None and setting in mean_phq9_per_setting:
             phq9 = np.asarray(mean_phq9_per_setting[setting])
             if phq9.shape[0] == traj.shape[0]:
                 sc = plt.scatter(
                     traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, label=setting,
-                    cmap="viridis", vmin=0, vmax=27
+                    cmap="viridis", vmin=phq9_global_min, vmax=phq9_global_max
                 )
             else:
                 plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
@@ -552,6 +561,90 @@ def plot_phq9_error(mae_per_phq9, total_mae, directory="plots"):
     plt.tight_layout()
     plt.savefig(filename)
     print(f"Visualization saved to {filename}")
+
+
+def plot_combined_bias_error(csv_path, model_name, temp, top_p, check_point, directory):
+    """
+    Read results.csv, aggregate bias_per_phq9 and mae_per_phq9 across all
+    seeds for a given (model, temp, top_p, check_point), and plot combined
+    bias and error bar charts in directory.
+
+    The title includes how many seeds were averaged.
+    """
+    
+
+    if not os.path.isfile(csv_path):
+        print(f"[combined plots] CSV not found: {csv_path} – skipping.")
+        return
+
+    df = pd.read_csv(csv_path)
+
+    # Filter to matching configuration
+    mask = (
+        (df["model_name"] == model_name) &
+        (df["temp"] == temp) &
+        (df["top_p"] == top_p) &
+        (df["check_point"] == check_point)
+    )
+    relavent_cols = df.loc[mask]
+
+    if relavent_cols.empty:
+        print(f"[combined plots] No rows for {model_name} temp={temp} top_p={top_p} cp={check_point} – skipping.")
+        return
+
+
+    n_seeds = len(relavent_cols)
+
+    # weights are the number of agents in each run
+    weights = relavent_cols["num_agents"].values.astype(float)
+    total_agents = weights.sum()
+
+    # select bias and mae per phq9 for every run 
+    bias_cols = [c for c in relavent_cols.columns if c.startswith("bias_phq9_")]
+    mae_cols  = [c for c in relavent_cols.columns if c.startswith("mae_phq9_")]
+
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    #Combined bias plot (weighted by num_agents)
+   
+    scores = sorted([int(c.replace("bias_phq9_", "")) for c in bias_cols])
+    biases = [float(np.average(relavent_cols[f"bias_phq9_{s}"].values, weights=weights)) for s in scores]
+    overall_bias = float(np.average(relavent_cols["avg_phq9_change"].values, weights=weights))
+
+    colors = ["red"	 if b > 0 else"blue" for b in biases]
+    plt.figure(figsize=(10, 6))
+    plt.bar(scores, biases, color=colors, edgecolor='black', alpha=0.8)
+    plt.axhline(0, color='black', linestyle='-', linewidth=1.5)
+    plt.xlabel('Ground Truth $PHQ-9$ Score')
+    plt.ylabel('Mean Bias')
+    plt.title(f'LLM Bias combined over {n_seeds} seed(s), {int(total_agents)} agents (total bias: {overall_bias:.3f})')
+    plt.xticks(range(0, 28))
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    fname = os.path.join(directory, "llm_bias_per_phq9.png")
+    plt.tight_layout()
+    plt.savefig(fname)
+    plt.close()
+    print(f"Combined bias plot saved to {fname}")
+
+    #Combined error plot
+    errors = sorted([int(c.replace("mae_phq9_", "")) for c in mae_cols])
+    mean_errors = [float(np.average(relavent_cols[f"mae_phq9_{s}"].values, weights=weights)) for s in errors]
+    overall_mae = float(np.average(relavent_cols["total_mae"].values, weights=weights))
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(scores, mean_errors, color="orange", edgecolor='black', alpha=0.8)
+    plt.xlabel('Ground Truth $PHQ-9$ Score')
+    plt.ylabel('Mean Absolute Error (PHQ-9 points)')
+    plt.title(f'LLM PHQ-9 error – combined over {n_seeds} seed(s), {int(total_agents)} agents (total MAE: {overall_mae:.3f})')
+    plt.xticks(range(0, 28))
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    fname = os.path.join(directory, "llm_error_per_phq9.png")
+    plt.tight_layout()
+    plt.savefig(fname)
+    plt.close()
+    print(f"Combined error plot saved to {fname}")
+
 
 #============= Critical slowing down Visualization =============#
 def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", path="", filename="default.png", shift=1):

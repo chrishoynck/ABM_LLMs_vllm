@@ -45,6 +45,7 @@ class Agent:
         self.distorted_tweets = []
         self.active_tweethistory = []
         self.frac_distorted_neigh = 0
+        self._tweets_since_phq9_update = 0  # counter for efficient same-score tweet lookup
 
     @staticmethod
     def phq9_severity_category(score: float) -> str:
@@ -74,7 +75,7 @@ class Agent:
         total_score = 0
         
         for line in lines:
-            # 1. Split on colon to separate "Q1" from the Answer
+            # Split on colon to separate "Q1" from the Answer
             parts = line.split(":", 1) # Split only on the first colon
             
             if len(parts) != 2:
@@ -82,7 +83,7 @@ class Agent:
                 
             answer_part = parts[1].strip()
             
-            # 2. Find the first single digit (0-9) in the answer text
+            # Find the first single digit (0-9) in the answer text
             match = re.search(r'\d', answer_part)
             
             if match:
@@ -186,7 +187,7 @@ class Agent:
         )
 
 
-    def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False):
+    def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
 
         # own history block
         own_block = "" 
@@ -215,7 +216,21 @@ class Agent:
             )
         else:
             # Build optional previous-tweet block so the LLM avoids repetition
-            if self.last_tweet and self.last_tweet != "NO_TWEET":
+            if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
+                # Use counter to efficiently grab tweets since last PHQ-9 update
+                # (all share the same score, no full-history scan needed)
+                recent = self.tweethistory[-self._tweets_since_phq9_update:]
+                same_score_tweets = [t for t in recent if t and t != "NO_TWEET"]
+                if same_score_tweets:
+                    tweets_list = "\n".join(f'- "{t[:max_chars]}"' for t in same_score_tweets)
+                    previous_tweet_block = (
+                        f"\nYour previous tweets for this well-being state:\n{tweets_list}\n"
+                        f"(Do NOT adopt the same topics or reuse the same words. "
+                        f"Be original and vary your content.)"
+                    )
+                else:
+                    previous_tweet_block = ""
+            elif self.last_tweet and self.last_tweet != "NO_TWEET":
                 previous_tweet_block = (
                     f"\nYour previous tweet: \"{self.last_tweet[:max_chars]}\"\n"
                     f"(Do NOT adopt the same topic or reuse the same words. "
@@ -238,7 +253,7 @@ class Agent:
             messages, tokenize=False, add_generation_prompt=True
         )
     
-    def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars = 240, force_active=False):
+    def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars=240, force_active=False, tweet_block_phq9=False):
         """
         Use the LLM to decide whether to tweet or not.
 
@@ -271,7 +286,8 @@ class Agent:
 
         # create prompt
         prompt = self.build_tweet_prompt(
-            tokenizer, round_idx, neighbor_msgs, max_chars=max_chars, force_active=force_active
+            tokenizer, round_idx, neighbor_msgs, max_chars=max_chars,
+            force_active=force_active, tweet_block_phq9=tweet_block_phq9
         )
 
         return prompt
@@ -320,6 +336,7 @@ class Agent:
         self.tweethistory.append(self._next_last_tweet)
         self.last_tweet = self._next_last_tweet
         self.activation_state = self._next_activation_state
+        self._tweets_since_phq9_update += 1
 
         # record phq9 sumscore history (may be updated)
         if True: #update_score:
@@ -339,7 +356,7 @@ class Agent:
         if self.well_being is None:
             self.well_being = {}
         self.well_being["phq9_sumscore"] = sumscore
-        
+        self._tweets_since_phq9_update = 0
 
         # update diagnosis flag???
 

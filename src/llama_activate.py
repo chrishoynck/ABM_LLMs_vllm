@@ -7,7 +7,7 @@ import numpy as np
 import inspect
 from vllm import LLM, SamplingParams
 import utils.metrics as metrics
-from utils.path_manager import PathManager
+from utils.path_manager import PathManager, TestPathManager
 from classes.network import RandomNetwork,  SocialDistanceAttachment #, ScaleFreeNetwork,
 import utils.load_personas as lp
 import utils.visualization as vis
@@ -33,12 +33,12 @@ llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 # # when setting possible enironment variables in the future
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
-models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
+models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B", "mistralai/Mistral-7B-Instruct-v0.3"]
 
 # Short names for --test_llms_model (optional; full HuggingFace IDs also work)
 MODEL_ALIASES = {
     "qwen4": "Qwen/Qwen3-4B-Instruct-2507",
-    "qwen14": "Qwen/Qwen3-14B-Instruct",
+    "qwen14": "Qwen/Qwen3-14B",
     "gemma12": "google/gemma-3-12b-it",
     "llama8": "meta-llama/Llama-3.1-8B-Instruct",
     "mistral7": "mistralai/Mistral-7B-Instruct-v0.3",
@@ -496,21 +496,28 @@ def test_llms(args, pipe, model_name, tokenizer=None):
         model_name=model_name,
     )
 
-    # Per-model subdir so multiple models don't overwrite
-    safe_name = _sanitize_model_name(model_name)
+    # Build paths via TestPathManager
+    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed)
 
-    # Plot directory
-    directory_for_test = f"plots/test/{safe_name}/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
-    if not os.path.exists(directory_for_test):
-        os.makedirs(directory_for_test)
-    vis.plot_bias(bias_per_phq9, all_bias, directory_for_test)
-    vis.plot_phq9_error(mae_per_phq9, total_mae, directory_for_test)
+    # Per-seed bias & error plots
+    run_plot_dir = str(tpm.get_run_directory(is_plot=True))
+    vis.plot_bias(bias_per_phq9, all_bias, run_plot_dir)
+    vis.plot_phq9_error(mae_per_phq9, total_mae, run_plot_dir)
 
-    # print tweets with phq9 to txt file
-    data_directory_for_test = f"data/test/{safe_name}/temp_{temp}_top_p_{top_p}_cp_{checkpoint}"
-    tweets_txt_path = os.path.join(data_directory_for_test, "tweets_with_phq9.txt")
+    # Combined plots across all seeds (in parent dir)
+    agg_plot_dir = str(tpm.get_aggregate_directory(is_plot=True))
+    vis.plot_combined_bias_error(
+        csv_path=str(tpm.get_results_csv_path()),
+        model_name=model_name,
+        temp=temp,
+        top_p=top_p,
+        check_point=checkpoint,
+        directory=agg_plot_dir,
+    )
+
+    # Export tweets with PHQ-9 to text file
     tester.export_tweets_with_phq9_txt(
-        file_path=tweets_txt_path,
+        file_path=str(tpm.get_tweets_path()),
         check_point=checkpoint,
         temp=temp,
         top_p=top_p,

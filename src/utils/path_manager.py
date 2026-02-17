@@ -97,3 +97,46 @@ class PathManager:
         """Returns filename suffix for aggregate plots (vis code appends .png)."""
         seeds_str = "_".join(map(str, seeds))
         return f"_seeds_{seeds_str}"
+
+
+class TestPathManager:
+    """Path manager for LLM test runs (bias/error plots, tweets, results CSV)."""
+
+    def __init__(self, model_name, temp, top_p, check_point, seed):
+        self.base_data = Path("data/test")
+        self.base_plots = Path("plots/test")
+        self.results_csv = self.base_data / "results.csv"
+
+        # Sanitize model name for filesystem use
+        self.safe_name = model_name.replace("/", "_").replace("\\", "_")
+        self.model_name = model_name
+        self.temp = temp
+        self.top_p = top_p
+        self.check_point = check_point
+        self.seed = seed
+
+    def _settings_dir(self):
+        """Settings part of the path: {model}/temp_{t}_top_p_{p}_cp_{cp}"""
+        return f"{self.safe_name}/temp_{self.temp}_top_p_{self.top_p}_cp_{self.check_point}"
+
+    def get_run_directory(self, is_plot=False):
+        """Per-seed directory: .../seed_{seed}/"""
+        base = self.base_plots if is_plot else self.base_data
+        path = base / self._settings_dir() / f"seed_{self.seed}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_aggregate_directory(self, is_plot=False):
+        """Parent (seed-independent) directory for combined results."""
+        base = self.base_plots if is_plot else self.base_data
+        path = base / self._settings_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_tweets_path(self):
+        """Path for the tweets-with-PHQ-9 text file (per-seed)."""
+        return self.get_run_directory(is_plot=False) / "tweets_with_phq9.txt"
+
+    def get_results_csv_path(self):
+        """Path to the shared results CSV."""
+        return self.results_csv

@@ -387,3 +387,4 @@ confidential/*
 *.secret
 *.key
 .venv_wsl/
+logs/

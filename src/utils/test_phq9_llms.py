@@ -34,7 +34,7 @@ class TestLLMs:
     def _prepare_prompts(self, tokenizer) -> list:
         prompts = []
         for agent in self.all_agents:
-            prompt = agent.step_llm_tweet(tokenizer, self.rng, round_idx=self.iterations, force_active=True)
+            prompt = agent.step_llm_tweet(tokenizer, self.rng, round_idx=self.iterations, force_active=True, tweet_block_phq9=True)
             prompts.append(prompt)
         return prompts, self.all_agents
     
@@ -114,7 +114,6 @@ class TestLLMs:
 
             # update well-being score
             agent.update_well_being(next_score)
-
         return mistakes
 
     def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, update_score=False):
@@ -152,8 +151,6 @@ class TestLLMs:
             mistake_dict = self._phq9_questionnaire(tokenizer, pipe, mistake_dict, check_point, temp=temp, top_p=top_p)
   
         
-    
-           
     def assess_performance(self, mistake_dict):
         """
         Assess the performance of the agents based on the mistake dictionary.
