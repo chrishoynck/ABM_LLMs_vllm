@@ -33,7 +33,7 @@ llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 # # when setting possible enironment variables in the future
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
-models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B", "mistralai/Mistral-7B-Instruct-v0.3"]
+models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B", "mistralai/Mistral-7B-Instruct-v0.3", "meta-llama/Llama-3.3-70B-Instruct"]
 
 # Short names for --test_llms_model (optional; full HuggingFace IDs also work)
 MODEL_ALIASES = {
@@ -42,6 +42,8 @@ MODEL_ALIASES = {
     "gemma12": "google/gemma-3-12b-it",
     "llama8": "meta-llama/Llama-3.1-8B-Instruct",
     "mistral7": "mistralai/Mistral-7B-Instruct-v0.3",
+    "llama70": "meta-llama/Llama-3.3-70B-Instruct",
+    "deepseek": "deepseek"
 }
 
 DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
@@ -466,7 +468,7 @@ def _sanitize_model_name(model_id):
     return model_id.replace("/", "_").replace("\\", "_")
 
 
-def test_llms(args, pipe, model_name, tokenizer=None):
+def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level tokenizer."""
     tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
 
@@ -475,7 +477,7 @@ def test_llms(args, pipe, model_name, tokenizer=None):
         well_being[i]["phq9_sumscore"] = 0
 
     personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
-    tester = TestLLMs(well_being=well_being, num_agents=args.num_agents, seed=args.seed, personas=personas)
+    tester = TestLLMs(well_being=well_being, num_agents=args.num_agents, seed=args.seed, personas=personas, deepseek=use_deepseek)
 
     temp = args.temp
     top_p = args.top_p
@@ -485,6 +487,9 @@ def test_llms(args, pipe, model_name, tokenizer=None):
     data_dir = "data/test/"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
+    
+    if use_deepseek:
+        model_name = "deepseek"
 
     all_bias, bias_per_phq9, mae_per_phq9, total_mae = tester.run_simulation(
         tokenizer=tok,
@@ -532,6 +537,11 @@ def run_llm_tests(args):
     if args.test_llms_model:
         model_id = MODEL_ALIASES.get(args.test_llms_model.strip().lower(), args.test_llms_model.strip())
         models_to_run = [model_id]
+        if model_id == "deepseek":
+            use_deepseek = True
+            models_to_run = [MODEL_ALIASES.get("llama8")]
+        else:
+            use_deepseek = False
         print(f"Testing single model (--test_llms_model): {model_id}")
     else:
         models_to_run = models
@@ -540,7 +550,7 @@ def run_llm_tests(args):
         print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
         tok = get_tokenizer(model_id)
         pipe = get_llm(model_id=model_id)
-        total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok)
+        total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok, use_deepseek=use_deepseek)
         results[model_id] = {"total_mae": total_mae, "mae_per_phq9": mae_per_phq9}
         del pipe
         gc.collect()

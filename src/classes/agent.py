@@ -182,9 +182,10 @@ class Agent:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         
         # print("PROMPT MESSAGES: ", messages)
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        return messages
+        # return tokenizer.apply_chat_template(
+        #     messages, tokenize=False, add_generation_prompt=True
+        # )
 
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
@@ -249,9 +250,10 @@ class Agent:
         messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
         
         # print("PROMPT MESSAGES: ", messages)
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        return messages
+        # return tokenizer.apply_chat_template(
+        #     messages, tokenize=False, add_generation_prompt=True
+        # )
     
     def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars=240, force_active=False, tweet_block_phq9=False):
         """

@@ -39,11 +39,12 @@ def parse_tweets_with_phq9(file_path: str):
     for line in lines:
         line = line.rstrip("\n")
 
-        # New agent header → flush current block and reset
+        # New agent header, flush current block and reset
         if line.startswith("=== Agent"):
             if current_tweets:
-                tweet_blocks.append(current_tweets)
-                true_answers.append(current_phq9)
+                if len(current_tweets) > 1:
+                    tweet_blocks.append(current_tweets)
+                    true_answers.append(current_phq9)
             current_phq9 = None
             current_tweets = []
             continue
@@ -61,10 +62,11 @@ def parse_tweets_with_phq9(file_path: str):
             tweet = tweet[:changed_idx]
 
         if phq9 != current_phq9:
-            # New PHQ-9 period → save the previous block (if any)
+            # New PHQ-9 period save the previous block (if any)
             if current_tweets:
-                tweet_blocks.append(current_tweets)
-                true_answers.append(current_phq9)
+                if len(current_tweets) > 1:
+                    tweet_blocks.append(current_tweets)
+                    true_answers.append(current_phq9)
             current_phq9 = phq9
             current_tweets = [tweet]
         else:
@@ -72,8 +74,9 @@ def parse_tweets_with_phq9(file_path: str):
 
     # Flush the last block
     if current_tweets:
-        tweet_blocks.append(current_tweets)
-        true_answers.append(current_phq9)
+        if len(current_tweets) > 1:
+            tweet_blocks.append(current_tweets)
+            true_answers.append(current_phq9)
 
     return tweet_blocks, true_answers
 
@@ -253,11 +256,54 @@ def create_dataset(file_path: str):
     print(f"Training blocks: {len(training_blocks)}")
     return tweet_blocks, true_answers
 
+def split_embeddings_and_labels(embeddings, labels, train_frac=0.8, val_frac=0.1, seed=None):
+    """
+    Split embeddings and labels into train/val/test after loading.
+    Uses the same 80/10/10 proportions as create_dataset.
+    Parameters:
+        embeddings (torch.Tensor): The embeddings to split.
+        labels (torch.Tensor): The labels to split.
+        train_frac (float): The fraction of the data to use for training.
+        val_frac (float): The fraction of the data to use for validation.
+        seed (int): The seed to use for the random number generator.
+    Returns:
+        train_embs (torch.Tensor): The embeddings for the training data.
+        val_embs (torch.Tensor): The embeddings for the validation data.
+        test_embs (torch.Tensor): The embeddings for the test data.
+        train_labels (torch.Tensor): The labels for the training data.
+        val_labels (torch.Tensor): The labels for the validation data.
+        test_labels (torch.Tensor): The labels for the test data.
+    """
+    n = len(embeddings)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+
+    n_train = int(n * train_frac)
+    n_val = int(n * val_frac)
+
+    train_idx = perm[:n_train]
+    val_idx = perm[n_train : n_train + n_val]
+    test_idx = perm[n_train + n_val :]
+
+    train_embs = embeddings[train_idx]
+    val_embs = embeddings[val_idx]
+    test_embs = embeddings[test_idx]
+
+    if not torch.is_tensor(labels):
+        labels = torch.tensor(labels, dtype=torch.float32)
+    
+    train_labels = labels[train_idx]
+    val_labels = labels[val_idx]
+    test_labels = labels[test_idx]
+
+    return train_embs, val_embs, test_embs, train_labels, val_labels, test_labels
+
+
 def drop_high_phq9(tweet_blocks, true_answers):
     """
     Drop the tweets with a PHQ-9 score greater than 15.
     """
-    filter_tweets = [true_answer <= 21 for true_answer in true_answers]
+    filter_tweets = [true_answer <= 18 for true_answer in true_answers]
     filtered_tweet_blocks = tweet_blocks[filter_tweets]
     filtered_true_answers = true_answers[filter_tweets]
     return filtered_tweet_blocks, filtered_true_answers
@@ -269,23 +315,41 @@ def setup_BERT_model(tweet_blocks, model, device):
     centroids = []
     for tweet_block in tweet_blocks:
         embeddings = create_embedding(model, tweet_block).to(device)
-        window_centroid = torch.cat([embeddings.mean(dim=0), embeddings.max(dim=0)[0]], dim=0)
+        # print("shape of embeddings: ", embeddings.shape)
+        mean_v = embeddings.mean(dim=0)
+        max_v = embeddings.max(dim=0)[0]
+        
+        var_emb = embeddings.var(dim=0)
+
+        if torch.isnan(var_emb).any():
+            print("Tweet block: ", tweet_block)
+            print("NaN in var_emb")
+            var_emb = 0 
+
+        std_v = torch.sqrt(var_emb + 1e-8)
+        
+        window_centroid = torch.cat([mean_v, max_v, std_v], dim=0)
         centroids.append(window_centroid)
     centroids = torch.stack(centroids).to(device)
     return centroids
 
-def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool = False):
+def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool = False, split_seed=42):
     """
     Train the BERT model for the PHQ-9 assessment.
+    Loads embeddings and labels, then performs train/val/test split (80/10/10) before training.
     """
-    
-    
-    # load BERT model
-    # bert_model = generate_sbert_model(mentalbert=True)
-    # bert_model.to(device)
-
     with open(embeddings_path, "rb") as f:
         data = torch.load(f)
+
+    if "embeddings" in data and "labels" in data:
+        # New format: single array; split after loading
+        all_embs = data["embeddings"]
+        all_labels = data["labels"]
+        train_embs, val_embs, test_embs, train_labels, val_labels, test_labels = split_embeddings_and_labels(
+            all_embs, all_labels, train_frac=0.8, val_frac=0.1, seed=split_seed
+        )
+    else:
+        # Legacy format: pre-split arrays
         train_embs = data["train_embs"]
         val_embs = data["val_embs"]
         test_embs = data["test_embs"]
@@ -293,17 +357,16 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
         val_labels = data["val_labels"]
         test_labels = data["test_labels"]
 
-    # create embeddings
-    train_embs, train_labels = drop_high_phq9(train_embs.to(device),train_labels.to(device)) 
-    val_embs, val_labels = drop_high_phq9(val_embs.to(device),val_labels.to(device))
-    test_embs, test_labels = drop_high_phq9(test_embs.to(device),test_labels.to(device))
-   
-    print(f"Training blocks: {len(train_embs)}")
+    train_embs, train_labels = drop_high_phq9(train_embs.to(device), train_labels.to(device))
+    val_embs, val_labels = drop_high_phq9(val_embs.to(device), val_labels.to(device))
+    test_embs, test_labels = drop_high_phq9(test_embs.to(device), test_labels.to(device))
+
+    print(f"Training blocks: {len(train_embs)}, val: {len(val_embs)}, test: {len(test_embs)}")
 
     nn_model = neural_net_BERT(mentalbert=mental_bert).to(device)
     nn_model, best_loss, epoch_history = train_bert(nn_model, train_embs, train_labels, val_embs, val_labels, device)
     print("Testing model....")
-    test_loss = evaluate_bert(nn_model, test_embs, test_labels, device)
+    test_loss = evaluate_bert(nn_model, test_embs, test_labels, device, mae=True)
     print(f"Test Loss: {test_loss}\n\n")
 
     
@@ -334,16 +397,16 @@ class neural_net_BERT(nn.Module):
     """
     def __init__(self, mentalbert: bool = False, dropout_rate=0.2):
         if mentalbert:
-            input_size = 768*2
+            input_size = 768*3
         else:
-            input_size = 384*2
+            input_size = 384*3
         super(neural_net_BERT, self).__init__()
         self.model = nn.Sequential(
         nn.Dropout(dropout_rate),
-        nn.Linear(input_size, 128),
+        nn.Linear(input_size, 64),
         nn.ReLU(),
         nn.Dropout(dropout_rate),
-        nn.Linear(128, 32),
+        nn.Linear(64, 32),
         nn.ReLU(),
         nn.Linear(32, 1), # 1 output for the PHQ-9 score
         )
@@ -355,15 +418,24 @@ class neural_net_BERT(nn.Module):
     def forward(self, x):
         return self.model(x)
     
-def train_bert(model, train_data, train_labels, val_data, val_labels, device, epochs=50, batch_size=128, learning_rate=0.001):
+def train_bert(model, 
+                train_data, 
+                train_labels, 
+                val_data, 
+                val_labels, 
+                device, 
+                epochs=30, 
+                batch_size=8, 
+                learning_rate=0.0001,
+                patience=5):
     """
     Train the neural network for the PHQ-9 assessment.
     """
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=2)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.6, patience=3)
 
-    criterion = nn.MSELoss()
+    criterion = nn.HuberLoss(delta=1.0)
     train_data = torch.tensor(train_data, dtype=torch.float32).to(device)
     train_labels = torch.tensor(train_labels, dtype=torch.float32).to(device)
 
@@ -379,6 +451,8 @@ def train_bert(model, train_data, train_labels, val_data, val_labels, device, ep
             outputs = model(inputs).squeeze(-1) # squeeze the last dimension to get the score
             loss = criterion(outputs, labels)
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += loss.item()*inputs.size(0)
 
@@ -394,17 +468,19 @@ def train_bert(model, train_data, train_labels, val_data, val_labels, device, ep
   
         if val_loss < best_loss:
             best_loss = val_loss
-            best_model_state = copy.deepcopy(model.state_dict())
+            best_model_state = copy.deepcopy(model)
     
-    model.load_state_dict(best_model_state)
-    return model, best_loss, epoch_history
+    return best_model_state, best_loss, epoch_history
 
-def evaluate_bert(model, test_data, test_labels, device):
+def evaluate_bert(model, test_data, test_labels, device, mae=False):
     """
     Evaluate the BERT model for the PHQ-9 assessment.
     """
     model.eval()
-    criterion = nn.MSELoss()
+    if mae:
+        criterion = nn.MSELoss()
+    else:
+        criterion = nn.HuberLoss(delta=1.0)
 
     test_data = torch.as_tensor(test_data, dtype=torch.float32).to(device)
     test_labels = torch.as_tensor(test_labels, dtype=torch.float32).to(device)
@@ -414,25 +490,18 @@ def evaluate_bert(model, test_data, test_labels, device):
         loss = criterion(outputs, test_labels)
     return loss.item()
 
-def save_embeddings_for_file(file_path: str, base_model_name: str, device, mentalbert: bool = False, out_dir = None):
+def save_embeddings_for_file(file_path: str, base_model_name: str, device, mentalbert: bool = False, out_dir=None):
     """
-    - Parses tweets_with_phq9.txt into train/val/test blocks
+    - Parses tweets_with_phq9.txt into all blocks (no train/val/test split)
     - Encodes each block with SBERT
-    - Saves embeddings + labels to disk
+    - Saves single embeddings + labels to disk; split is done at train time after loading
     """
-
-    tweet_blocks, true_answers = create_dataset(file_path)
-    train_blocks, val_blocks, test_blocks = tweet_blocks
-    train_labels, val_labels, test_labels = true_answers
-
+    tweet_blocks, true_answers = parse_tweets_with_phq9(file_path)
     sbert_model = generate_sbert_model(mentalbert=mentalbert).to(device)
 
-    print("Encoding train blocks...")
-    train_embs = setup_BERT_model(train_blocks, sbert_model, device)  # (N_train, 384)
-    print("Encoding val blocks...")
-    val_embs = setup_BERT_model(val_blocks, sbert_model, device)      # (N_val, 384)
-    print("Encoding test blocks...")
-    test_embs = setup_BERT_model(test_blocks, sbert_model, device)    # (N_test, 384)
+    print("Encoding all blocks...")
+    all_embs = setup_BERT_model(tweet_blocks, sbert_model, device)
+    all_labels = torch.tensor(true_answers, dtype=torch.float32)
 
     if mentalbert:
         dir_name = "mentalbert_embeddings"
@@ -444,25 +513,18 @@ def save_embeddings_for_file(file_path: str, base_model_name: str, device, menta
     os.makedirs(out_dir, exist_ok=True)
 
     torch_path = os.path.join(out_dir, "embeddings_and_labels.pt")
-    torch.save({
-    "train_embs": train_embs,
-    "val_embs": val_embs,
-    "test_embs": test_embs,
-    "train_labels": torch.tensor(train_labels),
-    "val_labels": torch.tensor(val_labels),
-    "test_labels": torch.tensor(test_labels),
-        }, torch_path)
-
-    print(f"Saved embeddings + labels to {torch_path}")
+    torch.save({"embeddings": all_embs, "labels": all_labels}, torch_path)
+    print(f"Saved embeddings + labels to {torch_path} (n={len(all_embs)}); split will be done at train time.")
     
-
-
 if __name__ == "__main__":
     create_new_embeddings = False
     mental_bert = True
     file_path = "data/test/meta-llama_Llama-3.1-8B-Instruct/temp_0.8_top_p_0.6_cp_10/seed_71/tweets_with_phq9.txt"
     base_model_name = "meta-llama_Llama-3.1-8B-Instruct"
+    prompt_optimizer = False
 
+    if prompt_optimizer:
+        call_optimizer(file_path, base_model_name.replace("/", "_")) 
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
@@ -479,5 +541,4 @@ if __name__ == "__main__":
         dir_name = "sbert_embeddings"
 
     embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
-
     train_BERT_model(embeddings_path, base_model_name, device, mental_bert=mental_bert)

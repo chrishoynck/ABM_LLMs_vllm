@@ -6,12 +6,15 @@ import os
 import pandas as pd
 import numpy as np
 import torch
+import csv
 from datetime import datetime
+from openai import OpenAI, AsyncOpenAI
+import asyncio
 
 
 class TestLLMs:
     def __init__(self, seed: int = 42, num_agents: int = 5,
-                 personas: list = None, well_being: list = None):
+                 personas: list = None, well_being: list = None, deepseek: bool = False):
         self.rng = np.random.default_rng(seed)
         personas = self.rng.permutation(personas) if personas is not None else [None]*num_agents
         self.well_being = self.rng.permutation(well_being) if well_being is not None else [None]*num_agents
@@ -20,7 +23,7 @@ class TestLLMs:
         self.iterations = 0
         self.seed = seed
         self.num_agents = num_agents
-
+        self.deepseek = deepseek
         # For testing: assign each agent its own permutation of PHQ-9 scores (0..27)
         # that acts as the "true" target sequence across questionnaires.
         scores = np.arange(28)
@@ -30,12 +33,35 @@ class TestLLMs:
             self.phq9_sequences[agent.ID] = self.rng.permutation(scores).tolist()
             self.phq9_indices[agent.ID] = 0
             agent.update_well_being(self.phq9_sequences[agent.ID][0]) 
+        
+        self.client = None
+        if self.deepseek:
+            self.setup_deepseek()
+        
+
+    def setup_deepseek(self):
+        """
+        Setup the DeepSeek client.
+        """
+        api_key = "sk-b6503fb67b2b44829ee430515b13b1e7"
+        base_url = "https://api.deepseek.com"
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     def _prepare_prompts(self, tokenizer) -> list:
+        """
+        Prepare the prompts for the agents.
+        """
         prompts = []
         for agent in self.all_agents:
-            prompt = agent.step_llm_tweet(tokenizer, self.rng, round_idx=self.iterations, force_active=True, tweet_block_phq9=True)
-            prompts.append(prompt)
+            raw_messages = agent.step_llm_tweet(tokenizer, self.rng, round_idx=self.iterations, force_active=True, tweet_block_phq9=True)
+            if self.deepseek:
+                prompts.append(raw_messages)
+            else:
+                templated = tokenizer.apply_chat_template(
+                    raw_messages, tokenize=False, add_generation_prompt=True
+                )
+                prompts.append(templated)
+
         return prompts, self.all_agents
     
     # VLLM
@@ -52,27 +78,40 @@ class TestLLMs:
             sampling_params_clinical = SamplingParams(
                     temperature=temp, 
                     top_p=top_p,
-                    max_tokens=300,   # 9 Q&A lines ~45 tokens, but allow buffer for preamble/explanations the LLM may add
+                    max_tokens=300,   
                     seed=None 
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
             return outputs
-    
+
         # Define Sampling Parameters
-        sampling_params = SamplingParams(
-            temperature=1.0,
-            top_p=0.9,
-            presence_penalty=0.4,
-            repetition_penalty=1.05,
-            max_tokens=256,
-            seed= self.seed + self.iterations  # vLLM handles seeding here
-        )
+        if not self.deepseek:
+            sampling_params = SamplingParams(
+                temperature=1.0,
+                top_p=0.9,
+                presence_penalty=0.4,
+                repetition_penalty=1.05,
+                max_tokens=256,
+                seed= self.seed + self.iterations  # vLLM handles seeding here
+            )
 
-        # VLLM does batching automatically. 
-        outputs = llm.generate(prompts, sampling_params)
-        
+            # VLLM does batching automatically. 
+            outputs = llm.generate(prompts, sampling_params)
         return outputs
-
+    
+    async def _generate_outputs_deepseek(self, prompts, temp=1.0, top_p=1.0):
+        async def generate_outje(prompt):
+            response = await self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=prompt,
+                temperature=temp,
+                top_p=top_p,
+                seed=self.seed + self.iterations)
+            return response.choices[0].message.content
+        todos = [generate_outje(prompt) for prompt in prompts]
+        outputs = await asyncio.gather(*todos)
+        return outputs
+    
     def _phq9_questionnaire(self, tokenizer, pipe,mistakes, check_point, temp, top_p):
         """
         Have all agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
@@ -123,7 +162,10 @@ class TestLLMs:
         """
         # agents send out their tweets
         for agent, tweet in zip(agents_w_prompt, out):
-            raw = tweet.outputs[0].text.strip()
+            if not self.deepseek:
+                raw = tweet.outputs[0].text.strip()
+            else:
+                raw = tweet
             agent.send_tweet(
                 max_chars=240,
                 raw_tweet=raw,
@@ -140,7 +182,11 @@ class TestLLMs:
         self.iterations +=1
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer)
         # generate outputs in parallel
-        out = self._generate_outputs(pipe, prompts)
+
+        if not self.deepseek:
+            out = self._generate_outputs(pipe, prompts)
+        else:
+            out = asyncio.run(self._generate_outputs_deepseek(prompts))
 
         # agents send out their tweets + state update + stats
         self._apply_outputs_and_update_state(
@@ -292,18 +338,33 @@ class TestLLMs:
             tweets = list(agent.tweethistory)
             lines.append(f"initial_phq9: {phq_series[0] if phq_series else None}")
 
-            prev = None
+            # prev = None
             for idx, value in enumerate(phq_series):
                 tweet = tweets[idx] if idx < len(tweets) else ""
                 # Collapse newlines so each step stays on one line in the file
                 tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
                 line = f"step {idx}: phq9={value}  tweet=\"{tweet}\""
-                if prev is not None and value != prev:
-                    line += f"  (CHANGED from {prev})"
+                # if prev is not None and value != prev:
+                #     line += f"  (CHANGED from {prev})"
                 lines.append(line)
-                prev = value
+                # prev = value
 
             lines.append("")  # blank line between agents
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+        
+        # Write to CSV
+        csv_path = file_path.replace(".txt", ".csv")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f_csv:
+            writer = csv.writer(f_csv)
+            writer.writerow(["agent_id", "persona", "step", "phq9", "tweet"])
+
+            for agent in self.all_agents:
+                phq_series = list(agent.all_phq9_sumscores)
+                tweets = list(agent.tweethistory)
+
+                for idx, value in enumerate(phq_series):
+                    tweet = tweets[idx] if idx < len(tweets) else ""
+                    tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
+                    writer.writerow([agent.ID, agent.persona, idx, value, tweet])

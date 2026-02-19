@@ -159,9 +159,12 @@ class _Network:
                 # set default
                 agent.send_tweet(max_chars=240, raw_tweet="NO_TWEET")
             for agent in self.rng.choice(self.all_agents, int(len(self.all_agents) * update_fraction), replace=False):
-                prompt = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
+                raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
+                templated = tokenizer.apply_chat_template(
+                    raw_messages, tokenize=False, add_generation_prompt=True
+                )
+                prompts.append(templated)
                 # prompt = add_salt(prompt)
-                prompts.append(prompt)
                 agents_w_prompt.append(agent)
 
         # normal inferencing
@@ -169,9 +172,12 @@ class _Network:
             # randomize order of agent updates
             permuted = self.rng.permutation(self.all_agents)
             for agent in permuted:
-                prompt = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=False)
+                raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=False)
                 # prompt = add_salt(prompt)
-                prompts.append(prompt)
+                templated = tokenizer.apply_chat_template(
+                    raw_messages, tokenize=False, add_generation_prompt=True
+                )
+                prompts.append(templated)
                 agents_w_prompt.append(agent)
             assert len(agents_w_prompt) == len(self.all_agents), (
                 f"Agents w promt {len(agents_w_prompt)}, Agents: {len(self.all_agents)} "
@@ -190,7 +196,10 @@ class _Network:
         prompts = []
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-check_point:]) #CHECK THIS VALUE
-            prompts.append(prompt)
+            templated = tokenizer.apply_chat_template(
+                prompt, tokenize=False, add_generation_prompt=True
+            )
+            prompts.append(templated)
         
         # inference with LLM
         out = self._generate_outputs(pipe, prompts, phq9=True)
