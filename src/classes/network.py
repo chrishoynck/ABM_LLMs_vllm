@@ -344,6 +344,9 @@ class RandomNetwork(_Network):
         """
         Initialize the network
         """
+        if self.k == 0 and self.p == 0:
+            self.agent_w_highest_deg = self.all_agents[0]
+            return
         if self.k >0:
             print(f"A  network is initialized with beta value {self.p} and regular network degree {self.k}, and correlation {self.correlation}")
             # If degree `k` is provided, ensure each agent has exactly `k` connections.
@@ -415,6 +418,10 @@ class SocialDistanceAttachment(_Network):
         Initialize the network based on social distance attachment.
         """
 
+        # handle degree 0 case
+        if self.degree == 0:
+            self.agent_w_highest_deg = self.all_agents[0]
+            return
         # retrieve phq9 scores if available
         phq9_scores = []
         ages = []

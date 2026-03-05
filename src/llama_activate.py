@@ -149,6 +149,8 @@ def generate_parser():
     #test args
     parser.add_argument("--test_llms", action="store_true", help="Test LLMs on PHQ-9 questionnaire")
     parser.add_argument("--test_llms_model", type=str, default=None, metavar="MODEL", help="With --test_llms: run only this model. Use short alias (qwen4, qwen14, gemma12, llama8, mistral7) or full HuggingFace ID. If omitted, test all models.")
+    parser.add_argument("--interaction", action="store_true", help="Whether to test LLMs on interaction")
+
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling parameter for LLM")
     parser.add_argument("--temp", type=float, default=1.0, help="Temperature sampling parameter for LLM")
     parser.add_argument("--check_point", type=int, default=10, help="Checkpoint for PHQ-9 questionnaire")
@@ -370,7 +372,7 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
     vis.plot_distorted_fracs(fracs_dist_step, path, filename, save=args.save)
 
 
-def pca_visualize(all_networks_results, path, filename, args):
+def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shift=5):
     """Perform PCA visualization on TF-IDF results across different network states.
 
     Args:
@@ -384,8 +386,7 @@ def pca_visualize(all_networks_results, path, filename, args):
     sbert = True
     mentalbert = True
     use_umap = True
-    shift = 5
-    num_steps = 10
+
     n_components = 2
 
     # Use mean within-run variance for marker size (not between-run variance)
@@ -473,11 +474,30 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
 
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
+    personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
+
     for i in range(len(well_being)):
         well_being[i]["phq9_sumscore"] = 0
 
-    personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
-    tester = TestLLMs(well_being=well_being, num_agents=args.num_agents, seed=args.seed, personas=personas, deepseek=use_deepseek)
+    if args.interaction: 
+        network = build_network(args, 
+                            well_being=well_being, 
+                            personas=personas, 
+                            depressed_personas=None)
+        agentjes = network.all_agents
+    else:
+        agentjes = None
+
+
+    tester = TestLLMs(
+        well_being=well_being,
+        num_agents=args.num_agents,
+        seed=args.seed,
+        personas=personas,
+        deepseek=use_deepseek,
+        agents=agentjes,
+        interaction=args.interaction,
+    )
 
     temp = args.temp
     top_p = args.top_p
@@ -502,7 +522,7 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     )
 
     # Build paths via TestPathManager
-    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed)
+    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
 
     # Per-seed bias & error plots
     run_plot_dir = str(tpm.get_run_directory(is_plot=True))
@@ -527,6 +547,7 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         temp=temp,
         top_p=top_p,
         model_name=model_name,
+        interaction=args.interaction,
     )
 
     return total_mae, mae_per_phq9

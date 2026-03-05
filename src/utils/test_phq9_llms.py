@@ -14,25 +14,34 @@ import asyncio
 
 class TestLLMs:
     def __init__(self, seed: int = 42, num_agents: int = 5,
-                 personas: list = None, well_being: list = None, deepseek: bool = False):
+                 personas: list = None, agents=None, well_being: list = None,
+                 deepseek: bool = False, interaction: bool = False):
         self.rng = np.random.default_rng(seed)
         personas = self.rng.permutation(personas) if personas is not None else [None]*num_agents
         self.well_being = self.rng.permutation(well_being) if well_being is not None else [None]*num_agents
-        self.all_agents = [Agent(i, rng=np.random.default_rng(seed + i), persona=personas[i], 
-                              well_being=self.well_being[i]) for i in range(int(num_agents))]
+
+        self.num_agents = num_agents
+        self.interaction = interaction
+        if agents is None:
+            self.all_agents = [Agent(i, rng=np.random.default_rng(seed + i), persona=personas[i], 
+                                well_being=self.well_being[i]) for i in range(int(num_agents))]
+            
+        else: 
+            self.all_agents = agents
+
+        self.phq9_sequences = {}
+        self.phq9_indices = {}
+        scores = np.arange(28)
+        for agent in self.all_agents:
+                self.phq9_sequences[agent.ID] = self.rng.permutation(scores).tolist()
+                self.phq9_indices[agent.ID] = 0
+                agent.update_well_being(self.phq9_sequences[agent.ID][0]) 
+
         self.iterations = 0
         self.seed = seed
-        self.num_agents = num_agents
         self.deepseek = deepseek
         # For testing: assign each agent its own permutation of PHQ-9 scores (0..27)
         # that acts as the "true" target sequence across questionnaires.
-        scores = np.arange(28)
-        self.phq9_sequences = {}
-        self.phq9_indices = {}
-        for agent in self.all_agents:
-            self.phq9_sequences[agent.ID] = self.rng.permutation(scores).tolist()
-            self.phq9_indices[agent.ID] = 0
-            agent.update_well_being(self.phq9_sequences[agent.ID][0]) 
         
         self.client = None
         if self.deepseek:
@@ -52,8 +61,17 @@ class TestLLMs:
         Prepare the prompts for the agents.
         """
         prompts = []
+        # If there is no interaction (independent agents), use forced prompts;
+        # otherwise (interaction=True), use non-forced prompts so neighbors are considered.
+        force_active = not self.interaction
         for agent in self.all_agents:
-            raw_messages = agent.step_llm_tweet(tokenizer, self.rng, round_idx=self.iterations, force_active=True, tweet_block_phq9=True)
+            raw_messages = agent.step_llm_tweet(
+                tokenizer,
+                self.rng,
+                round_idx=self.iterations,
+                force_active=force_active,
+                tweet_block_phq9=True,
+            )
             if self.deepseek:
                 prompts.append(raw_messages)
             else:
@@ -99,18 +117,18 @@ class TestLLMs:
             outputs = llm.generate(prompts, sampling_params)
         return outputs
     
-    async def _generate_outputs_deepseek(self, prompts, temp=1.0, top_p=1.0):
-        async def generate_outje(prompt):
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=prompt,
-                temperature=temp,
-                top_p=top_p,
-                seed=self.seed + self.iterations)
-            return response.choices[0].message.content
-        todos = [generate_outje(prompt) for prompt in prompts]
-        outputs = await asyncio.gather(*todos)
-        return outputs
+    # async def _generate_outputs_deepseek(self, prompts, temp=1.0, top_p=1.0):
+    #     async def generate_outje(prompt):
+    #         response = await self.client.chat.completions.create(
+    #             model="deepseek-chat",
+    #             messages=prompt,
+    #             temperature=temp,
+    #             top_p=top_p,
+    #             seed=self.seed + self.iterations)
+    #         return response.choices[0].message.content
+    #     todos = [generate_outje(prompt) for prompt in prompts]
+    #     outputs = await asyncio.gather(*todos)
+    #     return outputs
     
     def _phq9_questionnaire(self, tokenizer, pipe,mistakes, check_point, temp, top_p):
         """
@@ -126,7 +144,10 @@ class TestLLMs:
         prompts = []
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-(check_point):], force_active=True)
-            prompts.append(prompt)
+            templated = tokenizer.apply_chat_template(
+                prompt, tokenize=False, add_generation_prompt=True
+            )
+            prompts.append(templated)
         
         # inference with LLM
         out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
@@ -186,7 +207,8 @@ class TestLLMs:
         if not self.deepseek:
             out = self._generate_outputs(pipe, prompts)
         else:
-            out = asyncio.run(self._generate_outputs_deepseek(prompts))
+            out = None
+            # out = asyncio.run(self._generate_outputs_deepseek(prompts))
 
         # agents send out their tweets + state update + stats
         self._apply_outputs_and_update_state(
@@ -307,7 +329,7 @@ class TestLLMs:
 
         return avg_change, bias_per_phq9, mae_per_phq9, total_mae
 
-    def export_tweets_with_phq9_txt(self, file_path, check_point, temp, top_p, model_name):
+    def export_tweets_with_phq9_txt(self, file_path, check_point, temp, top_p, model_name, interaction=False):
         """
         Write a plain-text log for this TestLLMs run, with tweet history and
         PHQ-9 values per agent, and explicit markers when PHQ-9 changes.
@@ -329,6 +351,7 @@ class TestLLMs:
         lines.append(f"temp: {temp}")
         lines.append(f"top_p: {top_p}")
         lines.append(f"check_point: {check_point}")
+        lines.append(f"interaction: {interaction}")
         lines.append("")  # blank line
 
         for agent in self.all_agents:
@@ -358,7 +381,7 @@ class TestLLMs:
         csv_path = file_path.replace(".txt", ".csv")
         with open(csv_path, "w", encoding="utf-8", newline="") as f_csv:
             writer = csv.writer(f_csv)
-            writer.writerow(["agent_id", "persona", "step", "phq9", "tweet"])
+            writer.writerow(["agent_id", "persona", "step", "phq9", "tweet", "interaction"])
 
             for agent in self.all_agents:
                 phq_series = list(agent.all_phq9_sumscores)
@@ -367,4 +390,4 @@ class TestLLMs:
                 for idx, value in enumerate(phq_series):
                     tweet = tweets[idx] if idx < len(tweets) else ""
                     tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
-                    writer.writerow([agent.ID, agent.persona, idx, value, tweet])
+                    writer.writerow([agent.ID, agent.persona, idx, value, tweet, interaction])

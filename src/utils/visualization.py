@@ -378,31 +378,14 @@ def plot_embedding_PCA_runs(mean_traj,
                         mentalbert=False,
                         reduction="pca",
                         save=False):
-    """
-    Plot PCA- or UMAP-reduced embedding trajectories. Points can be colored by PHQ-9; marker size by mean within-run variance.
-
-    Args:
-        mean_traj (dict[setting]): mean embedding trajectory (T, 2)
-        mean_within_var_per_setting (dict[setting], optional): (T,) mean within-window variance per time; used for marker size
-        mean_phq9_per_setting (dict[setting], optional): (T,) average PHQ-9 at each time point; used for scatter colors
-        num_steps (int): window size
-        shift (int): shift of window
-        sbert (bool): whether sentence-embedding model was used (vs TF-IDF)
-        mentalbert (bool): if True, label as MentalBERT; else SBERT
-        reduction (str): "pca" or "umap" for title and filename
-        path (str): path to save the figure
-        filename (str): filename to save the figure
-        save (bool): whether to save the figure
-    """
-    plt.figure(figsize=(5, 4))
-    if sbert:
-        embedding = "MentalBERT" if mentalbert else "SBERT"
-    else:
-        embedding = "TF-IDF"
+    
+    # Increased height slightly to accommodate the labels underneath
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.7))
+    
+    embedding = ("MentalBERT" if mentalbert else "SBERT") if sbert else "TF-IDF"
     reduc_label = reduction.upper()
-    plt.title(f"{embedding} {reduc_label}\n(window={num_steps}, shift={shift})")
 
-    # Compute global min/max PHQ-9 across all settings for dynamic color scaling
+    # --- Setup Global Color Scaling ---
     phq9_global_min, phq9_global_max = None, None
     if mean_phq9_per_setting is not None:
         all_phq9 = [np.asarray(v) for v in mean_phq9_per_setting.values()]
@@ -411,47 +394,159 @@ def plot_embedding_PCA_runs(mean_traj,
             phq9_global_max = float(np.max([p.max() for p in all_phq9]))
 
     sc = None
+    
+    # --- Plotting Loop ---
     for setting, traj in mean_traj.items():
-        traj = np.asarray(traj)  # (T, 2)
-
+        traj = np.asarray(traj)
+        num_windows = traj.shape[0]
+        time_steps = np.arange(num_windows) * shift
+        
+        mwv = None
         if mean_within_var_per_setting is not None and setting in mean_within_var_per_setting:
             mwv = np.asarray(mean_within_var_per_setting[setting])
-            if mwv.shape[0] == traj.shape[0]:
+            if mwv.shape[0] == num_windows:
                 mwv_max = mwv.max()
                 s = 5 + 20 * (mwv / (mwv_max + 1e-8)) if mwv_max > 0 else np.full_like(mwv, 10)
+                ax2.plot(time_steps, mwv, alpha=0.6, label=setting)
             else:
                 s = 10
         else:
             s = 10
 
-        # Color by average PHQ-9 if provided (scaled to data range for visibility)
+        phq9 = None
         if mean_phq9_per_setting is not None and setting in mean_phq9_per_setting:
             phq9 = np.asarray(mean_phq9_per_setting[setting])
-            if phq9.shape[0] == traj.shape[0]:
-                sc = plt.scatter(
-                    traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, label=setting,
-                    cmap="viridis", vmin=phq9_global_min, vmax=phq9_global_max
-                )
-            else:
-                plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
+            
+        if phq9 is not None and phq9.shape[0] == num_windows:
+            sc = ax1.scatter(
+                traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, 
+                cmap="viridis", vmin=phq9_global_min, vmax=phq9_global_max
+            )
         else:
-            plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
-        plt.plot(traj[:, 0], traj[:, 1], alpha=0.5, color="gray")
+            ax1.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7)
+            
+        ax1.plot(traj[:, 0], traj[:, 1], alpha=0.4, color="gray", linewidth=1)
 
-    plt.xlabel(f"{reduc_label} 1")
-    plt.ylabel(f"{reduc_label} 2")
-    plt.legend()
-    plt.grid(alpha=0.3)
+    # --- Formatting AX1 ---
+    # ax1.set_title(...)  # Removed as requested
+    ax1.set_xlabel(f"{reduc_label} 1")
+    ax1.set_ylabel(f"{reduc_label} 2")
+    ax1.grid(alpha=0.3)
+    
+    # Add (a) subscript underneath
+    ax1.text(0.5, -0.25, "(a)", transform=ax1.transAxes, 
+             ha='center', va='top', fontsize=12, fontweight='bold')
+    
     if mean_phq9_per_setting is not None and sc is not None:
-        cbar = plt.colorbar(sc, shrink=0.6)
-        cbar.set_label("Mean PHQ-9 (system)")
-    # plt.show()
+        cbar = fig.colorbar(sc, ax=ax1, shrink=0.7)
+        cbar.set_label("Mean PHQ-9")
 
-    print(f"Saving {reduc_label} plot to folder {path} with filename {filename}")
+    # --- Formatting AX2 ---
+    # ax2.set_title(...)  # Removed as requested
+    ax2.set_xlabel("Time Step")
+    ax2.set_ylabel("Variance")
+    ax2.grid(alpha=0.3)
+    
+    # Add (b) subscript underneath
+    ax2.text(0.5, -0.25, "(b)", transform=ax2.transAxes, 
+             ha='center', va='top', fontsize=12, fontweight='bold')
+
+    plt.tight_layout()
+
+    # --- Save Logic ---
     if save:
         emb_file = embedding.lower().replace("-", "_")
-        plt.savefig(f"{path}/{emb_file}_{reduction}_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300)
+        full_path = f"{path}/{emb_file}_{reduction}_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}"
+        plt.savefig(full_path, bbox_inches='tight', dpi=300)
+    
+    plt.show()
     plt.close()
+
+# def plot_embedding_PCA_runs(mean_traj,
+#                         mean_within_var_per_setting=None,
+#                         mean_phq9_per_setting=None,
+#                         num_steps=100,
+#                         shift=5,
+#                         path="",
+#                         filename="default.png",
+#                         sbert=False,
+#                         mentalbert=False,
+#                         reduction="pca",
+#                         save=False):
+#     """
+#     Plot PCA- or UMAP-reduced embedding trajectories. Points can be colored by PHQ-9; marker size by mean within-run variance.
+
+#     Args:
+#         mean_traj (dict[setting]): mean embedding trajectory (T, 2)
+#         mean_within_var_per_setting (dict[setting], optional): (T,) mean within-window variance per time; used for marker size
+#         mean_phq9_per_setting (dict[setting], optional): (T,) average PHQ-9 at each time point; used for scatter colors
+#         num_steps (int): window size
+#         shift (int): shift of window
+#         sbert (bool): whether sentence-embedding model was used (vs TF-IDF)
+#         mentalbert (bool): if True, label as MentalBERT; else SBERT
+#         reduction (str): "pca" or "umap" for title and filename
+#         path (str): path to save the figure
+#         filename (str): filename to save the figure
+#         save (bool): whether to save the figure
+#     """
+#     plt.figure(figsize=(4, 3))
+#     if sbert:
+#         embedding = "MentalBERT" if mentalbert else "SBERT"
+#     else:
+#         embedding = "TF-IDF"
+#     reduc_label = reduction.upper()
+#     plt.title(f"{embedding} {reduc_label}") #\n(window={num_steps}, shift={shift})")
+
+#     # Compute global min/max PHQ-9 across all settings for dynamic color scaling
+#     phq9_global_min, phq9_global_max = None, None
+#     if mean_phq9_per_setting is not None:
+#         all_phq9 = [np.asarray(v) for v in mean_phq9_per_setting.values()]
+#         if all_phq9:
+#             phq9_global_min = float(np.min([p.min() for p in all_phq9]))
+#             phq9_global_max = float(np.max([p.max() for p in all_phq9]))
+
+#     sc = None
+#     for setting, traj in mean_traj.items():
+#         traj = np.asarray(traj)  # (T, 2)
+
+#         if mean_within_var_per_setting is not None and setting in mean_within_var_per_setting:
+#             mwv = np.asarray(mean_within_var_per_setting[setting])
+#             if mwv.shape[0] == traj.shape[0]:
+#                 mwv_max = mwv.max()
+#                 s = 5 + 20 * (mwv / (mwv_max + 1e-8)) if mwv_max > 0 else np.full_like(mwv, 10)
+#             else:
+#                 s = 10
+#         else:
+#             s = 10
+
+#         # Color by average PHQ-9 if provided (scaled to data range for visibility)
+#         if mean_phq9_per_setting is not None and setting in mean_phq9_per_setting:
+#             phq9 = np.asarray(mean_phq9_per_setting[setting])
+#             if phq9.shape[0] == traj.shape[0]:
+#                 sc = plt.scatter(
+#                     traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, label=setting,
+#                     cmap="viridis", vmin=phq9_global_min, vmax=phq9_global_max
+#                 )
+#             else:
+#                 plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
+#         else:
+#             plt.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7, label=setting)
+#         plt.plot(traj[:, 0], traj[:, 1], alpha=0.5, color="gray")
+
+#     plt.xlabel(f"{reduc_label} 1")
+#     plt.ylabel(f"{reduc_label} 2")
+#     # plt.legend()
+#     plt.grid(alpha=0.3)
+#     if mean_phq9_per_setting is not None and sc is not None:
+#         cbar = plt.colorbar(sc, shrink=0.6)
+#         cbar.set_label("Mean PHQ-9")
+#     # plt.show()
+
+#     print(f"Saving {reduc_label} plot to folder {path} with filename {filename}")
+#     if save:
+#         emb_file = embedding.lower().replace("-", "_")
+#         plt.savefig(f"{path}/{emb_file}_{reduction}_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}.png", bbox_inches='tight', dpi=300)
+#     plt.close()
 
 #============ Network Analysis Visualization =============#
 
@@ -516,7 +611,7 @@ def plot_bias(bias_per_phq9, all_bias, directory="plots"):
     # Color code: Red for overestimating, Blue for underestimating
     colors = ['#ff6666' if b > 0 else '#6666ff' for b in biases]
     
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(5, 4))
     plt.bar(scores, biases, color=colors, edgecolor='black', alpha=0.8)
     
     # Zero line represents perfect accuracy
@@ -524,7 +619,7 @@ def plot_bias(bias_per_phq9, all_bias, directory="plots"):
     
     plt.xlabel('Ground Truth $PHQ-9$ Score')
     plt.ylabel('Mean Bias')
-    plt.title(f'LLM Bias (total bias: {(all_bias)}) ')
+    plt.title(f'LLM Bias (Total Bias: {all_bias:.2f})')
     plt.xticks(range(0, 28))
     plt.grid(axis='y', linestyle='--', alpha=0.3)
     
@@ -547,12 +642,12 @@ def plot_phq9_error(mae_per_phq9, total_mae, directory="plots"):
     scores = sorted(mae_per_phq9.keys())
     errors = [mae_per_phq9[s] for s in scores]
     
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(5, 4))
     plt.bar(scores, errors, color='#66b3ff', edgecolor='black', alpha=0.8)
     
     plt.xlabel('Ground Truth $PHQ-9$ Score')
     plt.ylabel('Mean Absolute Error (PHQ-9 points)')
-    plt.title(f'LLM PHQ-9 error per score (total MAE: {total_mae:.3f})')
+    plt.title(f'LLM PHQ-9 Error (Total MAE: {total_mae:.2f})')
     plt.xticks(range(0, 28))
     plt.grid(axis='y', linestyle='--', alpha=0.3)
 

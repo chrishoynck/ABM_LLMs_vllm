@@ -165,7 +165,7 @@ class Agent:
         else:
             well_being_info = self.well_being_prompt(self.well_being)
         
-        system = self._PROMPTS["phq9"]["system"]
+        system = self._PROMPTS["phq9"]["system_user"]
 
         if force_active:
             user = self._PROMPTS["phq9"]["user_template_forced"].format(
@@ -173,7 +173,7 @@ class Agent:
                 tweets_block="\n".join(tweets)
             )
         else:
-            user = self._PROMPTS["phq9"]["user_template"].format(
+            user = self._PROMPTS["phq9"]["user_template_user"].format(
                 agent_id=self.ID,
                 well_being_info=well_being_info,
                 tweets_block="\n".join(tweets)
@@ -208,6 +208,21 @@ class Agent:
         
         system_content = system_str.format(max_chars=max_chars)
         if not force_active:
+            if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
+                # Use counter to efficiently grab tweets since last PHQ-9 update
+                # (all share the same score, no full-history scan needed)
+                recent = self.tweethistory[-self._tweets_since_phq9_update:]
+                same_score_tweets = [t for t in recent if t and t != "NO_TWEET"]
+                if same_score_tweets:
+                    tweets_list = "\n".join(f'- "{t[:max_chars]}"' for t in same_score_tweets)
+                    own_block = (
+                        f"\nYour previous tweets for this well-being state:\n{tweets_list}\n"
+                        f"(Do NOT adopt the same topics or reuse the same words. "
+                        f"Be original and vary your content.)"
+                    )
+                else:
+                    own_block = ""
+
             user_content = prompt_cfg["user_template"].format(
                 agent_id = self.ID,
                 persona=self.persona,

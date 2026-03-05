@@ -102,7 +102,7 @@ class PathManager:
 class TestPathManager:
     """Path manager for LLM test runs (bias/error plots, tweets, results CSV)."""
 
-    def __init__(self, model_name, temp, top_p, check_point, seed):
+    def __init__(self, model_name, temp, top_p, check_point, seed, interaction=False):
         self.base_data = Path("data/test")
         self.base_plots = Path("plots/test")
         self.results_csv = self.base_data / "results.csv"
@@ -114,10 +114,11 @@ class TestPathManager:
         self.top_p = top_p
         self.check_point = check_point
         self.seed = seed
+        self.interaction = "inter" if interaction else "no_inter"
 
     def _settings_dir(self):
         """Settings part of the path: {model}/temp_{t}_top_p_{p}_cp_{cp}"""
-        return f"{self.safe_name}/temp_{self.temp}_top_p_{self.top_p}_cp_{self.check_point}"
+        return f"{self.safe_name}/temp_{self.temp}_top_p_{self.top_p}_cp_{self.check_point}_{self.interaction}"
 
     def get_run_directory(self, is_plot=False):
         """Per-seed directory: .../seed_{seed}/"""
