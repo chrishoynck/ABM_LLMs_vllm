@@ -12,3 +12,5 @@ python src/llama_activate.py sda --use_saved_network --num_agents 20 --rounds 20
 
 
 python src/llama_activate.py sda --num_agents 100 --rounds 600 --seeds 33 34 --save --degree 18
+
+python src/llama_activate.py sda --num_agents 20 --rounds 20 --seeds 33 --save --degree 0

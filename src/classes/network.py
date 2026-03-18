@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from classes.agent import Agent
+from utils.format_config import FC
 from scipy.spatial.distance import cdist
 from powerlaw import Fit
 
@@ -101,7 +102,10 @@ class _Network:
                      n_grams=[], 
                      distorted_tweets=[], 
                      time_info = False, 
-                     check_point=10):
+                     check_point=10,
+                     sample_phq9=None,
+                     cap_phq9=False,
+                     phq9_threshold=0):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
 
@@ -109,8 +113,9 @@ class _Network:
         1. Prepare prompts  (reads current well_being for tweet tone)
         2. Generate tweets
         3. Commit tweets    (records tweet + current PHQ-9 together)
-        4. If checkpoint: run PHQ-9 questionnaire → updates well_being
-                          for the NEXT block of tweets
+        4. PHQ-9 questionnaire → updates well_being for the NEXT block of tweets
+           - sample_phq9 set: every step, sample that fraction of agents
+           - sample_phq9 not set: every check_point steps, all agents
         """
         self.iterations += 1
         t0 = time.perf_counter()
@@ -130,8 +135,15 @@ class _Network:
         # PHQ-9 questionnaire AFTER commit so that:
         #  - all_phq9_sumscores[i] matches the PHQ-9 that prompted tweethistory[i]
         #  - the questionnaire sees the current round's tweet in tweethistory
-        if self.iterations % check_point == 0:
-            self._phq9_questionnaire(tokenizer, pipe, check_point=check_point)
+        if sample_phq9:
+            n_sample = max(1, int(sample_phq9 * len(self.all_agents)))
+            sampled = list(self.rng.choice(self.all_agents, n_sample, replace=False))
+            self._phq9_questionnaire(tokenizer, pipe, check_point=check_point,
+                                     agents=sampled, cap_phq9=cap_phq9,
+                                     phq9_threshold=phq9_threshold)
+        elif self.iterations % check_point == 0:
+            self._phq9_questionnaire(tokenizer, pipe, check_point=check_point,
+                                     cap_phq9=cap_phq9, phq9_threshold=phq9_threshold)
 
         if time_info:
             print(f"Time to prepare prompts: {t1 - t0:.4f} seconds")
@@ -157,7 +169,7 @@ class _Network:
         if self.iterations == 1:  # or len(self.activated) == 0:
             for agent in self.all_agents:
                 # set default
-                agent.send_tweet(max_chars=240, raw_tweet="NO_TWEET")
+                agent.send_tweet(max_chars=240, raw_tweet=FC.NO_CONTENT)
             for agent in self.rng.choice(self.all_agents, int(len(self.all_agents) * update_fraction), replace=False):
                 raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
                 templated = tokenizer.apply_chat_template(
@@ -185,30 +197,48 @@ class _Network:
             )
         return prompts, agents_w_prompt
     
-    def _phq9_questionnaire(self, tokenizer, pipe, check_point=20):
+    def _phq9_questionnaire(self, tokenizer, pipe, check_point=20,
+                            agents=None, cap_phq9=False, phq9_threshold=0):
         """
-        Have all agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
+        Have agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
+
         Args:
             tokenizer: The tokenizer for the LLM.
             pipe: The LLM pipeline for generating responses.
+            check_point: Number of recent tweets to include as context.
+            agents: Subset of agents to test. Defaults to all agents.
+            cap_phq9: If True, clamp score changes to ±1 per update.
+            phq9_threshold: Minimum absolute score difference required
+                            before the change is applied (0 = always apply).
         """
-        # prepare prompts for all agents
+        if agents is None:
+            agents = self.all_agents
+
         prompts = []
-        for agent in self.all_agents:
-            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-check_point:]) #CHECK THIS VALUE
+        for agent in agents:
+            prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-check_point:])
             templated = tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True
             )
             prompts.append(templated)
         
-        # inference with LLM
         out = self._generate_outputs(pipe, prompts, phq9=True)
         
-        # update well-being scores based on responses
-        for agent, answer in zip(self.all_agents, out):
+        for agent, answer in zip(agents, out):
             questionnaire_answers = answer.outputs[0].text.strip()
-            sum_score = agent.parse_phq9_answers(questionnaire_answers)
-            agent.update_well_being(sum_score)
+            new_score = agent.parse_phq9_answers(questionnaire_answers)
+            old_score = (agent.well_being.get("phq9_sumscore", 0)
+                         if agent.well_being else 0)
+            diff = new_score - old_score
+
+            if phq9_threshold > 0 and abs(diff) < phq9_threshold:
+                continue
+
+            if cap_phq9:
+                diff = max(-1, min(1, diff))
+                new_score = old_score + diff
+
+            agent.update_well_being(new_score)
 
     # VLLM
     def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False):
@@ -290,7 +320,7 @@ class _Network:
 
                     # compute distorted_tweets this step
                     if agent.activation_state and agent.distorted_tweets[-1]:
-                        assert agent.last_tweet != "NO_TWEET", "activated agent should have tweeted"
+                        assert agent.last_tweet != FC.NO_CONTENT, f"activated agent should have {FC.label}ed"
                         distorted_this_step += 1
 
                     # running window over last 5 tweets

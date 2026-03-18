@@ -4,11 +4,13 @@ import json
 import numpy as np
 import os
 import re
+import csv
 import torch
 import torch.nn as nn
 import copy
 import torch.optim as optim
 from src.utils.metrics import *
+from src.utils.format_config import FC
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def parse_tweets_with_phq9(file_path: str):
@@ -81,109 +83,289 @@ def parse_tweets_with_phq9(file_path: str):
     return tweet_blocks, true_answers
 
 
-def call_optimizer(file_path: str, model_name="meta-llama/Llama-3.1-8B-Instruct"):
+def parse_tweets_with_phq9_csv(file_path: str):
     """
-    Parse tweet data from file_path, optimise the PHQ-9 system
-    instruction using textgrad, and write the resulting prompt to
-    the same directory as the input file.
+    Parse the tweets_with_phq9.csv file written by TestLLMs.export_tweets_with_phq9_txt.
+
+    CSV format (one row per agent/step):
+        agent_id, persona, age, step, phq9, tweet, interaction
+
+    We reconstruct the same (tweet_blocks, true_answers) structure as the
+    text parser by grouping consecutive rows with the same (agent_id, phq9)
+    into one block and using that PHQ-9 score as the label.
+    """
+    tweet_blocks: list[list[str]] = []
+    true_answers: list[int] = []
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        current_agent = None
+        current_phq9 = None
+        current_tweets: list[str] = []
+
+        for row in reader:
+            agent_id = row.get("agent_id")
+            # Robust to missing/empty phq9 field
+            try:
+                phq9 = int(row.get("phq9")) if row.get("phq9") not in (None, "") else None
+            except ValueError:
+                continue
+
+            tweet = (row.get("tweet") or "").strip()
+
+            if agent_id != current_agent or phq9 != current_phq9:
+                # Flush previous block for previous agent/score
+                if current_tweets and current_phq9 is not None:
+                    if len(current_tweets) > 1:
+                        tweet_blocks.append(current_tweets)
+                        true_answers.append(current_phq9)
+
+                current_agent = agent_id
+                current_phq9 = phq9
+                current_tweets = [tweet] if tweet else []
+            else:
+                if tweet:
+                    current_tweets.append(tweet)
+
+        # Flush last block
+        if current_tweets and current_phq9 is not None:
+            if len(current_tweets) > 1:
+                tweet_blocks.append(current_tweets)
+                true_answers.append(current_phq9)
+
+    return tweet_blocks, true_answers
+
+
+FORMAT_SPLIT_MARKER = "### OPTIONS ###"
+LLAMA_70B = "meta-llama/Llama-3.3-70B-Instruct"
+
+
+# def _split_system_prompt(full_system: str):
+#     """Split the PHQ-9 system prompt into an optimisable instruction part
+#     and a fixed format part (options, questions, answer format)."""
+#     idx = full_system.find(FORMAT_SPLIT_MARKER)
+#     if idx == -1:
+#         return full_system.rstrip(), ""
+#     return full_system[:idx].rstrip(), full_system[idx:]
+
+
+def _build_user_message(format_block: str, tweet_block: list, prompts: dict) -> str:
+    """Compose the user message: fixed PHQ-9 format + tweet data."""
+    tweets_text = prompts["phq9"]["user_template_forced"].format(
+        tweets_block="\n".join(tweet_block)
+    )
+    return f"{format_block}\n\n{tweets_text}"
+
+
+def _evaluate_instruction(engine, instruction_text: str, format_block: str,
+                          blocks: list, answers: list, prompts: dict) -> float:
+    """Run the current instruction on *blocks* and return the MAE."""
+    total_ae = 0
+    for tweet_block, true_answer in zip(blocks, answers):
+        user_msg = _build_user_message(format_block, tweet_block, prompts)
+        response = engine.generate(user_msg, system_prompt=instruction_text)
+        predicted = parse_phq9_answers(response)
+        total_ae += abs(predicted - true_answer)
+    return total_ae / max(len(blocks), 1)
+
+
+def _make_loss_prompt(true_answer: int, predicted: int) -> str:
+    """Concise per-sample loss prompt for the backward engine."""
+    error = predicted - true_answer
+    if error > 0:
+        direction = f"overestimated by {error}"
+    elif error < 0:
+        direction = f"underestimated by {abs(error)}"
+    else:
+        direction = "correct"
+    return (
+        f"True PHQ-9 sumscore = {true_answer}, predicted = {predicted} ({direction}). "
+        f"Give concise, actionable feedback (1-2 sentences) on what the system "
+        f"instruction should say differently to improve reasoning from tweets "
+        f"to PHQ-9 scores. Focus on calibration patterns and reasoning gaps, "
+        f"not on individual PHQ-9 item scores."
+    )
+
+
+def call_optimizer(
+    file_path: str,
+    model_name: str = LLAMA_70B,
+    batch_size: int = 4,
+    max_instruction_words: int = 300,
+    num_steps: int = None,
+    val_fraction: float = 0.15,
+    validate_every: int = 5,
+    seed: int = 42,
+    **vllm_kwargs,
+):
+    """
+    Optimise the PHQ-9 instruction (task framing + reasoning guidance)
+    using TextGrad with batched gradient accumulation.
+
+    The PHQ-9 questions, scoring options, and answer format are kept fixed
+    and passed in the user message so they are never modified.
 
     Parameters:
-        file_path (str): Path to a tweets_with_phq9.txt file.
-        model_name (str): model ID used for both forward and backward engine.
+        file_path (str): Path to a tweets_with_phq9.txt produced by TestLLMs.
+        model_name (str): HuggingFace model ID for both the forward and backward (teacher)
+            engine.  Defaults to Llama-3.3-70B-Instruct.
+        batch_size (int): Number of samples per gradient step.
+        max_instruction_words (int): Soft word-count cap enforced via TGD constraints.
+        num_steps (int or None): Optimisation steps.  None -> one epoch over the training set.
+        val_fraction (float): Fraction of data reserved for validation.
+        validate_every (int): Run validation every N steps.
+        seed (int): RNG seed for data shuffling.
+        **vllm_kwargs: Extra kwargs forwarded to ChatVLLM (e.g. dtype).
     """
-    tweet_blocks, true_answers = parse_tweets_with_phq9(file_path)
-    print(f"Parsed {len(tweet_blocks)} tweet blocks from {file_path}")
+    if file_path.endswith(".csv"):
+        csv_path = file_path
+        txt_path = file_path.replace(".csv", ".txt")
+    else:
+        txt_path = file_path
+        csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
 
-    engine = ChatVLLM(model_string=model_name)
+    if os.path.isfile(csv_path):
+        tweet_blocks, true_answers = parse_tweets_with_phq9_csv(csv_path)
+        print(f"Parsed {len(tweet_blocks)} tweet blocks from {csv_path}")
+    else:
+        tweet_blocks, true_answers = parse_tweets_with_phq9(txt_path)
+        print(f"Parsed {len(tweet_blocks)} tweet blocks from {txt_path} (CSV not found, used TXT parser)")
+
+    # Train / validation split
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(tweet_blocks))
+
+    # ADDRESS THIS:
+    n_val = max(1, int(len(tweet_blocks) * val_fraction/5)) # just for now, reduce the size of the validation set to 1/5 of the data for validation
+
+    val_blocks = [tweet_blocks[i] for i in perm[:n_val]]
+    val_answers = [true_answers[i] for i in perm[:n_val]]
+    train_blocks = [tweet_blocks[i] for i in perm[n_val:]]
+    train_answers = [true_answers[i] for i in perm[n_val:]]
+    print(f"Train: {len(train_blocks)},  Validation: {len(val_blocks)}")
+
+    # Engine (single model for forward + backward)
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
+    engine = ChatVLLM(
+        model_string=model_name,
+        tensor_parallel_size=tp,
+        gpu_memory_utilization=0.90,
+        max_model_len=16384,
+        **vllm_kwargs,
+    )
     tg.set_backward_engine(engine, override=True)
 
-    with open('data/prompts.json', 'r') as f:
+    # --- split prompt into instruction (grad) + format (fixed) --------------
+    with open(FC.PROMPTS_FILE, "r") as f:
         prompts = json.load(f)
 
-    system_prompt_string = prompts["phq9"]["system"]
+    # full_system = prompts["phq9"]["system"]
+    # instruction_text, format_block = _split_system_prompt(full_system)
+
+    instruction_text = prompts["phq9"]["system_instruction"]
+    format_block = prompts["phq9"]["System_format"]
+
     instruction = tg.Variable(
-        system_prompt_string,
+        instruction_text,
         role_description=(
-            "full system prompt for PHQ-9 assessment: contains the task framing, "
-            "reasoning instructions, the 9 PHQ-9 questions, scoring options, "
-            "and the required answer format"
+            "System-prompt INSTRUCTION for PHQ-9 assessment from tweets. "
+            "Contains task framing and step-by-step reasoning guidance only. "
+            "The PHQ-9 questions, scoring options, and answer format are provided separately and must NOT be duplicated here."
         ),
         requires_grad=True,
     )
 
-    optimizer = tg.TGD(parameters=[instruction])
-    permutation_blocks = np.random.permutation(len(tweet_blocks))
-    permuted_tweet_blocks = [tweet_blocks[i] for i in permutation_blocks]
-    permuted_true_answers = [true_answers[i] for i in permutation_blocks]
+    optimizer = tg.TGD(
+        parameters=[instruction],
+        constraints=[
+            f"The instruction MUST stay concise — at most {max_instruction_words} words.",
+            "Do NOT include the PHQ-9 questions, scoring options (0-3), or "
+            "answer format — they are provided separately in the user message.",
+            "Focus on actionable reasoning guidance that helps calibrate "
+            "PHQ-9 inference from tweet histories.",
+        ],
+        gradient_memory=0,
+    )
 
-    for i, (tweet_block, true_answer) in enumerate(zip(permuted_tweet_blocks, permuted_true_answers)):
+    if num_steps is None:
+        num_steps = min(50, max(1, len(train_blocks) // batch_size))
 
-        for j, tweet in enumerate(tweet_block):
-           print(f"Tweet {j+1}: {tweet}")
-        print("--------------------------------")
-        user_string = prompts["phq9"]["user_template_forced"].format(
-            tweets_block="\n".join(tweet_block)
+    best_val_mae = float("inf")
+    best_instruction = instruction.value
+
+    # Optimisation loop
+    for step in range(num_steps):
+        batch_idx = rng.choice(
+            len(train_blocks),
+            size=min(batch_size, len(train_blocks)),
+            replace=False,
         )
+        batch_blocks = [train_blocks[i] for i in batch_idx]
+        batch_answers = [train_answers[i] for i in batch_idx]
 
-        question = tg.Variable(
-            user_string,
-            role_description="user message with the patient's tweet history to assess",
-            requires_grad=False,
-        )
+        optimizer.zero_grad()
+        model = tg.BlackboxLLM(engine, system_prompt=instruction)
 
-        prediction_val, instruction = prompt_optimizer(
-            true_answer, engine, optimizer, instruction, question, i
-        )
-        predicted_score = parse_phq9_answers(prediction_val)
-        print(f"\n\n[{i+1}/{len(tweet_blocks)}] true_phq9={true_answer}  predicted={predicted_score}")
+        losses = []
+        step_errors = []
 
-    # Write the optimised prompt next to the input file
+        for tweet_block, true_answer in zip(batch_blocks, batch_answers):
+            user_msg = _build_user_message(format_block, tweet_block, prompts)
+            question = tg.Variable(
+                user_msg,
+                role_description="PHQ-9 format, questions, and patient tweet history",
+                requires_grad=False,
+            )
+
+            prediction = model(question)
+            predicted_score = parse_phq9_answers(prediction.value)
+            error = predicted_score - true_answer
+            step_errors.append(error)
+
+            loss_fn = tg.TextLoss(_make_loss_prompt(true_answer, predicted_score))
+            loss = loss_fn(prediction)
+            losses.append(loss)
+
+        total_loss = tg.sum(losses)
+        total_loss.backward()
+        optimizer.step()
+
+        batch_mae = np.mean(np.abs(step_errors))
+        print(f"[Step {step+1}/{num_steps}]  batch MAE={batch_mae:.2f}  errors={step_errors}")
+
+        if (step + 1) % 5 == 0:
+            print(f"  Current instruction:\n    {instruction.value[:200]}...")
+
+        # --- periodic validation --------------------------------------------
+        if (step + 1) % validate_every == 0 or step == num_steps - 1:
+            print(f"Validating on {len(val_blocks)} validation blocks \n\n")
+            val_mae = _evaluate_instruction(
+                engine, instruction.value, format_block,
+                val_blocks, val_answers, prompts,
+            )
+            print(f"  -> Validation MAE: {val_mae:.2f}  (best: {best_val_mae:.2f})")
+            if val_mae < best_val_mae:
+                best_val_mae = val_mae
+                best_instruction = instruction.value
+                print("  -> New best instruction saved!")
+
+    # --- save results -------------------------------------------------------
     output_dir = os.path.dirname(file_path)
-    output_path = os.path.join(output_dir, "optimized_prompt.txt")
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(instruction.value)
-    print(f"Optimised prompt written to {output_path}")
 
-    return instruction
+    instr_path = os.path.join(output_dir, "optimized_instruction.txt")
+    with open(instr_path, "w", encoding="utf-8") as f:
+        f.write(best_instruction)
+    print(f"\nBest instruction (val MAE={best_val_mae:.2f}) → {instr_path}")
 
-def prompt_optimizer(true_answer, 
-                    engine, 
-                    optimizer, 
-                    instruction,
-                    question, i=0):
+    full_path = os.path.join(output_dir, "optimized_full_prompt.txt")
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(best_instruction + "\n\n" + format_block)
+    print(f"Full re-assembled prompt → {full_path}")
 
-    model = tg.BlackboxLLM(engine, system_prompt=instruction)
-    prediction = model(question)
-    total_score = parse_phq9_answers(prediction.value)
+    return best_instruction
 
-    error = total_score - true_answer
-    if error > 0:
-        direction = f"overestimated by {error} points"
-    elif error < 0:
-        direction = f"underestimated by {abs(error)} points"
-    else:
-        direction = "matched exactly"
 
-    loss_fn = tg.TextLoss(f"""You are a clinical supervisor reviewing a PHQ-9 assessment produced by a student LLM.
-
-        The true PHQ-9 sumscore is {true_answer}. The student predicted {total_score} ({direction}).
-
-        Evaluate the student's response and provide targeted feedback to improve the SYSTEM PROMPT that guides the student. Focus on:
-
-        1. **Per-item analysis**: For each PHQ-9 dimension (Q1-Q9), assess whether the student's score seems justified by the tweet content. Which specific items were likely over- or under-scored?
-        2. **Reasoning gaps**: What patterns in the tweets did the student likely miss or misinterpret? For example: did it confuse cultural expression with distress? Did it ignore subtle cues of sleep disruption, appetite change, or concentration issues?
-        3. **Calibration**: Is the student systematically biased (e.g., always scoring low because tweets don't explicitly mention symptoms, or scoring high because of emotional language that isn't truly pathological)?
-        4. **Instruction improvement**: What specific changes to the system prompt's reasoning instructions would help the student better calibrate its PHQ-9 inference from tweet histories?
-
-        Be specific and actionable. Focus on what the system prompt should tell the LLM to do differently.""")
-
-    loss = loss_fn(prediction)
-    loss.backward()
-    optimizer.step()
-    if i % 10 == 0:
-        print(f"\n\nUPDATED INSTRUCTION: {instruction.value}")
-
-    return prediction.value, instruction
 
 def parse_phq9_answers(answers: str) -> int:
         """
@@ -224,9 +406,7 @@ def parse_phq9_answers(answers: str) -> int:
         
         return total_score
 
-# call_optimizer(
-#     "data/test/meta-llama_Llama-3.1-8B-Instruct/temp_0.8_top_p_0.6_cp_10/seed_61/tweets_with_phq9.txt"
-# )
+
 
 # =============================== BERT Model ===============================
 
@@ -521,10 +701,9 @@ if __name__ == "__main__":
     mental_bert = True
     file_path = "data/test/meta-llama_Llama-3.1-8B-Instruct/temp_0.8_top_p_0.6_cp_10/seed_71/tweets_with_phq9.txt"
     base_model_name = "meta-llama_Llama-3.1-8B-Instruct"
-    prompt_optimizer = False
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    run_prompt_optimizer = True
 
-    if prompt_optimizer:
-        call_optimizer(file_path, base_model_name.replace("/", "_")) 
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
@@ -532,13 +711,16 @@ if __name__ == "__main__":
 
     print(f"Using device: {device}")
 
-    if create_new_embeddings:
-        save_embeddings_for_file(file_path, base_model_name, device, mentalbert=mental_bert)
-    
-    if mental_bert:
-        dir_name = "mentalbert_embeddings"
+    if run_prompt_optimizer:
+        call_optimizer(file_path, model_name=model_name, batch_size=4)
     else:
-        dir_name = "sbert_embeddings"
+        if create_new_embeddings:
+            save_embeddings_for_file(file_path, base_model_name, device, mentalbert=mental_bert)
+        
+        if mental_bert:
+            dir_name = "mentalbert_embeddings"
+        else:
+            dir_name = "sbert_embeddings"
 
-    embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
-    train_BERT_model(embeddings_path, base_model_name, device, mental_bert=mental_bert)
+        embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
+        train_BERT_model(embeddings_path, base_model_name, device, mental_bert=mental_bert)

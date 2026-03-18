@@ -102,6 +102,9 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         "CDS Info": network.cds_info,
         "Agent_w_Highest_Deg": network.agent_w_highest_deg.ID,
         "directed": network.directed,
+        "sample_phq9": getattr(network, 'sample_phq9', None),
+        "cap_phq9": getattr(network, 'cap_phq9', False),
+        "phq9_threshold": getattr(network, 'phq9_threshold', 0),
     }
 
     # randomness:
@@ -205,6 +208,10 @@ def generate_network(args, pipe):
     else:
         # Fallback if loading old files without State property
         network.state = "basis"
+
+    network.sample_phq9 = props.get("sample_phq9", None)
+    network.cap_phq9 = props.get("cap_phq9", False)
+    network.phq9_threshold = props.get("phq9_threshold", 0)
 
     network.cds_info = props["CDS Info"]
     network.degree_distribution = {}

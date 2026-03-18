@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from classes.agent import Agent
+from utils.format_config import FC
 from vllm import LLM, SamplingParams
 import os
 import pandas as pd
@@ -115,6 +116,7 @@ class TestLLMs:
 
             # VLLM does batching automatically. 
             outputs = llm.generate(prompts, sampling_params)
+
         return outputs
     
     # async def _generate_outputs_deepseek(self, prompts, temp=1.0, top_p=1.0):
@@ -130,7 +132,7 @@ class TestLLMs:
     #     outputs = await asyncio.gather(*todos)
     #     return outputs
     
-    def _phq9_questionnaire(self, tokenizer, pipe,mistakes, check_point, temp, top_p):
+    def _phq9_questionnaire(self, tokenizer, pipe, mistakes, check_point, temp, top_p):
         """
         Have all agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
         Args:
@@ -153,28 +155,44 @@ class TestLLMs:
         out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
         # update well-being scores based on responses
         for agent, answer in zip(self.all_agents, out):
-            if agent.ID == 0:
-                print("answer agent 0: ", answer.outputs[0].text.strip(), "\n\n")
+            if agent.ID < 10:
+                print(f"answer agent {agent.ID}: ", answer.outputs[0].text.strip(), "\n\n")
             questionnaire_answers = answer.outputs[0].text.strip()
             sum_score = agent.parse_phq9_answers(questionnaire_answers)
 
-            # Determine this agent's current true PHQ-9 score from its own permutation sequence.
-            sequence_phq9 = self.phq9_sequences[agent.ID]
-            idx_sequence = self.phq9_indices[agent.ID]
-            true_score = sequence_phq9[idx_sequence]
+            true_score, next_score = self._old_new_phq9(agent, new_phq9=True)
+
+            # # Determine this agent's current true PHQ-9 score from its own permutation sequence.
+            # sequence_phq9 = self.phq9_sequences[agent.ID]
+            # idx_sequence = self.phq9_indices[agent.ID]
+            # true_score = sequence_phq9[idx_sequence]
 
             # Record the LLM's error (mae, bias)
             change = sum_score - true_score
             mistakes[true_score].append(change)
 
             # increase index (wrap around if we ever exceed the permutation length)
-            self.phq9_indices[agent.ID] = (idx_sequence + 1) % len(sequence_phq9)
-            idx_sequence = self.phq9_indices[agent.ID]
-            next_score = sequence_phq9[idx_sequence]
+            # self.phq9_indices[agent.ID] = (idx_sequence + 1) % len(sequence_phq9)
+            # idx_sequence = self.phq9_indices[agent.ID]
+            # next_score = sequence_phq9[idx_sequence]
 
             # update well-being score
-            agent.update_well_being(next_score)
+            agent.update_well_being(next_score, new_phq9=True)
         return mistakes
+
+    def _old_new_phq9(self, agent):
+        """
+        Get the old and new PHQ-9 scores for an agent.
+        """
+        sequence_phq9 = self.phq9_sequences[agent.ID]
+        idx_sequence = self.phq9_indices[agent.ID]
+        true_score = sequence_phq9[idx_sequence]
+
+        self.phq9_indices[agent.ID] = (idx_sequence + 1) % len(sequence_phq9)
+        next_score = sequence_phq9[idx_sequence]
+
+
+        return true_score, next_score
 
     def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, update_score=False):
         """
@@ -183,6 +201,9 @@ class TestLLMs:
         """
         # agents send out their tweets
         for agent, tweet in zip(agents_w_prompt, out):
+            if agent.ID < 10:
+                current_phq9 = agent.well_being.get("phq9_sumscore") if agent.well_being else -1
+                print(f"tweet agent {agent.ID}: ", tweet.outputs[0].text.strip(), "phq9: ", current_phq9, "\n\n")
             if not self.deepseek:
                 raw = tweet.outputs[0].text.strip()
             else:
@@ -196,7 +217,15 @@ class TestLLMs:
             _ = agent.commit(n_grams=n_grams, update_score=update_score)
 
 
-    def update_round(self, mistake_dict, tokenizer, pipe, n_grams=[], check_point= 20, temp=1.0, top_p=1.0):
+    def update_round(self, 
+                    mistake_dict, 
+                    tokenizer, 
+                    pipe, 
+                    n_grams=[], 
+                    check_point= 20, 
+                    temp=1.0, 
+                    top_p=1.0, 
+                    test_performance=True):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
@@ -214,10 +243,15 @@ class TestLLMs:
         self._apply_outputs_and_update_state(
             agents_w_prompt, out, n_grams
         )
-
-        if self.iterations % check_point  == 0:
+        if self.iterations % check_point == 0 and test_performance:
             mistake_dict = self._phq9_questionnaire(tokenizer, pipe, mistake_dict, check_point, temp=temp, top_p=top_p)
-  
+        elif self.iterations % check_point == 0:
+            for agent in self.all_agents:
+                assert agent._tweets_since_phq9_update == check_point, "agent should have updated its PHQ-9 score every check_point iterations"
+                old, new = self._old_new_phq9(agent)
+                agent.update_well_being(new, new_phq9=True)
+        return mistake_dict
+                
         
     def assess_performance(self, mistake_dict):
         """
@@ -301,7 +335,16 @@ class TestLLMs:
         
         print(f"Results logged to {file_path}")
     
-    def run_simulation(self, tokenizer, pipe, n_rounds=100, n_grams=[], check_point=20, temp=1.0, top_p=1.0, model_name="llama_3_8b_instruct"):
+    def run_simulation(self, 
+                       tokenizer, 
+                       pipe, 
+                       n_rounds=100, 
+                       n_grams=[], 
+                       check_point=20, 
+                       temp=1.0, 
+                       top_p=1.0, 
+                       model_name="llama_3_8b_instruct", 
+                       test_performance=True):
         """
         Run the full simulation for a specified number of rounds.
         """
@@ -309,25 +352,28 @@ class TestLLMs:
         mistake_dict = {i: [] for i in range(0, 28)}  # PHQ-9 scores range from 0 to 27
 
         for round_idx in range(n_rounds):
-            self.update_round(mistake_dict, 
-                              tokenizer, 
-                              pipe, 
-                              n_grams=n_grams, 
-                              check_point=check_point, 
-                              temp=temp, 
-                              top_p=top_p)
+            mistake_dict = self.update_round(mistake_dict, 
+                              tokenizer,
+                              pipe,
+                              n_grams=n_grams,
+                              check_point=check_point,
+                              temp=temp,
+                              top_p=top_p,
+                              test_performance=test_performance)
         
-        avg_change, bias_per_phq9, mae_per_phq9, total_mae = self.assess_performance(mistake_dict)
-        self.log_results_to_csv("data/test/results.csv", model_name, 
-                                temp=temp, 
-                                top_p=top_p, 
-                                check_point=check_point, 
-                                avg_change=avg_change, 
-                                total_mae=total_mae, 
-                                bias_per_phq9=bias_per_phq9, 
-                                mae_per_phq9=mae_per_phq9)
+        if test_performance:
+            avg_change, bias_per_phq9, mae_per_phq9, total_mae = self.assess_performance(mistake_dict)
+            self.log_results_to_csv(f"data/test{FC.DIR_SUFFIX}/results.csv", model_name, 
+                                    temp=temp, 
+                                    top_p=top_p, 
+                                    check_point=check_point, 
+                                    avg_change=avg_change, 
+                                    total_mae=total_mae, 
+                                    bias_per_phq9=bias_per_phq9, 
+                                    mae_per_phq9=mae_per_phq9)
 
-        return avg_change, bias_per_phq9, mae_per_phq9, total_mae
+            return avg_change, bias_per_phq9, mae_per_phq9, total_mae
+        return None, None, None, None
 
     def export_tweets_with_phq9_txt(self, file_path, check_point, temp, top_p, model_name, interaction=False):
         """
@@ -381,7 +427,7 @@ class TestLLMs:
         csv_path = file_path.replace(".txt", ".csv")
         with open(csv_path, "w", encoding="utf-8", newline="") as f_csv:
             writer = csv.writer(f_csv)
-            writer.writerow(["agent_id", "persona", "step", "phq9", "tweet", "interaction"])
+            writer.writerow(["agent_id", "persona", "age", "step", "phq9", "tweet", "interaction"])
 
             for agent in self.all_agents:
                 phq_series = list(agent.all_phq9_sumscores)
@@ -390,4 +436,4 @@ class TestLLMs:
                 for idx, value in enumerate(phq_series):
                     tweet = tweets[idx] if idx < len(tweets) else ""
                     tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
-                    writer.writerow([agent.ID, agent.persona, idx, value, tweet, interaction])
+                    writer.writerow([agent.ID, agent.persona, getattr(agent, "age", None), idx, value, tweet, interaction])

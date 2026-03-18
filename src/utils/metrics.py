@@ -5,6 +5,7 @@ import numpy as np
 from sentence_transformers import models
 from sentence_transformers import SentenceTransformer as sbert
 import umap
+from utils.format_config import FC
 
 def print_histories(network, file_dir, file_name, save=False):
     """
@@ -15,20 +16,19 @@ def print_histories(network, file_dir, file_name, save=False):
         path (str): Directory path to save the output file.
     """
     output_lines = []
-    output_lines.append(f"{'='*25} AGENT TWEET HISTORIES {'='*25}")
+    output_lines.append(f"{'='*25} AGENT {FC.Label.upper()} HISTORIES {'='*25}")
 
     for agent in network.all_agents:
         # Extract meaningful tweets
         valid_tweets = []
         for round_idx, entry in enumerate(agent.tweethistory):
-            if "TWEET:" in entry:
-                # Split on the first occurrence of "TWEET:" to handle colons in the tweet text safely
-                clean_text = entry.split("TWEET:", 1)[1].strip()
+            if FC.CONTENT_PREFIX in entry:
+                clean_text = entry.split(FC.CONTENT_PREFIX, 1)[1].strip()
                 valid_tweets.append((round_idx, clean_text))
         
         # Only add agents who actually tweeted
         if valid_tweets:
-            header = f"\n🔹 Agent {agent.ID} (Tweeted {len(valid_tweets)} times, phq9: {agent.well_being.get('phq9_sumscore')}, persona: {agent.persona})"
+            header = f"\n🔹 Agent {agent.ID} ({FC.Label}ed {len(valid_tweets)} times, phq9: {agent.well_being.get('phq9_sumscore')}, persona: {agent.persona})"
             output_lines.append(header)
             for r_idx, text in valid_tweets:
                 output_lines.append(f"   [Round {r_idx}]: \"{text}\"")
@@ -158,12 +158,12 @@ def analyze_distorted_language(network, ngrams_file: str, ngrams = None, n: int 
         history = getattr(agent, "tweethistory", [])
  
         # now only consider actual tweets
-        history = [t for t in history if t!= "NO_TWEET"]
+        history = [t for t in history if t!= FC.NO_CONTENT]
         first_tweets = history[:n]
         last_tweets = history[-n:] if len(history) >= n else history
 
-        first_tweets = [t for t in first_tweets if t != "NO_TWEET"]
-        last_tweets = [t for t in last_tweets if t != "NO_TWEET"]
+        first_tweets = [t for t in first_tweets if t != FC.NO_CONTENT]
+        last_tweets = [t for t in last_tweets if t != FC.NO_CONTENT]
         
         first_count = sum(1 for tweet in first_tweets if contains_ngram(tweet, ngrams))
         last_count = sum(1 for tweet in last_tweets if contains_ngram(tweet, ngrams))
@@ -305,7 +305,7 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
                     window_segment = hist[start_t : slice_end]
                     
                     # Filter out NO_TWEET
-                    valid_tweets = [t for t in window_segment if t != "NO_TWEET"]
+                    valid_tweets = [t for t in window_segment if t != FC.NO_CONTENT]
                     tweets_in_window.extend(valid_tweets)
             
             # Embed and Average (Mean Pooling)
@@ -446,7 +446,7 @@ def retrieve_windowed_data(networks_data, num_steps= 30, shift=5, n_grams= None)
         filtered_window_tweets = []  # list of lists of tweet strings per window (for within-window variance)
         w = 0
         while w < len(window_list):
-            window_list[w] = [t for t in window_list[w] if t != "NO_TWEET"]
+            window_list[w] = [t for t in window_list[w] if t != FC.NO_CONTENT]
             tweets_this_window = list(window_list[w])
             joined = " ".join(window_list[w])
             if joined == "":
@@ -460,7 +460,7 @@ def retrieve_windowed_data(networks_data, num_steps= 30, shift=5, n_grams= None)
         docs_per_network.append(filtered_window_texts)
         docs_per_network_tweets.append(filtered_window_tweets)
     
-    all_tweets_extracted = [t for t in all_tweets_extracted if t!= "NO_TWEET"]
+    all_tweets_extracted = [t for t in all_tweets_extracted if t!= FC.NO_CONTENT]
 
     if len(all_tweets_extracted) == 0:
         raise ValueError("No valid tweets found in the network for TF-IDF computation.")
@@ -684,7 +684,7 @@ def calculate_tweet_frequency_stats(agent_histories, window_size=5):
                 freqs_at_t.append(0.0)
                 continue
             
-            tweets_count = sum(1 for tweet in window if tweet != "NO_TWEET")
+            tweets_count = sum(1 for tweet in window if tweet != FC.NO_CONTENT)
             freq = tweets_count / len(window)
             freqs_at_t.append(freq)
         
@@ -783,7 +783,7 @@ def all_agent__tweet_cd(network, window_size, shift=1):
     for agent in network.all_agents:
         history = getattr(agent, "tweethistory", [])
         # Convert tweet history to binary sequence (1 if tweeted, 0 if NO_TWEET)
-        binary_sequence = [1 if tweet != "NO_TWEET" else 0 for tweet in history]
+        binary_sequence = [1 if tweet != FC.NO_CONTENT else 0 for tweet in history]
         
         variances, autocorrs = calculate_agent_cd(binary_sequence, window_size, shift)
         

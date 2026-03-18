@@ -1,13 +1,14 @@
 import os
 from pathlib import Path
+from utils.format_config import FC
 
 class PathManager:
     def __init__(self, args=None, network=None):
         """
         Initialize with either parsed args or an existing network object.
         """
-        self.base_data = Path("data/networks")
-        self.base_plots = Path("plots/networks")
+        self.base_data = Path(f"data/networks{FC.DIR_SUFFIX}")
+        self.base_plots = Path(f"plots/networks{FC.DIR_SUFFIX}")
         
         # Extract parameters from args OR network
         if args:
@@ -18,7 +19,9 @@ class PathManager:
             self.seed = args.seed
             self.directed = "directed" if args.directed else "undirected"
             self.rounds = args.rounds
-
+            self.sample_phq9 = getattr(args, 'sample_phq9', None)
+            self.cap_phq9 = getattr(args, 'cap_phq9', False)
+            self.phq9_threshold = getattr(args, 'phq9_threshold', 0)
 
         elif network:
             self.net_type = self._infer_net_type(network)
@@ -28,8 +31,12 @@ class PathManager:
             self.seed = network.seed # Assuming seed is stored
             self.rounds = network.iterations # Or initial rounds
             self.directed = "directed" if (hasattr(network, 'directed') and network.directed) else "undirected"
+            self.sample_phq9 = getattr(network, 'sample_phq9', None)
+            self.cap_phq9 = getattr(network, 'cap_phq9', False)
+            self.phq9_threshold = getattr(network, 'phq9_threshold', 0)
         
-        self.subparams = self._get_subparams() 
+        self.subparams = self._get_subparams()
+        self.phq9_mode = self._get_phq9_mode()
         
     def _get_state(self, enforce_ngrams, depressed):
         if enforce_ngrams: return "enforced_ngrams"
@@ -47,6 +54,18 @@ class PathManager:
     def _get_subparams(self):
         """Parameter part of path without seed (parent folder for all seeds)."""
         return f"rounds{self.rounds}_N{self.num_agents}"
+
+    def _get_phq9_mode(self):
+        """Build a subdirectory name for non-default PHQ-9 options (sampling, cap, threshold).
+        Returns None when all options are at their defaults (standard checkpoint behaviour)."""
+        parts = []
+        if self.sample_phq9:
+            parts.append(f"sample{str(self.sample_phq9).replace('.', '_')}")
+        if self.cap_phq9:
+            parts.append("cap")
+        if self.phq9_threshold and self.phq9_threshold > 0:
+            parts.append(f"thr{str(self.phq9_threshold).replace('.', '_')}")
+        return "_".join(parts) if parts else None
     
     def _get_params_from_net(self, network):
         # Logic to extract m/p/alpha from network object
@@ -66,9 +85,12 @@ class PathManager:
         return "sda"
 
     def _get_parent_directory(self, is_plot=False):
-        """Parent directory (parameters only, no seed): .../rounds{N}_N{agents}/"""
+        """Parent directory (parameters only, no seed): .../rounds{N}_N{agents}/[phq9_mode]/"""
         base = self.base_plots if is_plot else self.base_data
-        return base / self.state / self.net_type / self.directed / self.params / self.subparams
+        path = base / self.state / self.net_type / self.directed / self.params / self.subparams
+        if self.phq9_mode:
+            path = path / self.phq9_mode
+        return path
 
     def get_run_directory(self, is_plot=False):
         """Run-specific directory: .../rounds{N}_N{agents}/seed_{seed}/"""
@@ -103,8 +125,8 @@ class TestPathManager:
     """Path manager for LLM test runs (bias/error plots, tweets, results CSV)."""
 
     def __init__(self, model_name, temp, top_p, check_point, seed, interaction=False):
-        self.base_data = Path("data/test")
-        self.base_plots = Path("plots/test")
+        self.base_data = Path(f"data/test{FC.DIR_SUFFIX}")
+        self.base_plots = Path(f"plots/test{FC.DIR_SUFFIX}")
         self.results_csv = self.base_data / "results.csv"
 
         # Sanitize model name for filesystem use

@@ -8,6 +8,7 @@ import inspect
 from vllm import LLM, SamplingParams
 import utils.metrics as metrics
 from utils.path_manager import PathManager, TestPathManager
+from utils.format_config import FC
 from classes.network import RandomNetwork,  SocialDistanceAttachment #, ScaleFreeNetwork,
 import utils.load_personas as lp
 import utils.visualization as vis
@@ -33,16 +34,24 @@ llama_model= "meta-llama/Llama-3.1-8B-Instruct"
 # # when setting possible enironment variables in the future
 MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
-models = [ "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-3-12b-it", "meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3-14B", "mistralai/Mistral-7B-Instruct-v0.3", "meta-llama/Llama-3.3-70B-Instruct"]
+models = [ "Qwen/Qwen3-4B-Instruct-2507", 
+            "google/gemma-3-12b-it",
+            "meta-llama/Llama-3.1-8B-Instruct", 
+            "Qwen/Qwen3-14B", 
+            "mistralai/Mistral-7B-Instruct-v0.3", 
+            "meta-llama/Llama-3.3-70B-Instruct", 
+            "Qwen/Qwen3.5-27B" ]
 
 # Short names for --test_llms_model (optional; full HuggingFace IDs also work)
 MODEL_ALIASES = {
-    "qwen4": "Qwen/Qwen3-4B-Instruct-2507",
-    "qwen14": "Qwen/Qwen3-14B",
+    "qwen397": "Qwen/Qwen3.5-397B-A17B", 
+    "qwen27": "Qwen/Qwen3.5-27B",
     "gemma12": "google/gemma-3-12b-it",
     "llama8": "meta-llama/Llama-3.1-8B-Instruct",
     "mistral7": "mistralai/Mistral-7B-Instruct-v0.3",
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
+    "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
+    "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b", 
     "deepseek": "deepseek"
 }
 
@@ -67,6 +76,11 @@ def get_tokenizer(model_id=None):
         use_fast=True,
     )
     tok.padding_side = "left"
+    # vocab = tok.get_vocab()
+    # if "<|finetune_right_pad_id|>" in vocab:
+    #     tok.pad_token = "<|finetune_right_pad_id|>"
+    # elif "<|end_of_text|>" in vocab:
+    #     tok.pad_token = "<|end_of_text|>"
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     return tok
@@ -171,6 +185,15 @@ def generate_parser():
     parser.add_argument("--depressed", action="store_true", help="Include depressed personas")
     parser.add_argument("--enforce_ngrams", action="store_true", help="Enforce distorted-language n-grams in tweets")
 
+    # PHQ-9 sampling / smoothing (simulation only, not testing)
+    parser.add_argument("--sample_phq9", type=float, default=None, metavar="FRAC",
+                        help="Fraction of agents sampled each step for PHQ-9 (e.g. 0.1). "
+                             "Replaces the checkpoint-based schedule when set.")
+    parser.add_argument("--cap_phq9", action="store_true",
+                        help="Cap PHQ-9 score changes to ±1 per update")
+    parser.add_argument("--phq9_threshold", type=float, default=0, metavar="X",
+                        help="Minimum PHQ-9 score difference required before the change is applied")
+
     # specify if to save network properties after simulation
     parser.add_argument("--save", action="store_true", help="Save network properties after simulation")
 
@@ -202,8 +225,16 @@ def update_network(network,
                     seed=42, 
                     enforce_ngrams = False, 
                     log = False,
-                    check_point = 10):
+                    check_point = 10,
+                    sample_phq9 = None,
+                    cap_phq9 = False,
+                    phq9_threshold = 0):
     """Update the network for one round and return the mean fraction of distorted tweets."""
+
+    # Store PHQ-9 options on the network so PathManager can read them
+    network.sample_phq9 = sample_phq9
+    network.cap_phq9 = cap_phq9
+    network.phq9_threshold = phq9_threshold
 
     # only enforce n-grams if specified
     if enforce_ngrams:
@@ -223,7 +254,10 @@ def update_network(network,
                                                                            n_grams=n_grams, 
                                                                            distorted_tweets=distorted_tweets, 
                                                                            time_info=False, 
-                                                                           check_point=check_point)
+                                                                           check_point=check_point,
+                                                                           sample_phq9=sample_phq9,
+                                                                           cap_phq9=cap_phq9,
+                                                                           phq9_threshold=phq9_threshold)
         print(f"Round {network.iterations}: Mean running fraction of distorted agents: {mean_running_frac:.4f}, Fraction distorted this step: {frac_distorted_this_step:.4f} ")
         running_fracs.append(mean_running_frac)
         fracs_dist_step.append(frac_distorted_this_step)
@@ -277,6 +311,12 @@ def run_simulation(args, pipe=None):
                             well_being=well_being, 
                             personas=personas, 
                             depressed_personas=depressed_personas)
+
+    # Store PHQ-9 options early so PathManager can read them even with 0 rounds
+    network.sample_phq9 = args.sample_phq9
+    network.cap_phq9 = args.cap_phq9
+    network.phq9_threshold = args.phq9_threshold
+
     # run updates
     if args.rounds == 0:
         return network, [], []
@@ -290,7 +330,10 @@ def run_simulation(args, pipe=None):
                                                              seed=args.seed, 
                                                              enforce_ngrams=args.enforce_ngrams, 
                                                              log = args.log,
-                                                             check_point=args.check_point)
+                                                             check_point=args.check_point,
+                                                             sample_phq9=args.sample_phq9,
+                                                             cap_phq9=args.cap_phq9,
+                                                             phq9_threshold=args.phq9_threshold)
     return network, running_fracs, fracs_dist_step
 
 def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_step=[]):
@@ -314,7 +357,10 @@ def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_st
                                                              seed=args.seed, 
                                                              enforce_ngrams=args.enforce_ngrams,
                                                              log=args.log,
-                                                             check_point=args.check_point)
+                                                             check_point=args.check_point,
+                                                             sample_phq9=args.sample_phq9,
+                                                             cap_phq9=args.cap_phq9,
+                                                             phq9_threshold=args.phq9_threshold)
 
     # tweet_history = [(a.ID, a.tweethistory) for a in network.all_agents]
     if args.save:
@@ -501,10 +547,11 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
 
     temp = args.temp
     top_p = args.top_p
+    test_performance = False
     checkpoint = args.check_point
     rounds = checkpoint * 28 + 1
 
-    data_dir = "data/test/"
+    data_dir = f"data/test{FC.DIR_SUFFIX}/"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
     
@@ -519,27 +566,11 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         temp=temp,
         top_p=top_p,
         model_name=model_name,
+        test_performance=test_performance,
     )
 
     # Build paths via TestPathManager
     tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
-
-    # Per-seed bias & error plots
-    run_plot_dir = str(tpm.get_run_directory(is_plot=True))
-    vis.plot_bias(bias_per_phq9, all_bias, run_plot_dir)
-    vis.plot_phq9_error(mae_per_phq9, total_mae, run_plot_dir)
-
-    # Combined plots across all seeds (in parent dir)
-    agg_plot_dir = str(tpm.get_aggregate_directory(is_plot=True))
-    vis.plot_combined_bias_error(
-        csv_path=str(tpm.get_results_csv_path()),
-        model_name=model_name,
-        temp=temp,
-        top_p=top_p,
-        check_point=checkpoint,
-        directory=agg_plot_dir,
-    )
-
     # Export tweets with PHQ-9 to text file
     tester.export_tweets_with_phq9_txt(
         file_path=str(tpm.get_tweets_path()),
@@ -550,6 +581,25 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         interaction=args.interaction,
     )
 
+    # Per-seed bias & error plots
+    run_plot_dir = str(tpm.get_run_directory(is_plot=True))
+    if test_performance:
+        vis.plot_bias(bias_per_phq9, all_bias, run_plot_dir)
+        vis.plot_phq9_error(mae_per_phq9, total_mae, run_plot_dir)
+  
+
+        # Combined plots across all seeds (in parent dir)
+        agg_plot_dir = str(tpm.get_aggregate_directory(is_plot=True))
+        vis.plot_combined_bias_error(
+            csv_path=str(tpm.get_results_csv_path()),
+            model_name=model_name,
+            temp=temp,
+            top_p=top_p,
+            check_point=checkpoint,
+            directory=agg_plot_dir,
+        )
+
+    
     return total_mae, mae_per_phq9
 
 
@@ -580,7 +630,7 @@ def run_llm_tests(args):
     for mid, res in results.items():
         print(f"  {mid}: {res['total_mae']:.4f}")
     if len(results) > 1:
-        vis.plot_model_comparison_by_settings(csv_path="data/test/results.csv", directory="plots/test", save=args.save)
+        vis.plot_model_comparison_by_settings(csv_path=f"data/test{FC.DIR_SUFFIX}/results.csv", directory=f"plots/test{FC.DIR_SUFFIX}", save=args.save)
     sys.exit(0)
 
 

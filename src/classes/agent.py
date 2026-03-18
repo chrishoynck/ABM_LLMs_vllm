@@ -1,5 +1,6 @@
 import numpy as np
 import utils.metrics as metrics
+from utils.format_config import FC
 import re
 import json
 
@@ -26,14 +27,14 @@ class Agent:
         self.ID = ID
         self.agent_connections = set()
         self.activation_state = False
-        self._next_last_tweet: str  = "NO_TWEET"
+        self._next_last_tweet: str  = FC.NO_CONTENT
         self.persona = persona
         self.well_being = well_being
         self.phq9_score = well_being.get("phq9_sumscore") if well_being else None
         self.age = well_being.get("age") if well_being else None
         self.all_phq9_sumscores = []
 
-        with open('data/prompts.json', 'r') as f:
+        with open(FC.PROMPTS_FILE, 'r') as f:
            self._PROMPTS = json.load(f)
 
         self._force_active = False
@@ -156,7 +157,7 @@ class Agent:
             # f"relevant depressive symptoms and {diag_flag}.{extra_txt}"
         )
     
-    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str], force_active=False):
+    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str], force_active=False, use_persona=False):
         """
         build a phq9_questionnaire_prompt
         """
@@ -166,8 +167,18 @@ class Agent:
             well_being_info = self.well_being_prompt(self.well_being)
         
         system = self._PROMPTS["phq9"]["system_user"]
-
-        if force_active:
+        
+        # involve persona in the prompt
+        if use_persona:
+            system = self._PROMPTS["phq9"]["system_persona"]
+            user = self._PROMPTS["phq9"]["user_template_persona"].format(
+                agent_id=self.ID,
+                persona=self.persona,
+                tweets_block="\n".join(tweets)
+            )
+        
+        # do not provide well-being information 
+        elif force_active:
             user = self._PROMPTS["phq9"]["user_template_forced"].format(
                 agent_id=self.ID,
                 tweets_block="\n".join(tweets)
@@ -193,13 +204,12 @@ class Agent:
         # own history block
         own_block = "" 
         if len(self.tweethistory) == 0:
-            own_block = "(no own previous tweets)"
+            own_block = f"(no own previous {FC.label_plural})"
         else:
             recent = list(reversed(self.tweethistory[-1:]))  # newest first
-            own_block = "\n".join(f"- {t[:max_chars]}" for t in recent)
+            own_block = "\n(do not repeat)".join(f"- {t[:max_chars]}" for t in recent)
         
-        # neighbor_pairs = self.rng.permutation(neighbor_pairs)  # shuffle neighbor tweets
-        neighbor_block = "(no neighbor tweets)" if len(neighbor_pairs) == 0 else "\n".join(
+        neighbor_block = f"(no neighbor {FC.label_plural})" if len(neighbor_pairs) == 0 else "\n".join(
             f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs 
         )
 
@@ -209,14 +219,12 @@ class Agent:
         system_content = system_str.format(max_chars=max_chars)
         if not force_active:
             if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
-                # Use counter to efficiently grab tweets since last PHQ-9 update
-                # (all share the same score, no full-history scan needed)
                 recent = self.tweethistory[-self._tweets_since_phq9_update:]
-                same_score_tweets = [t for t in recent if t and t != "NO_TWEET"]
-                if same_score_tweets:
-                    tweets_list = "\n".join(f'- "{t[:max_chars]}"' for t in same_score_tweets)
+                same_score = [t for t in recent if t and t != FC.NO_CONTENT]
+                if same_score:
+                    items = "\n".join(f'- "{t[:max_chars]}"' for t in same_score)
                     own_block = (
-                        f"\nYour previous tweets for this well-being state:\n{tweets_list}\n"
+                        f"\nYour previous {FC.label_plural} for this well-being state:\n{items}\n"
                         f"(Do NOT adopt the same topics or reuse the same words. "
                         f"Be original and vary your content.)"
                     )
@@ -231,24 +239,21 @@ class Agent:
                 own_block=own_block
             )
         else:
-            # Build optional previous-tweet block so the LLM avoids repetition
             if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
-                # Use counter to efficiently grab tweets since last PHQ-9 update
-                # (all share the same score, no full-history scan needed)
                 recent = self.tweethistory[-self._tweets_since_phq9_update:]
-                same_score_tweets = [t for t in recent if t and t != "NO_TWEET"]
-                if same_score_tweets:
-                    tweets_list = "\n".join(f'- "{t[:max_chars]}"' for t in same_score_tweets)
+                same_score = [t for t in recent if t and t != FC.NO_CONTENT]
+                if same_score:
+                    items = "\n".join(f'- "{t[:max_chars]}"' for t in same_score)
                     previous_tweet_block = (
-                        f"\nYour previous tweets for this well-being state:\n{tweets_list}\n"
+                        f"\nYour previous {FC.label_plural} for this well-being state:\n{items}\n"
                         f"(Do NOT adopt the same topics or reuse the same words. "
                         f"Be original and vary your content.)"
                     )
                 else:
                     previous_tweet_block = ""
-            elif self.last_tweet and self.last_tweet != "NO_TWEET":
+            elif self.last_tweet and self.last_tweet != FC.NO_CONTENT:
                 previous_tweet_block = (
-                    f"\nYour previous tweet: \"{self.last_tweet[:max_chars]}\"\n"
+                    f"\nYour previous {FC.label}: \"{self.last_tweet[:max_chars]}\"\n"
                     f"(Do NOT adopt the same topic or reuse the same words. "
                     f"Be original and vary your content.)"
                 )
@@ -288,7 +293,7 @@ class Agent:
         for n in activated_neighbors:
             if n.activation_state and n.last_tweet:
                 neighbor_msgs.append((n.ID, n.last_tweet))
-                if n.distorted_tweets[-1]:
+                if len(n.distorted_tweets) > 0 and n.distorted_tweets[-1]:
                     distorted_neigh +=1
         
         if len(activated_neighbors) > 0:
@@ -329,8 +334,7 @@ class Agent:
             self._next_activation_state = True
 
         else:
-            # if formatted incorrectly or NO_TWEET, send out NO_TWEET
-            self._next_last_tweet = "NO_TWEET"
+            self._next_last_tweet = FC.NO_CONTENT
             self._next_activation_state = False
         
     # Finalize the activation state for this step
@@ -361,7 +365,7 @@ class Agent:
 
         return distorted
     
-    def update_well_being(self, sumscore: int):
+    def update_well_being(self, sumscore: int, new_phq9=False):
         """
         Update the well-being information of the agent.
 
@@ -373,7 +377,8 @@ class Agent:
         if self.well_being is None:
             self.well_being = {}
         self.well_being["phq9_sumscore"] = sumscore
-        self._tweets_since_phq9_update = 0
+        if new_phq9:
+            self._tweets_since_phq9_update = 0
 
         # update diagnosis flag???
 
@@ -388,39 +393,32 @@ class Agent:
 
     def parse_tweet_decision(self, text: str):
         """
-        Parse the LLM output to determine if the agent decided to tweet or not.
-        Args:
-            text (str): The LLM output text.    
-        Returns:
-            bool: True if the agent decided to tweet, False otherwise.
-            str: The tweet text if the agent decided to tweet, empty string otherwise.
+        Parse the LLM output to determine if the agent decided to post/tweet.
+        Recognises both TWEET:/NO_TWEET and POST:/NO_POST based on ABM_FORMAT.
         """
         t = text.strip()
-        low = t.lower()
-        low = low.replace("\\'", "'")
-        low = low.replace("\\n", " ")
+        low = t.lower().replace("\\'", "'").replace("\\n", " ")
 
-        # all text that is not generated in proper format is treated as no tweet
-        if "no_tweet" in low:
+        no_kw = FC.NO_CONTENT_LOWER          # "no_tweet" or "no_post"
+        prefix_kw = FC.CONTENT_PREFIX_LOWER   # "tweet:" or "post:"
+
+        if no_kw in low:
             return False, ""
-        if "tweet:" not in low:
+        if prefix_kw not in low:
             return False, ""
-        # prefer the explicit "TWEET:" pattern
-        idx = low.find("tweet:")
+
+        idx = low.find(prefix_kw)
         if idx != -1:
             raw = t[idx:].strip()
-            # Strip any leaked prompt/persona content that the LLM may
-            # have echoed back after the tweet (e.g. "ID: …", "Persona: …").
             cleaned_lines = []
             for ln in raw.split("\n"):
                 stripped = ln.strip()
                 low_ln = stripped.lower()
                 if low_ln.startswith("id:") or low_ln.startswith("persona:"):
-                    break  # stop before leaked prompt content
+                    break
                 cleaned_lines.append(ln)
             return True, "\n".join(cleaned_lines).strip()
-        
-        # fallback: if any non-empty content, treat as tweet
+
         return (len(t) > 0), t
         
     def respond(self) -> list:
