@@ -173,7 +173,8 @@ class _Network:
             for agent in self.rng.choice(self.all_agents, int(len(self.all_agents) * update_fraction), replace=False):
                 raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
                 templated = tokenizer.apply_chat_template(
-                    raw_messages, tokenize=False, add_generation_prompt=True
+                    raw_messages, tokenize=False, add_generation_prompt=True,
+                    chat_template_kwargs={"enable_thinking": True}
                 )
                 prompts.append(templated)
                 # prompt = add_salt(prompt)
@@ -187,7 +188,8 @@ class _Network:
                 raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=False)
                 # prompt = add_salt(prompt)
                 templated = tokenizer.apply_chat_template(
-                    raw_messages, tokenize=False, add_generation_prompt=True
+                    raw_messages, tokenize=False, add_generation_prompt=True,
+                    chat_template_kwargs={"enable_thinking": True}
                 )
                 prompts.append(templated)
                 agents_w_prompt.append(agent)
@@ -218,7 +220,8 @@ class _Network:
         for agent in agents:
             prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-check_point:])
             templated = tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True
+                prompt, tokenize=False, add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": True}
             )
             prompts.append(templated)
         
@@ -254,7 +257,7 @@ class _Network:
             sampling_params_clinical = SamplingParams(
                     temperature=0.8, 
                     top_p=0.6,
-                    max_tokens=300,   # 9 Q&A lines ~45 tokens, but allow buffer for preamble/explanations the LLM may add
+                    max_tokens=1024,
                     seed= self.seed + self.iterations
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
@@ -266,7 +269,7 @@ class _Network:
             top_p=0.9,
             presence_penalty=0.4,
             repetition_penalty=1.05,
-            max_tokens=256,
+            max_tokens=4096,
             seed= self.seed + self.iterations  # vLLM handles seeding here
         )
 

@@ -11,6 +11,7 @@ import csv
 from datetime import datetime
 from openai import OpenAI, AsyncOpenAI
 import asyncio
+import time
 
 
 class TestLLMs:
@@ -77,7 +78,7 @@ class TestLLMs:
                 prompts.append(raw_messages)
             else:
                 templated = tokenizer.apply_chat_template(
-                    raw_messages, tokenize=False, add_generation_prompt=True
+                    raw_messages, tokenize=False, add_generation_prompt=True, chat_template_kwargs={"enable_thinking": True}
                 )
                 prompts.append(templated)
 
@@ -97,7 +98,7 @@ class TestLLMs:
             sampling_params_clinical = SamplingParams(
                     temperature=temp, 
                     top_p=top_p,
-                    max_tokens=300,   
+                    max_tokens=1600,
                     seed=None 
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
@@ -106,11 +107,11 @@ class TestLLMs:
         # Define Sampling Parameters
         if not self.deepseek:
             sampling_params = SamplingParams(
-                temperature=1.0,
+                temperature=0.9,
                 top_p=0.9,
                 presence_penalty=0.4,
                 repetition_penalty=1.05,
-                max_tokens=256,
+                max_tokens=8096,
                 seed= self.seed + self.iterations  # vLLM handles seeding here
             )
 
@@ -147,7 +148,7 @@ class TestLLMs:
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-(check_point):], force_active=True)
             templated = tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True
+                prompt, tokenize=False, add_generation_prompt=True, chat_template_kwargs={"enable_thinking": True}
             )
             prompts.append(templated)
         
@@ -188,7 +189,11 @@ class TestLLMs:
         idx_sequence = self.phq9_indices[agent.ID]
         true_score = sequence_phq9[idx_sequence]
 
+        # update
         self.phq9_indices[agent.ID] = (idx_sequence + 1) % len(sequence_phq9)
+        idx_sequence = self.phq9_indices[agent.ID]
+        
+        
         next_score = sequence_phq9[idx_sequence]
 
 
@@ -201,17 +206,19 @@ class TestLLMs:
         """
         # agents send out their tweets
         for agent, tweet in zip(agents_w_prompt, out):
-            if agent.ID < 10:
-                current_phq9 = agent.well_being.get("phq9_sumscore") if agent.well_being else -1
-                print(f"tweet agent {agent.ID}: ", tweet.outputs[0].text.strip(), "phq9: ", current_phq9, "\n\n")
+            
             if not self.deepseek:
                 raw = tweet.outputs[0].text.strip()
             else:
                 raw = tweet
             agent.send_tweet(
-                max_chars=240,
+                max_chars=240,  #CHANGED THIS FROM 240 TO 1000
                 raw_tweet=raw,
             )
+
+            # if agent.ID < 10:
+            #     current_phq9 = agent.well_being.get("phq9_sumscore") if agent.well_being else -1
+            #     print(f"tweet agent {agent.ID}: ", tweet.outputs[0].text.strip(), "phq9: ", current_phq9, "\n\n")
 
         for agent in self.all_agents:
             _ = agent.commit(n_grams=n_grams, update_score=update_score)
@@ -225,12 +232,15 @@ class TestLLMs:
                     check_point= 20, 
                     temp=1.0, 
                     top_p=1.0, 
-                    test_performance=True):
+                    test_performance=True,
+                    time_info=False):
         """
         Update the network for one round by responding to news intensities and adjusting the network accordingly.
         """
         self.iterations +=1
+        t0 = time.perf_counter()
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer)
+        t1 = time.perf_counter()
         # generate outputs in parallel
 
         if not self.deepseek:
@@ -238,11 +248,15 @@ class TestLLMs:
         else:
             out = None
             # out = asyncio.run(self._generate_outputs_deepseek(prompts))
+        t2 = time.perf_counter()
 
         # agents send out their tweets + state update + stats
         self._apply_outputs_and_update_state(
             agents_w_prompt, out, n_grams
         )
+        t3 = time.perf_counter()
+
+        t4 = t3
         if self.iterations % check_point == 0 and test_performance:
             mistake_dict = self._phq9_questionnaire(tokenizer, pipe, mistake_dict, check_point, temp=temp, top_p=top_p)
         elif self.iterations % check_point == 0:
@@ -250,6 +264,14 @@ class TestLLMs:
                 assert agent._tweets_since_phq9_update == check_point, "agent should have updated its PHQ-9 score every check_point iterations"
                 old, new = self._old_new_phq9(agent)
                 agent.update_well_being(new, new_phq9=True)
+        t4 = time.perf_counter()
+
+        if time_info:
+            print(f"Time to prepare prompts: {t1 - t0:.4f} seconds")
+            print(f"Time to generate outputs: {t2 - t1:.4f} seconds")
+            print(f"Time to apply outputs and update state: {t3 - t2:.4f} seconds")
+            if self.iterations % check_point == 0:
+                print(f"Time for PHQ-9 update step: {t4 - t3:.4f} seconds")
         return mistake_dict
                 
         
@@ -335,6 +357,44 @@ class TestLLMs:
         
         print(f"Results logged to {file_path}")
     
+    # ------------------------------------------------------------------
+    #  Checkpoint helpers
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, model_name: str, temp: float, top_p: float,
+                        check_point: int, interaction: bool,
+                        mistake_dict: dict) -> str:
+        """
+        Serialise the current state to a JSON checkpoint via
+        :func:`reading_in.write_out_tester`.
+
+        Returns
+        -------
+        str  – path the file was written to
+        """
+        from utils.reading_in import write_out_tester
+        path = write_out_tester(
+            self, model_name=model_name, temp=temp, top_p=top_p,
+            check_point=check_point, interaction=interaction,
+            mistake_dict=mistake_dict,
+        )
+        print(f"[TestLLMs] Checkpoint saved to {path}")
+        return path
+
+    @classmethod
+    def load_checkpoint(cls, file_path: str):
+        """
+        Restore a :class:`TestLLMs` instance from a checkpoint file.
+
+        Returns
+        -------
+        (tester, mistake_dict)
+        """
+        from utils.reading_in import load_tester_checkpoint
+        return load_tester_checkpoint(file_path)
+
+    # ------------------------------------------------------------------
+
     def run_simulation(self, 
                        tokenizer, 
                        pipe, 
@@ -344,14 +404,26 @@ class TestLLMs:
                        temp=1.0, 
                        top_p=1.0, 
                        model_name="llama_3_8b_instruct", 
-                       test_performance=True):
+                       test_performance=True,
+                       time_info=False,
+                       mistake_dict=None,
+                       checkpoint_every=0):
         """
         Run the full simulation for a specified number of rounds.
-        """
-        self.iterations = 0
-        mistake_dict = {i: [] for i in range(0, 28)}  # PHQ-9 scores range from 0 to 27
 
-        for round_idx in range(n_rounds):
+        Parameters
+        ----------
+        checkpoint_every : int
+            Save a checkpoint every this many rounds (0 = disabled)
+        """
+
+        if self.iterations == 0:
+            mistake_dict = {i: [] for i in range(0, 28)}  # PHQ-9 scores range from 0 to 27
+        else:
+            mistake_dict = mistake_dict
+
+
+        for round_idx in range(n_rounds - self.iterations):
             mistake_dict = self.update_round(mistake_dict, 
                               tokenizer,
                               pipe,
@@ -359,7 +431,15 @@ class TestLLMs:
                               check_point=check_point,
                               temp=temp,
                               top_p=top_p,
-                              test_performance=test_performance)
+                              test_performance=test_performance,
+                              time_info=time_info)
+
+            if checkpoint_every > 0 and (round_idx + 1) % checkpoint_every == 0:
+                self.save_checkpoint(
+                    model_name=model_name, temp=temp, top_p=top_p,
+                    check_point=check_point, interaction=self.interaction,
+                    mistake_dict=mistake_dict,
+                )
         
         if test_performance:
             avg_change, bias_per_phq9, mae_per_phq9, total_mae = self.assess_performance(mistake_dict)

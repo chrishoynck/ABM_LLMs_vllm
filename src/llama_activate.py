@@ -64,7 +64,7 @@ SEED = 1234
 set_seed(SEED)                              # seeds Python, NumPy, Torch (HF helper)
 
 # trying this
-os.environ["VLLM_BATCH_INVARIANT"] = "1"
+# os.environ["VLLM_BATCH_INVARIANT"] = "1"
 
 
 def get_tokenizer(model_id=None):
@@ -100,7 +100,8 @@ def get_llm(model_id=None):
     load_id = model_id if model_id is not None else MODEL_ID
     print(f"Loading vLLM model: {load_id}...")
     gpus_count = how_many_gpus()
-    llm = LLM(
+
+    kwargs = dict(
         model=load_id,
         dtype="bfloat16",
         trust_remote_code=True,
@@ -109,6 +110,12 @@ def get_llm(model_id=None):
         seed=SEED,
         max_model_len=8192,
     )
+
+    if "qwen3.5" in load_id.lower():
+        kwargs["limit_mm_per_prompt"] = {"image": 0}
+        kwargs["enable_prefix_caching"] = True
+
+    llm = LLM(**kwargs)
     return llm
 
 def build_network(args, personas, well_being, depressed_personas=None):
@@ -518,6 +525,14 @@ def _sanitize_model_name(model_id):
 def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level tokenizer."""
     tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
+    
+    temp = args.temp
+    top_p = args.top_p
+    test_performance = False
+    checkpoint = args.check_point
+    rounds = checkpoint * 28 + 1
+    checkpoint_every = checkpoint
+    time_info = True
 
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
     personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
@@ -533,24 +548,26 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         agentjes = network.all_agents
     else:
         agentjes = None
+    
+    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
 
+    if args.use_saved_network is not None:
+        tester, mistake_dict = TestLLMs.load_checkpoint(tpm.get_run_directory(is_plot=False) / "checkpoint.json")
 
-    tester = TestLLMs(
-        well_being=well_being,
-        num_agents=args.num_agents,
-        seed=args.seed,
-        personas=personas,
-        deepseek=use_deepseek,
-        agents=agentjes,
-        interaction=args.interaction,
-    )
+    else:
+        tester = TestLLMs(
+            well_being=well_being,
+            num_agents=args.num_agents,
+            seed=args.seed,
+            personas=personas,
+            deepseek=use_deepseek,
+            agents=agentjes,
+            interaction=args.interaction,
+        )
+        mistake_dict = None
 
-    temp = args.temp
-    top_p = args.top_p
-    test_performance = False
-    checkpoint = args.check_point
-    rounds = checkpoint * 28 + 1
-
+    
+    
     data_dir = f"data/test{FC.DIR_SUFFIX}/"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
@@ -566,11 +583,14 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         temp=temp,
         top_p=top_p,
         model_name=model_name,
+        time_info=time_info,
+        mistake_dict=mistake_dict,
         test_performance=test_performance,
+        checkpoint_every=checkpoint_every,
     )
 
     # Build paths via TestPathManager
-    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
+    
     # Export tweets with PHQ-9 to text file
     tester.export_tweets_with_phq9_txt(
         file_path=str(tpm.get_tweets_path()),
@@ -628,7 +648,8 @@ def run_llm_tests(args):
         torch.cuda.empty_cache()
     print("\nTest summary (total PHQ-9 MAE per model; lower is better):")
     for mid, res in results.items():
-        print(f"  {mid}: {res['total_mae']:.4f}")
+        mae = res['total_mae']
+        print(f"  {mid}: {mae:.4f}" if mae is not None else f"  {mid}: N/A")
     if len(results) > 1:
         vis.plot_model_comparison_by_settings(csv_path=f"data/test{FC.DIR_SUFFIX}/results.csv", directory=f"plots/test{FC.DIR_SUFFIX}", save=args.save)
     sys.exit(0)

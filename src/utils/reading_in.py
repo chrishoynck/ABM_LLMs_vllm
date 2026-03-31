@@ -1,6 +1,6 @@
 import json
 from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
-from utils.path_manager import PathManager
+from utils.path_manager import PathManager, TestPathManager
 import ast, torch, os, random
 import numpy as np
 
@@ -263,4 +263,143 @@ def log_network_state(network, seed, dist_per_step, distorted_fracs):
     )
     print(f"Logged network state to {logged_path}")
     return logged_path
-    
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TestLLMs checkpoint  (no network structure needed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def write_out_tester(tester, model_name: str, temp: float, top_p: float,
+                     check_point: int, interaction: bool, mistake_dict: dict):
+    """
+    Serialise the full state of a :class:`TestLLMs` instance to a JSON file
+    so that a crashed run can be resumed exactly where it left off.
+
+    Saved information
+    -----------------
+    - Run meta  : seed, num_agents, iterations, model_name, interaction flag
+    - PHQ-9 sequences: the per-agent permutation order + current index
+    - Per-agent : id, persona, well_being, tweethistory, all_phq9_sumscores,
+                  _tweets_since_phq9_update, activation_state
+    - mistake_dict : accumulated error dictionary so far
+    - RNG state : numpy bit-generator state (so sampling is reproducible)
+
+    Returns
+    -------
+    str  – path the checkpoint was written to
+    """
+    agent_info = []
+    for agent in tester.all_agents:
+        agent_info.append({
+            "id": agent.ID,
+            "persona": agent.persona,
+            "well_being": agent.well_being,
+            "tweethistory": list(agent.tweethistory),
+            "all_phq9_sumscores": [int(s) for s in agent.all_phq9_sumscores],
+            "tweets_since_phq9_update": agent._tweets_since_phq9_update,
+            "activation_state": agent.activation_state,
+        })
+
+    # mistake_dict keys are ints; JSON only allows str keys
+    serialisable_mistakes = {str(k): v for k, v in mistake_dict.items()}
+
+    # phq9_sequences / phq9_indices – keys are agent IDs (ints)
+    phq9_sequences = {str(k): v for k, v in tester.phq9_sequences.items()}
+    phq9_indices   = {str(k): v for k, v in tester.phq9_indices.items()}
+
+    properties = {
+        "type": "TestLLMs_checkpoint",
+        "model_name": model_name,
+        "seed": tester.seed,
+        "num_agents": tester.num_agents,
+        "iterations": tester.iterations,
+        "interaction": interaction,
+        "check_point": check_point,
+        "temp": temp,
+        "top_p": top_p,
+        "phq9_sequences": phq9_sequences,
+        "phq9_indices": phq9_indices,
+        "mistake_dict": serialisable_mistakes,
+        "agents": agent_info,
+        "RNG State": tester.rng.bit_generator.state,
+    }
+
+    pm = TestPathManager(
+        model_name=model_name,
+        temp=temp,
+        top_p=top_p,
+        check_point=check_point,
+        seed=tester.seed,
+        interaction=interaction,
+    )
+    out_path = pm.get_run_directory(is_plot=False) / "checkpoint.json"
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(properties, f, indent=4, cls=NetworkEncoder)
+
+    return str(out_path)
+
+
+def read_in_tester(file_path: str) -> dict:
+    """
+    Load a raw checkpoint dictionary from *file_path*.
+    Raises ``FileNotFoundError`` if the file does not exist.
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_tester_checkpoint(file_path: str):
+    """
+    Reconstruct a :class:`TestLLMs` instance and its mistake_dict from a
+    checkpoint file written by :func:`write_out_tester`.
+
+    Returns
+    -------
+    tester       – fully-restored TestLLMs instance (no LLM loaded yet)
+    mistake_dict – accumulated error dict  {phq9_score: [errors]}
+    """
+    # Lazy import avoids circular imports at module level
+    from utils.test_phq9_llms import TestLLMs
+    from classes.agent import Agent
+
+    props = read_in_tester(file_path)
+
+    # Restore agents from saved data
+    agents = []
+    for ad in props["agents"]:
+        ag = Agent(
+            ID=ad["id"],
+            persona=ad["persona"],
+            well_being=ad.get("well_being"),
+        )
+        ag.tweethistory = list(ad.get("tweethistory", []))
+        ag.all_phq9_sumscores = [int(s) for s in ad.get("all_phq9_sumscores", [])]
+        ag._tweets_since_phq9_update = int(ad.get("tweets_since_phq9_update", 0))
+        ag.activation_state = bool(ad.get("activation_state", False))
+        agents.append(ag)
+
+    # Build TestLLMs with the restored agents (bypasses __init__ agent creation)
+    tester = TestLLMs(
+        seed=props["seed"],
+        num_agents=props["num_agents"],
+        agents=agents,
+        interaction=props.get("interaction", False),
+    )
+
+    # Overwrite the freshly-generated PHQ-9 sequences with the saved ones
+    tester.phq9_sequences = {int(k): v for k, v in props["phq9_sequences"].items()}
+    tester.phq9_indices   = {int(k): v for k, v in props["phq9_indices"].items()}
+
+    # Restore iteration counter and RNG state
+    tester.iterations = props["iterations"]
+    tester.rng.bit_generator.state = props["RNG State"]
+
+    # Restore mistake_dict (JSON keys are strings)
+    mistake_dict = {int(k): v for k, v in props["mistake_dict"].items()}
+
+    print(
+        f"Loaded TestLLMs checkpoint: model={props.get('model_name')}, "
+        f"iterations={tester.iterations}, seed={tester.seed}"
+    )
+    return tester, mistake_dict

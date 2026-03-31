@@ -66,61 +66,96 @@ class Agent:
         else:
             return "severe"
     
+    _REASONING_LINE_RE = re.compile(
+        r'^\s*('
+        r'\d+\.\s+\*\*'                  # "7.  **Final Polish:**"
+        r'|\*[*\s]'                       # asterisk + asterisk/space (reasoning marker)
+        r'|Wait\s*,'                      # "Wait, I need…"
+        r'|-\s+\*'                        # "-   *Refining…"
+        r'|id\s*:\s*\d'                   # "ID: 1"
+        r'|persona\s*:'                   # "Persona: …"
+        r')',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def strip_model_thinking(text: str) -> str:
+        """Strip chain-of-thought / reasoning blocks that some models
+        (e.g. Qwen3.5) produce even with thinking enabled/disabled.
+
+        Handles (in order):
+        1. Full <think>...</think> XML blocks (Qwen3 format)
+        2. Qwen3.5 format: <think> is placed in the *prompt* by the chat
+           template, so only </think> appears in the generated output.
+           Everything before (and including) the first </think> is reasoning.
+        3. Unclosed <think> blocks (model started but never closed)
+        4. Plain-text "Thinking Process:" blocks
+        """
+        # 1. Remove complete <think>...</think> XML blocks
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+        # 2. Qwen3.5 format: only </think> in the output (opening tag was in prompt).
+        #    Strip everything up to and including the first </think>.
+        if '</think>' in cleaned and '<think>' not in cleaned:
+            cleaned = cleaned.split('</think>', 1)[1].strip()
+
+        # 3. Handle unclosed <think> blocks
+        if '<think>' in cleaned:
+            cleaned = cleaned[:cleaned.index('<think>')].strip()
+
+        # 4. If the model produced plain-text reasoning blocks, keep only the
+        #    text after the last one (the actual answer).
+        parts = re.split(r'(?i)\bThinking Process\s*:', cleaned)
+        if len(parts) > 1:
+            cleaned = parts[-1].strip()
+
+        return cleaned
+
     @staticmethod
     def parse_phq9_answers(answers: str) -> int:
+        """Parse the PHQ-9 answers from the LLM output and compute the sumscore.
+
+        Only considers lines whose left-hand side matches a PHQ-9 question
+        label (Q1 … Q9) to avoid picking up stray digits from reasoning text.
         """
-        Parse the PHQ-9 answers from the LLM output and compute the sumscore.
-        Looks for the first digit found after the colon in each line.
-        """
-        lines = answers.strip().split("\n")
+        cleaned = Agent.strip_model_thinking(answers)
+        lines = cleaned.strip().split("\n")
         total_score = 0
-        
+
         for line in lines:
-            # Split on colon to separate "Q1" from the Answer
-            parts = line.split(":", 1) # Split only on the first colon
-            
-            if len(parts) != 2:
+            stripped = line.strip()
+            match = re.match(r'^Q\s*(\d+)\s*:\s*(\d)', stripped, re.IGNORECASE)
+            if not match:
                 continue
-                
-            answer_part = parts[1].strip()
-            
-            # Find the first single digit (0-9) in the answer text
-            match = re.search(r'\d', answer_part)
-            
-            if match:
-                try:
-                    score = int(match.group())
-                    
-                    # 3. Validate range (PHQ-9 scores must be 0, 1, 2, or 3)
-                    if 0 <= score <= 3:
-                        total_score += score
-                    else:
-                        print(f"Score out of range (found {score}) in line: {line}")
-                except ValueError:
-                    print(f"Could not convert match to int in line: {line}")
+            q_num = int(match.group(1))
+            if q_num < 1 or q_num > 9:
+                continue
+            score = int(match.group(2))
+            if 0 <= score <= 3:
+                total_score += score
             else:
-                print(f"No number found in answer part: {line}")
-                
+                print(f"Score out of range (found {score}) in line: {line}")
+
         return total_score
 
     
-    def persona_prompt(self):
-        if self.persona is None:
-            return "You have no specific persona."
-        p = self.persona
+    # def persona_prompt(self):
+    #     if self.persona is None:
+    #         return "You have no specific persona."
+    #     p = self.persona
 
-        hobbies = ", ".join(p["hobbies"][:5]) if p["hobbies"] else "no particular hobbies"
-        skills = ", ".join(p["skills"][:5]) if p["skills"] else "no specific skills"
+    #     hobbies = ", ".join(p["hobbies"][:5]) if p["hobbies"] else "no particular hobbies"
+    #     skills = ", ".join(p["skills"][:5]) if p["skills"] else "no specific skills"
 
-        # combine the free-text persona + structured info
-        base = f"You are {p['name']} " #, {p['persona_text'].rstrip()}. "
-        extra = (
-            f"You are {p['age']} years old, gender: {p['sex']},"
-            f"Marital status: {p['marital_status']}, living in {p['city']}. "
-            f"worklife: {p['occupation'].replace('_', ' ')}. "
-            f"your hobbies include {hobbies}, and your key skills are {skills}."
-        )
-        return base + extra
+    #     # combine the free-text persona + structured info
+    #     base = f"You are {p['name']} " #, {p['persona_text'].rstrip()}. "
+    #     extra = (
+    #         f"You are {p['age']} years old, gender: {p['sex']},"
+    #         f"Marital status: {p['marital_status']}, living in {p['city']}. "
+    #         f"worklife: {p['occupation'].replace('_', ' ')}. "
+    #         f"your hobbies include {hobbies}, and your key skills are {skills}."
+    #     )
+    #     return base + extra
     
     @staticmethod
     def well_being_prompt(well_being : dict):
@@ -337,6 +372,7 @@ class Agent:
             self._next_last_tweet = FC.NO_CONTENT
             self._next_activation_state = False
         
+        print(f"Agent {self.ID}, POST/TWEET: {self._next_last_tweet}, phq-9: {self.well_being.get('phq9_sumscore') if self.well_being else 'None'}")
     # Finalize the activation state for this step
     def commit(self, n_grams, update_score=False) -> bool:
         """
@@ -395,31 +431,107 @@ class Agent:
         """
         Parse the LLM output to determine if the agent decided to post/tweet.
         Recognises both TWEET:/NO_TWEET and POST:/NO_POST based on ABM_FORMAT.
+
+        Strategy:
+          1. Strip thinking, extract tweet from the clean answer.
+          2. If the answer is a ``<content>`` placeholder (model ran out of
+             tokens before writing the real tweet), fall back to searching the
+             *full* output (including the thinking block) for the last POST:
+             with real content.
+          3. Last resort: grab the last long quoted string from the thinking
+             block (models typically put their final draft in quotes).
         """
-        t = text.strip()
-        low = t.lower().replace("\\'", "'").replace("\\n", " ")
+        cleaned = self.strip_model_thinking(text)
 
-        no_kw = FC.NO_CONTENT_LOWER          # "no_tweet" or "no_post"
-        prefix_kw = FC.CONTENT_PREFIX_LOWER   # "tweet:" or "post:"
+        # -- primary path: clean answer after thinking is stripped ----------
+        low_clean = cleaned.lower().replace("\\'", "'").replace("\\n", " ")
 
-        if no_kw in low:
+        no_kw  = FC.NO_CONTENT_LOWER          # "no_tweet" or "no_post"
+        prefix_kw = FC.CONTENT_PREFIX_LOWER    # "tweet:" or "post:"
+
+        last_no   = low_clean.rfind(no_kw)
+        last_post = low_clean.rfind(prefix_kw)
+
+        if last_no > last_post:
             return False, ""
-        if prefix_kw not in low:
-            return False, ""
 
-        idx = low.find(prefix_kw)
-        if idx != -1:
-            raw = t[idx:].strip()
-            cleaned_lines = []
-            for ln in raw.split("\n"):
-                stripped = ln.strip()
-                low_ln = stripped.lower()
-                if low_ln.startswith("id:") or low_ln.startswith("persona:"):
-                    break
-                cleaned_lines.append(ln)
-            return True, "\n".join(cleaned_lines).strip()
+        if last_post != -1:
+            tweet = self._extract_content_at(cleaned, last_post + len(prefix_kw))
+            if tweet and not self._is_placeholder(tweet):
+                return True, tweet
 
-        return (len(t) > 0), t
+        # -- fallback 1: scan full output for the last real POST: -----------
+        tweet = self._find_last_real_tweet(text, prefix_kw)
+        if tweet:
+            return True, tweet
+
+        # -- fallback 2: last long quoted string in the thinking block ------
+        tweet = self._find_last_quoted_tweet(text)
+        if tweet:
+            return True, tweet
+
+        return False, ""
+
+    # ------------------------------------------------------------------
+    #  Helpers used by parse_tweet_decision
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_placeholder(tweet: str) -> bool:
+        """True when the tweet is a format template rather than real content."""
+        low = tweet.lower()
+        return '<content>' in low or '[content]' in low
+
+    def _extract_content_at(self, text: str, content_start: int):
+        """Extract and clean tweet content starting at *content_start*."""
+        raw = text[content_start:].strip()
+
+        first_para = re.split(r'\n\s*\n', raw, maxsplit=1)[0].strip()
+
+        cleaned_lines = []
+        for ln in first_para.split("\n"):
+            if self._REASONING_LINE_RE.match(ln.strip()):
+                break
+            cleaned_lines.append(ln)
+
+        tweet = "\n".join(cleaned_lines).strip().strip('`"\' ')
+
+        if not tweet or tweet.lower().rstrip('.`\'" ') in ('...', '.', '', 'content'):
+            return None
+        return tweet
+
+    @staticmethod
+    def _find_last_real_tweet(text: str, prefix_kw: str):
+        """Walk backwards through every POST:/TWEET: in *text* and return
+        the last one whose content is not a ``<content>`` placeholder."""
+        low = text.lower()
+        search_end = len(low)
+        while True:
+            pos = low.rfind(prefix_kw, 0, search_end)
+            if pos == -1:
+                return None
+            content_start = pos + len(prefix_kw)
+            raw = text[content_start:].strip()
+            first_para = re.split(r'\n\s*\n', raw, maxsplit=1)[0].strip()
+            tweet = first_para.split("\n")[0].strip().strip('`"\' ')
+            if tweet and '<content>' not in tweet.lower() \
+                     and '[content]' not in tweet.lower() \
+                     and tweet.lower().rstrip('.`\'" ') not in ('...', '.', '', 'content'):
+                return tweet
+            search_end = pos
+
+    @staticmethod
+    def _find_last_quoted_tweet(text: str, min_len: int = 50):
+        """Extract the last long double-quoted string from *text*.
+        Models typically put their final draft tweet in quotes during
+        the thinking phase."""
+        matches = re.findall(r'"([^"]{' + str(min_len) + r',})"', text)
+        if not matches:
+            return None
+        candidate = matches[-1].strip()
+        if '<content>' in candidate.lower():
+            return None
+        return candidate
         
     def respond(self) -> list:
         """

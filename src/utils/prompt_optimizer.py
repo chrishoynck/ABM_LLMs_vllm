@@ -12,6 +12,32 @@ import torch.optim as optim
 from src.utils.metrics import *
 from src.utils.format_config import FC
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from src.classes.agent import Agent
+
+
+# ── Thinking-model helpers ────────────────────────────────────────────────
+
+def strip_teacher_thinking(text: str) -> str:
+    """Strip ``<think>…</think>`` reasoning blocks from teacher-model output.
+    No-op for models that don't produce thinking tags."""
+    return Agent.strip_model_thinking(text)
+
+
+def _make_engine_thinking_aware(engine):
+    """Monkey-patch *engine*.generate so every output has thinking blocks
+    stripped automatically.  Safe for non-thinking models."""
+    _orig = engine.generate
+    def _patched(*args, **kwargs):
+        raw = _orig(*args, **kwargs)
+        if isinstance(raw, str):
+            return strip_teacher_thinking(raw)
+        if isinstance(raw, list):
+            return [strip_teacher_thinking(r) if isinstance(r, str) else r
+                    for r in raw]
+        return raw
+    engine.generate = _patched
+    return engine
+
 
 def parse_tweets_with_phq9(file_path: str):
     """
@@ -96,6 +122,7 @@ def parse_tweets_with_phq9_csv(file_path: str):
     """
     tweet_blocks: list[list[str]] = []
     true_answers: list[int] = []
+    personas: list[str] = []
 
     with open(file_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -111,6 +138,10 @@ def parse_tweets_with_phq9_csv(file_path: str):
                 phq9 = int(row.get("phq9")) if row.get("phq9") not in (None, "") else None
             except ValueError:
                 continue
+            try:
+                persona = row.get("persona") if row.get("persona") not in (None, "") else None
+            except ValueError:
+                continue
 
             tweet = (row.get("tweet") or "").strip()
 
@@ -120,9 +151,11 @@ def parse_tweets_with_phq9_csv(file_path: str):
                     if len(current_tweets) > 1:
                         tweet_blocks.append(current_tweets)
                         true_answers.append(current_phq9)
+                        personas.append(current_persona)
 
                 current_agent = agent_id
                 current_phq9 = phq9
+                current_persona = persona
                 current_tweets = [tweet] if tweet else []
             else:
                 if tweet:
@@ -133,8 +166,8 @@ def parse_tweets_with_phq9_csv(file_path: str):
             if len(current_tweets) > 1:
                 tweet_blocks.append(current_tweets)
                 true_answers.append(current_phq9)
-
-    return tweet_blocks, true_answers
+                personas.append(current_persona)
+    return tweet_blocks, true_answers, personas
 
 
 FORMAT_SPLIT_MARKER = "### OPTIONS ###"
@@ -156,6 +189,8 @@ def _build_user_message(format_block: str, tweet_block: list, prompts: dict) -> 
         tweets_block="\n".join(tweet_block)
     )
     return f"{format_block}\n\n{tweets_text}"
+
+
 
 
 def _evaluate_instruction(engine, instruction_text: str, format_block: str,
@@ -187,36 +222,14 @@ def _make_loss_prompt(true_answer: int, predicted: int) -> str:
         f"not on individual PHQ-9 item scores."
     )
 
+def train_val_test_split(rng, file_path: str,
+                         val_fraction: float = 0.10,
+                         test_fraction: float = 0.10):
+    """Split tweet-block data into train / validation / test sets.
 
-def call_optimizer(
-    file_path: str,
-    model_name: str = LLAMA_70B,
-    batch_size: int = 4,
-    max_instruction_words: int = 300,
-    num_steps: int = None,
-    val_fraction: float = 0.15,
-    validate_every: int = 5,
-    seed: int = 42,
-    **vllm_kwargs,
-):
-    """
-    Optimise the PHQ-9 instruction (task framing + reasoning guidance)
-    using TextGrad with batched gradient accumulation.
-
-    The PHQ-9 questions, scoring options, and answer format are kept fixed
-    and passed in the user message so they are never modified.
-
-    Parameters:
-        file_path (str): Path to a tweets_with_phq9.txt produced by TestLLMs.
-        model_name (str): HuggingFace model ID for both the forward and backward (teacher)
-            engine.  Defaults to Llama-3.3-70B-Instruct.
-        batch_size (int): Number of samples per gradient step.
-        max_instruction_words (int): Soft word-count cap enforced via TGD constraints.
-        num_steps (int or None): Optimisation steps.  None -> one epoch over the training set.
-        val_fraction (float): Fraction of data reserved for validation.
-        validate_every (int): Run validation every N steps.
-        seed (int): RNG seed for data shuffling.
-        **vllm_kwargs: Extra kwargs forwarded to ChatVLLM (e.g. dtype).
+    Returns
+    -------
+    train_data, val_data, test_data – each a tuple (blocks, answers, personas)
     """
     if file_path.endswith(".csv"):
         csv_path = file_path
@@ -226,24 +239,68 @@ def call_optimizer(
         csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
 
     if os.path.isfile(csv_path):
-        tweet_blocks, true_answers = parse_tweets_with_phq9_csv(csv_path)
+        tweet_blocks, true_answers, personas = parse_tweets_with_phq9_csv(csv_path)
         print(f"Parsed {len(tweet_blocks)} tweet blocks from {csv_path}")
     else:
         tweet_blocks, true_answers = parse_tweets_with_phq9(txt_path)
+        personas = [None] * len(tweet_blocks)
         print(f"Parsed {len(tweet_blocks)} tweet blocks from {txt_path} (CSV not found, used TXT parser)")
 
-    # Train / validation split
-    rng = np.random.default_rng(seed)
     perm = rng.permutation(len(tweet_blocks))
+    n = len(tweet_blocks)
+    n_test = max(1, int(n * test_fraction))
+    n_val  = max(1, int(n * val_fraction))
 
-    # ADDRESS THIS:
-    n_val = max(1, int(len(tweet_blocks) * val_fraction/5)) # just for now, reduce the size of the validation set to 1/5 of the data for validation
+    test_idx  = perm[:n_test]
+    val_idx   = perm[n_test:n_test + n_val]
+    train_idx = perm[n_test + n_val:]
 
-    val_blocks = [tweet_blocks[i] for i in perm[:n_val]]
-    val_answers = [true_answers[i] for i in perm[:n_val]]
-    train_blocks = [tweet_blocks[i] for i in perm[n_val:]]
-    train_answers = [true_answers[i] for i in perm[n_val:]]
-    print(f"Train: {len(train_blocks)},  Validation: {len(val_blocks)}")
+    def _select(indices):
+        return ([tweet_blocks[i] for i in indices],
+                [true_answers[i] for i in indices],
+                [personas[i] for i in indices])
+
+    train_data = _select(train_idx)
+    val_data   = _select(val_idx)
+    test_data  = _select(test_idx)
+    print(f"Train: {len(train_idx)},  Val: {len(val_idx)},  Test: {len(test_idx)}")
+    return train_data, val_data, test_data
+
+def call_optimizer_phq9(
+    file_path: str,
+    model_name: str = LLAMA_70B,
+    batch_size: int = 4,
+    max_instruction_words: int = 300,
+    num_steps: int = None,
+    val_fraction: float = 0.10,
+    test_fraction: float = 0.10,
+    validate_every: int = 5,
+    val_sample_size: int = 10,
+    seed: int = 42,
+    **vllm_kwargs,
+):
+    """
+    Optimise the PHQ-9 instruction (task framing + reasoning guidance)
+    using TextGrad with batched gradient accumulation.
+
+    Key design choices
+    ------------------
+    * Train / val / test split (default 80 / 10 / 10).
+    * Validation is done on a *sampled subset* (``val_sample_size``) every
+      ``validate_every`` steps to keep cost manageable.
+    * Full test-set evaluation at the end with the best instruction.
+    * Engine is patched to strip ``<think>`` blocks so Qwen3.5 (and similar
+      reasoning models) work transparently as the teacher / backward engine.
+    """
+
+    rng = np.random.default_rng(seed)
+
+    train_data, val_data, test_data = train_val_test_split(
+        rng, file_path, val_fraction, test_fraction,
+    )
+    train_blocks, train_answers, _train_personas = train_data
+    val_blocks, val_answers, _val_personas = val_data
+    test_blocks, test_answers, _test_personas = test_data
 
     # Engine (single model for forward + backward)
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
@@ -254,14 +311,12 @@ def call_optimizer(
         max_model_len=16384,
         **vllm_kwargs,
     )
+    _make_engine_thinking_aware(engine)
     tg.set_backward_engine(engine, override=True)
 
     # --- split prompt into instruction (grad) + format (fixed) --------------
     with open(FC.PROMPTS_FILE, "r") as f:
         prompts = json.load(f)
-
-    # full_system = prompts["phq9"]["system"]
-    # instruction_text, format_block = _split_system_prompt(full_system)
 
     instruction_text = prompts["phq9"]["system_instruction"]
     format_block = prompts["phq9"]["System_format"]
@@ -271,7 +326,8 @@ def call_optimizer(
         role_description=(
             "System-prompt INSTRUCTION for PHQ-9 assessment from tweets. "
             "Contains task framing and step-by-step reasoning guidance only. "
-            "The PHQ-9 questions, scoring options, and answer format are provided separately and must NOT be duplicated here."
+            "The PHQ-9 questions, scoring options, and answer format are "
+            "provided separately and must NOT be duplicated here."
         ),
         requires_grad=True,
     )
@@ -294,7 +350,7 @@ def call_optimizer(
     best_val_mae = float("inf")
     best_instruction = instruction.value
 
-    # Optimisation loop
+    # ── training loop ──────────────────────────────────────────────────────
     for step in range(num_steps):
         batch_idx = rng.choice(
             len(train_blocks),
@@ -337,26 +393,37 @@ def call_optimizer(
         if (step + 1) % 5 == 0:
             print(f"  Current instruction:\n    {instruction.value[:200]}...")
 
-        # --- periodic validation --------------------------------------------
+        # periodic validation on a *sampled* subset
         if (step + 1) % validate_every == 0 or step == num_steps - 1:
-            print(f"Validating on {len(val_blocks)} validation blocks \n\n")
+            n_sample = min(val_sample_size, len(val_blocks))
+            sample_idx = rng.choice(len(val_blocks), size=n_sample, replace=False)
+            sampled_blocks  = [val_blocks[i]  for i in sample_idx]
+            sampled_answers = [val_answers[i] for i in sample_idx]
+
             val_mae = _evaluate_instruction(
                 engine, instruction.value, format_block,
-                val_blocks, val_answers, prompts,
+                sampled_blocks, sampled_answers, prompts,
             )
-            print(f"  -> Validation MAE: {val_mae:.2f}  (best: {best_val_mae:.2f})")
+            print(f"  -> Val MAE ({n_sample} samples): {val_mae:.2f}  (best: {best_val_mae:.2f})")
             if val_mae < best_val_mae:
                 best_val_mae = val_mae
                 best_instruction = instruction.value
                 print("  -> New best instruction saved!")
 
-    # --- save results -------------------------------------------------------
+    # ── final test evaluation ──────────────────────────────────────────────
+    test_mae = _evaluate_instruction(
+        engine, best_instruction, format_block,
+        test_blocks, test_answers, prompts,
+    )
+    print(f"\nTest MAE (n={len(test_blocks)}): {test_mae:.2f}")
+
+    # ── save results ───────────────────────────────────────────────────────
     output_dir = os.path.dirname(file_path)
 
     instr_path = os.path.join(output_dir, "optimized_instruction.txt")
     with open(instr_path, "w", encoding="utf-8") as f:
         f.write(best_instruction)
-    print(f"\nBest instruction (val MAE={best_val_mae:.2f}) → {instr_path}")
+    print(f"\nBest instruction (val MAE={best_val_mae:.2f}, test MAE={test_mae:.2f}) → {instr_path}")
 
     full_path = os.path.join(output_dir, "optimized_full_prompt.txt")
     with open(full_path, "w", encoding="utf-8") as f:
@@ -407,6 +474,308 @@ def parse_phq9_answers(answers: str) -> int:
         return total_score
 
 
+###################### TWEET GENERATION OPTIMIZATION ######################
+
+
+def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
+                              persona: str, phq9_score: int) -> str:
+    """Build the user message for tweet generation from the forced template.
+
+    ``context_tweets`` are the (ground-truth) tweets that precede the one
+    the student model is asked to generate (teacher forcing).
+    """
+    if context_tweets:
+        prev_block = "### PREVIOUS POSTS ###\n" + "\n".join(
+            f"- {t}" for t in context_tweets
+        )
+    else:
+        prev_block = "### PREVIOUS POSTS ###\n(none yet)"
+
+    template = prompts["tweet_gen"]["user_template_forced"]
+    return template.format(
+        agent_id="AGENT",
+        persona=persona or "unspecified",
+        well_being=phq9_score,
+        previous_tweet_block=prev_block,
+    )
+
+
+def parse_tweet_answers(raw_output: str) -> str:
+    """Extract tweet content from raw LLM output, stripping thinking blocks.
+
+    Uses the static ``Agent.strip_model_thinking`` so no Agent instance is
+    needed.  Falls back to the first paragraph of cleaned text.
+    """
+    cleaned = Agent.strip_model_thinking(raw_output)
+    lower = cleaned.lower()
+
+    for prefix in [FC.CONTENT_PREFIX_LOWER, "tweet:", "post:"]:
+        idx = lower.rfind(prefix)
+        if idx != -1:
+            content = cleaned[idx + len(prefix):].strip()
+            first_para = re.split(r'\n\s*\n', content, maxsplit=1)[0].strip()
+            first_para = first_para.strip('`"\' ')
+            if first_para and first_para.lower() not in (
+                '<content>', '[content]', '...', '.', '', 'content',
+            ):
+                return first_para
+
+    return cleaned.split("\n\n")[0].strip()
+
+
+def _make_loss_prompt_tweet(predicted_tweet: str, true_tweet: str,
+                            persona: str, phq9_score: int) -> str:
+    """Per-sample loss prompt sent to the backward engine for tweet quality."""
+    return (
+        f"The student model generated the following tweet:\n"
+        f"\"{predicted_tweet}\"\n\n"
+        f"A reference tweet for this agent (persona: {persona}, "
+        f"PHQ-9 = {phq9_score}) is:\n\"{true_tweet}\"\n\n"
+        "Evaluate the generated tweet on Tone/Mood alignment with the "
+        "PHQ-9 score, Content originality, and Naturalness. "
+        "Tweets should be diverse, emotionally unfiltered, and not too "
+        "obvious about symptoms or personality traits. "
+        "Sometimes mood can deviate from general well-being.\n"
+        "Give concise, actionable feedback (1-2 sentences) on what the "
+        "system instruction should say differently to improve tweet quality. "
+        "Do NOT base feedback on very specific persona details — those "
+        "differ from person to person."
+    )
+
+
+def _evaluate_tweet_instruction(engine, instruction_text: str, prompts: dict,
+                                blocks: list, answers: list, personas: list,
+                                rng, sample_size: int = None) -> float:
+    """Score tweet instruction quality by having the teacher rate outputs.
+
+    For each sample a tweet is generated (teacher-forced context), then the
+    teacher model rates it 0-10.  Returns the average score.
+    """
+    if sample_size and len(blocks) > sample_size:
+        idx = rng.choice(len(blocks), size=sample_size, replace=False)
+        blocks  = [blocks[i]  for i in idx]
+        answers = [answers[i] for i in idx]
+        personas = [personas[i] for i in idx]
+
+    scores = []
+    for tweet_block, phq9, persona in zip(blocks, answers, personas):
+        pos = min(1, len(tweet_block) - 1)
+        context = tweet_block[:pos]
+        true_tweet = tweet_block[pos]
+
+        user_msg = _build_user_message_tweet(context, prompts, persona, phq9)
+        response = engine.generate(user_msg, system_prompt=instruction_text)
+        predicted_tweet = parse_tweet_answers(response)
+
+        rating_prompt = (
+            f"Rate this generated tweet on a scale of 0-10 "
+            f"(0=terrible, 10=excellent) based on naturalness, emotional "
+            f"alignment with PHQ-9 score {phq9}, and similarity to this "
+            f"reference tweet.\n\nReference: \"{true_tweet}\"\n"
+            f"Generated: \"{predicted_tweet}\"\n\n"
+            f"Respond with ONLY a single number 0-10."
+        )
+        rating_response = engine.generate(rating_prompt)
+        try:
+            score = float(re.search(r'\d+', rating_response).group())
+            score = min(10.0, max(0.0, score))
+        except (AttributeError, ValueError):
+            score = 5.0
+        scores.append(score)
+
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def call_optimizer_tweets(
+    file_path: str,
+    model_name: str = LLAMA_70B,
+    val_fraction: float = 0.10,
+    test_fraction: float = 0.10,
+    seed: int = 42,
+    batch_size: int = 4,
+    max_instruction_words: int = 300,
+    num_steps: int = None,
+    validate_every: int = 5,
+    val_sample_size: int = 8,
+    max_chars: int = 240,
+    **vllm_kwargs,
+):
+    """
+    Optimise the tweet generation system prompt using TextGrad.
+
+    Design
+    ------
+    * **Teacher forcing**: for each tweet position *i* in a ground-truth
+      block, the student sees the *true* prior tweets ``block[:i]`` and must
+      generate tweet *i*.  Each prediction is individually compared with the
+      ground truth via a ``TextLoss`` evaluated by the teacher / backward
+      engine.  This gives clean gradient flow per tweet.
+    * Multiple tweet blocks per batch prevent skewing towards a single PHQ-9
+      level.
+    * The engine is patched to strip ``<think>`` blocks so reasoning models
+      (Qwen3.5) work as the teacher without leaking chain-of-thought into
+      gradients.  Non-thinking models are unaffected.
+    * Train / val / test split with sampled validation for efficiency.
+    """
+    rng = np.random.default_rng(seed)
+    train_data, val_data, test_data = train_val_test_split(
+        rng, file_path, val_fraction, test_fraction,
+    )
+    train_blocks, train_answers, train_personas = train_data
+    val_blocks, val_answers, val_personas = val_data
+    test_blocks, test_answers, test_personas = test_data
+
+    # Engine (single model for forward + backward)
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
+    engine = ChatVLLM(
+        model_string=model_name,
+        tensor_parallel_size=tp,
+        gpu_memory_utilization=0.90,
+        max_model_len=16384,
+        **vllm_kwargs,
+    )
+    _make_engine_thinking_aware(engine)
+    tg.set_backward_engine(engine, override=True)
+
+    # ── prompts ────────────────────────────────────────────────────────────
+    with open(FC.PROMPTS_FILE, "r") as f:
+        prompts = json.load(f)
+
+    raw_instruction = prompts["tweet_gen"]["system_forced"]
+    instruction_text = raw_instruction.replace("{max_chars}", str(max_chars))
+
+    instruction = tg.Variable(
+        instruction_text,
+        role_description=(
+            "System-prompt INSTRUCTION for tweet generation. "
+            "Contains task framing, tone/mood guidance, and constraints. "
+            "The user template (persona, PHQ-9, history) is provided "
+            "separately and must NOT be duplicated here."
+        ),
+        requires_grad=True,
+    )
+
+    optimizer = tg.TGD(
+        parameters=[instruction],
+        constraints=[
+            f"The instruction MUST stay concise — at most {max_instruction_words} words.",
+            "Do NOT include the user template (persona, history, etc.) — "
+            "those are provided separately in the user message.",
+            "Focus on actionable guidance for tone, mood, content diversity, "
+            "and originality that produces natural, emotionally-aligned tweets.",
+        ],
+        gradient_memory=0,
+    )
+
+    if num_steps is None:
+        num_steps = min(50, max(1, len(train_blocks) // batch_size))
+
+    best_val_score = -float("inf")
+    best_instruction = instruction.value
+
+    # ── training loop ──────────────────────────────────────────────────────
+    for step in range(num_steps):
+        batch_idx = rng.choice(
+            len(train_blocks),
+            size=min(batch_size, len(train_blocks)),
+            replace=False,
+        )
+        batch_blocks  = [train_blocks[i]  for i in batch_idx]
+        batch_answers = [train_answers[i] for i in batch_idx]
+        batch_personas = [train_personas[i] for i in batch_idx]
+
+        optimizer.zero_grad()
+        model = tg.BlackboxLLM(engine, system_prompt=instruction)
+
+        losses = []
+        n_tweets = 0
+
+        for tweet_block, phq9, persona in zip(batch_blocks, batch_answers,
+                                              batch_personas):
+            # Teacher forcing: ground-truth prior tweets as context
+            for i in range(len(tweet_block)):
+                context = tweet_block[:i]
+                true_tweet = tweet_block[i]
+
+                user_msg = _build_user_message_tweet(
+                    context, prompts, persona, phq9,
+                )
+                question = tg.Variable(
+                    user_msg,
+                    role_description=(
+                        "User template with persona, PHQ-9 score, "
+                        "and tweet history"
+                    ),
+                    requires_grad=False,
+                )
+                prediction = model(question)
+                predicted_tweet = parse_tweet_answers(prediction.value)
+
+                loss_fn = tg.TextLoss(
+                    _make_loss_prompt_tweet(
+                        predicted_tweet, true_tweet, persona, phq9,
+                    )
+                )
+                loss = loss_fn(prediction)
+                losses.append(loss)
+                n_tweets += 1
+
+        total_loss = tg.sum(losses)
+        total_loss.backward()
+        optimizer.step()
+
+        print(f"[Step {step+1}/{num_steps}]  tweets evaluated: {n_tweets}")
+
+        if (step + 1) % 5 == 0:
+            print(f"  Current instruction:\n    {instruction.value[:200]}...")
+
+        # periodic validation on a sampled subset
+        if (step + 1) % validate_every == 0 or step == num_steps - 1:
+            val_score = _evaluate_tweet_instruction(
+                engine, instruction.value, prompts,
+                val_blocks, val_answers, val_personas,
+                rng, sample_size=val_sample_size,
+            )
+            print(
+                f"  -> Val quality score: {val_score:.2f}/10  "
+                f"(best: {best_val_score:.2f})"
+            )
+            if val_score > best_val_score:
+                best_val_score = val_score
+                best_instruction = instruction.value
+                print("  -> New best instruction saved!")
+
+    # ── final test evaluation ──────────────────────────────────────────────
+    test_score = _evaluate_tweet_instruction(
+        engine, best_instruction, prompts,
+        test_blocks, test_answers, test_personas, rng,
+    )
+    print(f"\nTest quality score: {test_score:.2f}/10")
+
+    # ── save results ───────────────────────────────────────────────────────
+    output_dir = os.path.dirname(file_path)
+
+    instr_path = os.path.join(output_dir, "optimized_instruction_tweet.txt")
+    with open(instr_path, "w", encoding="utf-8") as f:
+        f.write(best_instruction)
+    print(
+        f"Best tweet instruction "
+        f"(val={best_val_score:.2f}, test={test_score:.2f}) → {instr_path}"
+    )
+
+    full_path = os.path.join(output_dir, "optimized_full_prompt_tweet.txt")
+    with open(full_path, "w", encoding="utf-8") as f:
+        user_template = prompts["tweet_gen"]["user_template_forced"]
+        f.write(
+            f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
+            f"=== USER TEMPLATE ===\n{user_template}"
+        )
+    print(f"Full prompt → {full_path}")
+
+    return best_instruction
+
+
+
 
 # =============================== BERT Model ===============================
 
@@ -436,7 +805,7 @@ def create_dataset(file_path: str):
     print(f"Training blocks: {len(training_blocks)}")
     return tweet_blocks, true_answers
 
-def split_embeddings_and_labels(embeddings, labels, train_frac=0.8, val_frac=0.1, seed=None):
+def split_embeddings_and_labels(rng, embeddings, labels, train_frac=0.8, val_frac=0.1):
     """
     Split embeddings and labels into train/val/test after loading.
     Uses the same 80/10/10 proportions as create_dataset.
@@ -445,7 +814,6 @@ def split_embeddings_and_labels(embeddings, labels, train_frac=0.8, val_frac=0.1
         labels (torch.Tensor): The labels to split.
         train_frac (float): The fraction of the data to use for training.
         val_frac (float): The fraction of the data to use for validation.
-        seed (int): The seed to use for the random number generator.
     Returns:
         train_embs (torch.Tensor): The embeddings for the training data.
         val_embs (torch.Tensor): The embeddings for the validation data.
@@ -455,7 +823,6 @@ def split_embeddings_and_labels(embeddings, labels, train_frac=0.8, val_frac=0.1
         test_labels (torch.Tensor): The labels for the test data.
     """
     n = len(embeddings)
-    rng = np.random.default_rng(seed)
     perm = rng.permutation(n)
 
     n_train = int(n * train_frac)
@@ -520,13 +887,15 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     """
     with open(embeddings_path, "rb") as f:
         data = torch.load(f)
+    
+    rng = np.random.default_rng(split_seed)
 
     if "embeddings" in data and "labels" in data:
         # New format: single array; split after loading
         all_embs = data["embeddings"]
         all_labels = data["labels"]
         train_embs, val_embs, test_embs, train_labels, val_labels, test_labels = split_embeddings_and_labels(
-            all_embs, all_labels, train_frac=0.8, val_frac=0.1, seed=split_seed
+            rng, all_embs, all_labels, train_frac=0.8, val_frac=0.1
         )
     else:
         # Legacy format: pre-split arrays
@@ -712,7 +1081,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     if run_prompt_optimizer:
-        call_optimizer(file_path, model_name=model_name, batch_size=4)
+        call_optimizer_phq9(file_path, model_name=model_name, batch_size=4)
     else:
         if create_new_embeddings:
             save_embeddings_for_file(file_path, base_model_name, device, mentalbert=mental_bert)
