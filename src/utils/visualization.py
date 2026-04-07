@@ -3,6 +3,8 @@ import os
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import utils.metrics as metrics
+from utils.format_config import FC
 import pandas as pd
 
 def print_network(network, path="", filename="default.png", save=False):
@@ -367,9 +369,29 @@ def plot_tf_idf_PCA(reduced_runs,
     plt.close()
 
 
+def plot_within_variance(mean_within_var_per_setting, shift=5, path="", filename="default.png", save=False):
+    """Standalone plot of within-run embedding variance over time."""
+    fig, ax = plt.subplots(figsize=(5, 4))
+    for setting, mwv in mean_within_var_per_setting.items():
+        mwv = np.asarray(mwv)
+        time_steps = np.arange(mwv.shape[0]) * shift
+        ax.plot(time_steps, mwv, alpha=0.6, label=setting)
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Variance")
+    ax.grid(alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    plt.tight_layout()
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        plt.savefig(f"{path}/within_variance_{filename}.png", dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close()
+
+
 def plot_embedding_PCA_runs(mean_traj,
                         mean_within_var_per_setting=None,
                         mean_phq9_per_setting=None,
+                        assort_data=None,
                         num_steps=100,
                         shift=5,
                         path="",
@@ -378,10 +400,17 @@ def plot_embedding_PCA_runs(mean_traj,
                         mentalbert=False,
                         reduction="pca",
                         save=False):
-    
+    """
+    Two-panel figure: (a) UMAP/PCA trajectory, (b) assortativity + DW mean PHQ-9.
+
+    Args:
+        assort_data (dict): Pre-computed output from plot_phq9_assortativity, containing
+            bin_timesteps, bin_assort_mean, bin_assort_std, bin_dw_phq9_mean,
+            bin_dw_phq9_min, bin_dw_phq9_max. If None, panel (b) is left empty.
+    """
     # Increased height slightly to accommodate the labels underneath
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.7))
-    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 3.4))
+
     embedding = ("MentalBERT" if mentalbert else "SBERT") if sbert else "TF-IDF"
     reduc_label = reduction.upper()
 
@@ -394,20 +423,18 @@ def plot_embedding_PCA_runs(mean_traj,
             phq9_global_max = float(np.max([p.max() for p in all_phq9]))
 
     sc = None
-    
-    # --- Plotting Loop ---
+
+    # --- Plotting Loop (ax1: UMAP/PCA) ---
     for setting, traj in mean_traj.items():
         traj = np.asarray(traj)
         num_windows = traj.shape[0]
-        time_steps = np.arange(num_windows) * shift
-        
+
         mwv = None
         if mean_within_var_per_setting is not None and setting in mean_within_var_per_setting:
             mwv = np.asarray(mean_within_var_per_setting[setting])
             if mwv.shape[0] == num_windows:
                 mwv_max = mwv.max()
                 s = 5 + 20 * (mwv / (mwv_max + 1e-8)) if mwv_max > 0 else np.full_like(mwv, 10)
-                ax2.plot(time_steps, mwv, alpha=0.6, label=setting)
             else:
                 s = 10
         else:
@@ -416,39 +443,70 @@ def plot_embedding_PCA_runs(mean_traj,
         phq9 = None
         if mean_phq9_per_setting is not None and setting in mean_phq9_per_setting:
             phq9 = np.asarray(mean_phq9_per_setting[setting])
-            
+
         if phq9 is not None and phq9.shape[0] == num_windows:
             sc = ax1.scatter(
-                traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7, 
+                traj[:, 0], traj[:, 1], c=phq9, s=s, alpha=0.7,
                 cmap="viridis", vmin=phq9_global_min, vmax=phq9_global_max
             )
         else:
             ax1.scatter(traj[:, 0], traj[:, 1], s=s, alpha=0.7)
-            
+
         ax1.plot(traj[:, 0], traj[:, 1], alpha=0.4, color="gray", linewidth=1)
 
+        # Flag start and end points
+        ax1.scatter(traj[0, 0], traj[0, 1], marker='o', s=180, edgecolors='black',
+                    facecolors='lime', linewidths=2, zorder=10, label='Start' if setting == list(mean_traj.keys())[0] else None)
+        ax1.scatter(traj[-1, 0], traj[-1, 1], marker='X', s=180, edgecolors='black',
+                    facecolors='red', linewidths=1.5, zorder=10, label='End' if setting == list(mean_traj.keys())[0] else None)
+
     # --- Formatting AX1 ---
-    # ax1.set_title(...)  # Removed as requested
     ax1.set_xlabel(f"{reduc_label} 1")
     ax1.set_ylabel(f"{reduc_label} 2")
+    ax1.legend(loc='best', fontsize=6)
     ax1.grid(alpha=0.3)
-    
+
     # Add (a) subscript underneath
-    ax1.text(0.5, -0.25, "(a)", transform=ax1.transAxes, 
+    ax1.text(0.5, -0.25, "(a)", transform=ax1.transAxes,
              ha='center', va='top', fontsize=12, fontweight='bold')
-    
+
     if mean_phq9_per_setting is not None and sc is not None:
         cbar = fig.colorbar(sc, ax=ax1, shrink=0.7)
         cbar.set_label("Mean PHQ-9")
 
-    # --- Formatting AX2 ---
-    # ax2.set_title(...)  # Removed as requested
-    ax2.set_xlabel("Time Step")
-    ax2.set_ylabel("Variance")
-    ax2.grid(alpha=0.3)
-    
+    # --- AX2: Assortativity + DW mean PHQ-9 ---
+    if assort_data is not None:
+        bin_t = assort_data["bin_timesteps"]
+        # Left axis (ax2): assortativity with SD error bars
+        ax2.errorbar(bin_t, assort_data["bin_assort_mean"], yerr=assort_data["bin_assort_std"],
+                     color='steelblue', fmt='o-', capsize=3, linewidth=1.5, markersize=3,
+                     label='Assortativity ± SD')
+        # ax2.axhline(0, color='black', linewidth=0.8, linestyle='--')
+        ax2.set_xlabel("Time Step")
+        ax2.set_ylabel("PHQ-9 Assortativity (r)", color='steelblue')
+        ax2.tick_params(axis='y', labelcolor='steelblue')
+        ax2.grid(alpha=0.3)
+
+        # Right axis: DW mean PHQ-9 with min–max band
+        ax2_right = ax2.twinx()
+        ax2_right.plot(bin_t, assort_data["bin_dw_phq9_mean"], 's--', color='firebrick',
+                       linewidth=1.0, markersize=3, label='DW mean PHQ-9')
+        ax2_right.fill_between(bin_t, assort_data["bin_dw_phq9_min"], assort_data["bin_dw_phq9_max"],
+                               color='firebrick', alpha=0.15, label='Min–max range')
+        ax2_right.set_ylabel("DW PHQ-9 Score", color='firebrick')
+        y_lo = np.nanmin(assort_data["bin_dw_phq9_min"])
+        y_hi = np.nanmax(assort_data["bin_dw_phq9_max"])
+        margin = max((y_hi - y_lo) * 0.1, 0.5)
+        ax2_right.set_ylim(max(0, y_lo - margin), min(27, y_hi + margin))
+        ax2_right.tick_params(axis='y', labelcolor='firebrick')
+
+        # Combined legend
+        lines1, labels1 = ax2.get_legend_handles_labels()
+        lines2, labels2 = ax2_right.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=6)
+
     # Add (b) subscript underneath
-    ax2.text(0.5, -0.25, "(b)", transform=ax2.transAxes, 
+    ax2.text(0.5, -0.25, "(b)", transform=ax2.transAxes,
              ha='center', va='top', fontsize=12, fontweight='bold')
 
     plt.tight_layout()
@@ -458,7 +516,7 @@ def plot_embedding_PCA_runs(mean_traj,
         emb_file = embedding.lower().replace("-", "_")
         full_path = f"{path}/{emb_file}_{reduction}_runs{num_steps}_shift{shift}_{len(mean_traj)}settings_{filename}"
         plt.savefig(full_path, bbox_inches='tight', dpi=300)
-    
+
     plt.show()
     plt.close()
 
@@ -952,3 +1010,664 @@ def plot_model_comparison_by_settings(
         plt.savefig(path, dpi=300, bbox_inches="tight")
         print(f"Saved {path}")
     plt.close()
+
+
+#============= Shared helpers for semantic / echo-chamber plots =========#
+
+def _smooth_series(arr, window):
+    """Rolling mean and std for a 1-D array, NaN-aware. Window is centered."""
+    arr = np.asarray(arr, dtype=float)
+    if window <= 1:
+        return arr, np.zeros_like(arr)
+    import pandas as pd
+    s = pd.Series(arr)
+    mean = s.rolling(window, center=True, min_periods=1).mean().values
+    std = s.rolling(window, center=True, min_periods=1).std(ddof=0).values
+    return mean, std
+
+
+def _cosine_sim_matrix(embeddings):
+    """Cosine similarity matrix from an (N, D) embedding array."""
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / np.maximum(norms, 1e-10)
+    return normed @ normed.T
+
+
+def _build_neighbor_pairs(graph, id_to_idx, network):
+    """Set of (min_idx, max_idx) tuples for all connected agent pairs."""
+    undirected = graph if not network.directed else graph.to_undirected()
+    pairs = set()
+    for agent in network.all_agents:
+        i = id_to_idx[agent.ID]
+        for nid in undirected.neighbors(agent.ID):
+            j = id_to_idx.get(nid)
+            if j is not None:
+                pairs.add((min(i, j), max(i, j)))
+    return pairs
+
+
+def _get_T(network, include_phq9=False):
+    """Minimum number of timesteps across all agents."""
+    T = min(len(a.tweethistory) for a in network.all_agents)
+    if include_phq9:
+        T = min(T, min(len(a.all_phq9_sumscores) for a in network.all_agents))
+    return T
+
+
+def _prepare_embs(network, agent_embs, mentalbert, cache_path=None):
+    """Load embeddings if needed; return (embs, has_valid).
+
+    If cache_path is given it is forwarded to build_agent_embeddings so that
+    embeddings are loaded from / saved to disk automatically.
+    """
+    if agent_embs is None:
+        agent_embs = metrics.build_agent_embeddings(network, mentalbert=mentalbert,
+                                                    cache_path=cache_path)
+    has_valid = any(e is not None for row in agent_embs for e in row)
+    return agent_embs, has_valid
+
+
+def _save_and_close(fig, save, path, filename, prefix, show_fig):
+    """tight_layout → optional save → show/close."""
+    plt.tight_layout()
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        plt.savefig(f"{path}/{prefix}_{filename}.png", dpi=300, bbox_inches="tight")
+    if show_fig:
+        plt.show()
+    plt.close()
+
+
+def _plot_smoothed(ax, timesteps, raw, smooth_window, color, label,
+                   linewidth=1.5, linestyle='-', fill_alpha=0.15, raw_std=None, raw_n=None):
+    """Plot a time series with optional smoothing and ±1 SE band.
+
+    When smooth_window > 1 and raw_std/raw_n are provided: rolling mean ± smoothed cross-agent SE.
+    When smooth_window > 1 without raw_std/raw_n: rolling mean ± rolling temporal std.
+    When smooth_window == 1 and raw_std is provided: raw ± raw_std.
+    """
+    if smooth_window > 1:
+        sm, temporal_std = _smooth_series(raw, smooth_window)
+        if raw_std is not None and raw_n is not None:
+            smoothed_std, _ = _smooth_series(raw_std, smooth_window)
+            smoothed_n, _ = _smooth_series(np.asarray(raw_n, dtype=float), smooth_window)
+            std = smoothed_std / np.sqrt(np.maximum(smoothed_n, 1))
+        else:
+            std = temporal_std
+    else:
+        sm, std = raw, raw_std
+    ax.plot(timesteps, sm, color=color, linewidth=linewidth, linestyle=linestyle, label=label)
+    if std is not None:
+        ax.fill_between(timesteps, sm - std, sm + std, color=color, alpha=fill_alpha)
+    return sm
+
+
+#============= Semantic Entrainment & Vector Assortativity =============#
+
+def plot_semantic_entrainment(network, agent_embs=None, mentalbert=True, path="", filename="",
+                              save=False, show_fig=True, smooth_window=1, cache_path=None):
+    """
+    Plots local (neighbor) vs. random cosine similarity over time.
+
+    Positive local−random gap = semantic assortativity (entrainment).
+    smooth_window > 1 applies a centered rolling average with ±1 SD band.
+    cache_path: optional .npz path forwarded to build_agent_embeddings for save/load.
+    """
+    import random as _random
+
+    graph, id_to_idx = metrics.build_network_graph(network)
+    T = _get_T(network)
+    agent_embs, has_valid = _prepare_embs(network, agent_embs, mentalbert, cache_path=cache_path)
+    if not has_valid:
+        print("No valid tweets found in the network.")
+        return None, None, {}
+
+    mean_local_sims, std_local_sims, n_local_sims, mean_global_sims, std_global_sims, n_global_sims = [], [], [], [], [], []
+    print("Computing semantic entrainment per timestep (agent@t vs. neighbors@t-1)...")
+    for t in range(1, T):  # start at 1: need t-1 for neighbors
+        # Agents valid at t (self) and agents valid at t-1 (potential neighbors/random)
+        valid_t  = [i for i in range(len(network.all_agents)) if agent_embs[i][t] is not None]
+        valid_t1 = {i for i in range(len(network.all_agents)) if agent_embs[i][t-1] is not None}
+        if len(valid_t) < 2 or len(valid_t1) < 2:
+            mean_local_sims.append(np.nan); std_local_sims.append(np.nan); n_local_sims.append(0)
+            mean_global_sims.append(np.nan); std_global_sims.append(np.nan); n_global_sims.append(0)
+            continue
+
+        # Precompute normalized embeddings for agents at t and at t-1
+        embs_t = np.stack([agent_embs[i][t] for i in valid_t])
+        norms_t = np.linalg.norm(embs_t, axis=1, keepdims=True)
+        normed_t = embs_t / np.maximum(norms_t, 1e-10)
+
+        valid_t1_list = sorted(valid_t1)
+        t1_to_pos = {idx: pos for pos, idx in enumerate(valid_t1_list)}
+        embs_t1 = np.stack([agent_embs[i][t-1] for i in valid_t1_list])
+        norms_t1 = np.linalg.norm(embs_t1, axis=1, keepdims=True)
+        normed_t1 = embs_t1 / np.maximum(norms_t1, 1e-10)
+
+        # Cross-similarity: (agents@t) × (agents@t-1)
+        cross_sim = normed_t @ normed_t1.T
+
+        local_sims, global_sims = [], []
+        for row, i in enumerate(valid_t):
+            agent = network.all_agents[i]
+            sources = graph.predecessors(agent.ID) if network.directed else graph.neighbors(agent.ID)
+            # Neighbors must have valid embeddings at t-1
+            neighbor_pos = [t1_to_pos[id_to_idx[nid]] for nid in sources
+                            if id_to_idx.get(nid) is not None and id_to_idx[nid] in t1_to_pos]
+            if not neighbor_pos:
+                continue
+            local_sims.append(np.mean(cross_sim[row, neighbor_pos]))
+
+            # Random baseline: sample from agents valid at t-1 (excluding neighbors and self)
+            self_pos = t1_to_pos.get(i)
+            exclude = set(neighbor_pos) | ({self_pos} if self_pos is not None else set())
+            other_pos = [p for p in range(len(valid_t1_list)) if p not in exclude]
+            if len(other_pos) >= len(neighbor_pos):
+                sampled = _random.sample(other_pos, len(neighbor_pos))
+                global_sims.append(np.mean(cross_sim[row, sampled]))
+
+        mean_local_sims.append(np.mean(local_sims) if local_sims else np.nan)
+        std_local_sims.append(np.std(local_sims)   if local_sims else np.nan)
+        n_local_sims.append(len(local_sims) if local_sims else 0)
+        mean_global_sims.append(np.mean(global_sims) if global_sims else np.nan)
+        std_global_sims.append(np.std(global_sims) if global_sims else np.nan)
+        n_global_sims.append(len(global_sims) if global_sims else 0)
+
+    # --- Plot ---
+    raw_local  = np.array(mean_local_sims)
+    raw_std    = np.array(std_local_sims)
+    raw_n_local = np.array(n_local_sims)
+    raw_global = np.array(mean_global_sims)
+    raw_std_global = np.array(std_global_sims)
+    raw_n_global = np.array(n_global_sims)
+    timesteps  = np.arange(1, T)  # starts at 1 (agent@t vs. neighbors@t-1)
+    sfx = f" (smoothed, w={smooth_window})" if smooth_window > 1 else ""
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    _plot_smoothed(ax, timesteps, raw_local, smooth_window, 'teal',
+                   f'Mean Local Cosine Similarity{sfx}', linewidth=2, raw_std=raw_std, raw_n=raw_n_local, fill_alpha=0.2)
+    _plot_smoothed(ax, timesteps, raw_global, smooth_window, 'gray',
+                   f'Mean Random Cosine Similarity (baseline){sfx}', linewidth=1.5, linestyle='--',
+                   raw_std=raw_std_global, raw_n=raw_n_global, fill_alpha=0.1)
+    ax.set_xlabel("Time Step"); ax.set_ylabel("Cosine Similarity")
+    ax.set_title("Semantic Entrainment & Vector Assortativity over Time")
+    ax.legend(loc='best'); ax.grid(True, alpha=0.3)
+
+    _save_and_close(fig, save, path, filename, "semantic_entrainment", show_fig)
+    return fig, ax, {"mean_local": raw_local, "std_local": raw_std, "mean_global": raw_global}
+
+
+#============= PHQ-9 × Semantic Alignment ==============================#
+
+def plot_phq9_semantic_alignment(network, agent_embs=None, mentalbert=True, path="", filename="",
+                                 save=False, show_fig=True, smooth_window=1, cache_path=None):
+    """
+    Tests whether PHQ-9 similarity predicts semantic similarity, split by neighbor status.
+    NOTE: this is a more direct test of the relationship between PHQ-9 and semantics than the echo chamber plot.
+    mentalBERT already encodes some PHQ-9-related signals,
+    so we expect a positive correlation between PHQ-9 similarity and semantic similarity even without entrainment.
+    key question is whether this correlation is stronger for neighbors than non-neighbors,
+    which would suggest that agents are semantically aligning more with those who have similar PHQ-9 scores.
+
+    Top panel: Spearman rho(|(DELTA)PHQ-9|, cosine_sim) over time.
+    Bottom panel: mean cosine sim stratified by neighbor/non-neighbor × same/diff PHQ-9.
+    smooth_window > 1 applies a centered rolling average with ±1 SD band.
+    cache_path: optional .npz path forwarded to build_agent_embeddings for save/load.
+    """
+    from scipy.stats import spearmanr
+
+    PHQ9_SIM_THRESHOLD = 5
+
+    graph, id_to_idx = metrics.build_network_graph(network)
+    T = _get_T(network, include_phq9=True)
+    neighbor_pairs = _build_neighbor_pairs(graph, id_to_idx, network)
+    agent_embs, has_valid = _prepare_embs(network, agent_embs, mentalbert, cache_path=cache_path)
+    if not has_valid:
+        print("No valid tweets found.")
+        return None, None, {}
+
+    # Per-timestep metric accumulators
+    keys = ["spearman_corr", "neigh_same_phq9", "neigh_diff_phq9", "rand_same_phq9", "rand_diff_phq9"]
+    series = {k: [] for k in keys}
+    bucket_keys = [k for k in keys if k != "spearman_corr"]
+    std_series = {k: [] for k in bucket_keys}
+    n_series = {k: [] for k in bucket_keys}
+
+    print("Computing PHQ-9 × semantic alignment per timestep...")
+    for t in range(T):
+        valid_idx = [i for i in range(len(network.all_agents))
+                     if agent_embs[i][t] is not None
+                     and network.all_agents[i].all_phq9_sumscores[t] is not None]
+        if len(valid_idx) < 4:
+            for k in keys:
+                series[k].append(np.nan)
+            for k in bucket_keys:
+                std_series[k].append(np.nan)
+                n_series[k].append(0)
+            continue
+
+        sim_matrix = _cosine_sim_matrix(np.stack([agent_embs[i][t] for i in valid_idx]))
+        phq9_scores = np.array([network.all_agents[i].all_phq9_sumscores[t] for i in valid_idx], dtype=float)
+
+        # All unique pairs
+        N = len(valid_idx)
+        rows, cols = np.triu_indices(N, k=1)
+        phq9_diffs = np.abs(phq9_scores[rows] - phq9_scores[cols])
+        cos_sims   = sim_matrix[rows, cols]
+
+        if phq9_diffs.std() > 0 and cos_sims.std() > 0:
+            corr, _ = spearmanr(phq9_diffs, cos_sims)
+        else:
+            corr = np.nan
+        series["spearman_corr"].append(corr)
+
+        # Stratify: neighbor/non-neighbor × same/diff PHQ-9
+        buckets = {"neigh_same_phq9": [], "neigh_diff_phq9": [], "rand_same_phq9": [], "rand_diff_phq9": []}
+        for k_pair, (r, c) in enumerate(zip(rows, cols)):
+            gi, gj = valid_idx[r], valid_idx[c]
+            is_neigh = (min(gi, gj), max(gi, gj)) in neighbor_pairs
+            same_phq = phq9_diffs[k_pair] <= PHQ9_SIM_THRESHOLD
+            bucket = ("neigh_" if is_neigh else "rand_") + ("same_phq9" if same_phq else "diff_phq9")
+            buckets[bucket].append(cos_sims[k_pair])
+        for k in buckets:
+            series[k].append(np.mean(buckets[k]) if buckets[k] else np.nan)
+            std_series[k].append(np.std(buckets[k]) if buckets[k] else np.nan)
+            n_series[k].append(len(buckets[k]) if buckets[k] else 0)
+
+    # Plot 
+    raw = {k: np.array(v) for k, v in series.items()}
+    raw_stds = {k: np.array(v) for k, v in std_series.items()}
+    raw_ns = {k: np.array(v) for k, v in n_series.items()}
+    timesteps = np.arange(T)
+    sfx = f" (smoothed, w={smooth_window})" if smooth_window > 1 else ""
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+
+    _plot_smoothed(ax1, timesteps, raw["spearman_corr"], smooth_window, 'purple', None)
+    ax1.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax1.set_ylabel("Spearman ρ\n(PHQ-9 diff vs. cosine sim)")
+    ax1.set_title(f"PHQ-9 Score Similarity × Semantic Similarity Alignment{sfx}")
+    ax1.grid(True, alpha=0.3)
+
+    # threshold for "similar" PHQ-9 scores
+    TH = PHQ9_SIM_THRESHOLD
+    for key, color, ls, lw, label in [
+        ("neigh_same_phq9", 'teal',   '-',  2,   f'Neighbor, |ΔPHQ-9| ≤ {TH}'),
+        ("neigh_diff_phq9", 'teal',   '--', 2,   f'Neighbor, |ΔPHQ-9| > {TH}'),
+        ("rand_same_phq9",  'salmon', '-',  1.5, f'Non-neighbor, |ΔPHQ-9| ≤ {TH}'),
+        ("rand_diff_phq9",  'gray',   '--', 1.5, f'Non-neighbor, |ΔPHQ-9| > {TH}'),
+    ]:
+        _plot_smoothed(ax2, timesteps, raw[key], smooth_window, color, label,
+                       linewidth=lw, linestyle=ls, fill_alpha=0.1,
+                       raw_std=raw_stds.get(key), raw_n=raw_ns.get(key))
+    ax2.set_xlabel("Time Step"); ax2.set_ylabel("Mean Pairwise Cosine Similarity")
+    ax2.legend(loc='best', fontsize=8); ax2.grid(True, alpha=0.3)
+
+    _save_and_close(fig, save, path, filename, "phq9_semantic_alignment", show_fig)
+    return fig, (ax1, ax2), raw
+
+
+#============= Depression Echo Chamber ==================================#
+
+def plot_depression_echo_chamber(network, agent_embs=None, mentalbert=True, path="", filename="",
+                                 save=False, show_fig=True, smooth_window=1, step=1, cache_path=None):
+    """
+    Three-panel figure testing whether semantic content drives depression echo chambers.
+
+    Panel 1 — PHQ-9 assortativity + cross-agent PHQ-9 variance (twin axis).
+    Panel 2 — Depression-axis alignment (Pearson r: projection vs. PHQ-9).
+    Panel 3 — Depression-axis entrainment (local vs. random similarity on depression axis).
+
+    Depression axis fitted with temporal cross-validation (split-half).
+    smooth_window > 1 applies a centered rolling average with ±1 SD band.
+    step > 1 subsamples computation to every Nth timestep (useful when PHQ-9
+    updates every N steps, making intermediate timesteps redundant for panel 1).
+    cache_path: optional .npz path forwarded to build_agent_embeddings for save/load.
+    """
+    import random as _random
+    from scipy.stats import pearsonr
+
+    graph, id_to_idx = metrics.build_network_graph(network)
+    undirected = graph.to_undirected()
+    T = _get_T(network, include_phq9=True)
+    agent_embs, has_valid = _prepare_embs(network, agent_embs, mentalbert, cache_path=cache_path)
+    if not has_valid:
+        print("No valid tweets found.")
+        return None, None, {}
+
+    # ── Depression axis: temporal cross-validation (split-half) ──
+    T_mid = T // 2
+
+    def _fit_depression_axis(t_start, t_end):
+        embs, scores = [], []
+        for i, agent in enumerate(network.all_agents):
+            for t in range(t_start, t_end):
+                emb, phq = agent_embs[i][t], agent.all_phq9_sumscores[t]
+                if emb is not None and phq is not None:
+                    embs.append(emb); scores.append(float(phq))
+        if len(embs) < 2:
+            return None
+        E, y = np.stack(embs), np.array(scores)
+        axis = E.T @ (y - y.mean())
+        norm = np.linalg.norm(axis)
+        return axis / norm if norm > 1e-10 else None
+
+    axis_from_first  = _fit_depression_axis(0, T_mid)
+    axis_from_second = _fit_depression_axis(T_mid, T)
+    print(f"Depression axes computed via temporal cross-validation (split at t={T_mid}).")
+
+    # Project embeddings onto the held-out axis
+    agent_proj = []
+    for i in range(len(network.all_agents)):
+        row = []
+        for t in range(T):
+            emb = agent_embs[i][t]
+            axis = axis_from_second if t < T_mid else axis_from_first
+            row.append(float(emb @ axis) if (emb is not None and axis is not None) else None)
+        agent_proj.append(row)
+
+    # ── Per-timestep metrics (subsampled by step, agent@t vs. neighbors@t-1) ──
+    eval_timesteps = [t for t in range(max(1, step), T, step)]  # start at ≥1 for lag
+    metric_lists = {"depression_align_r": [], "mean_local_proj": [], "mean_rand_proj": []}
+    std_lists = {"mean_local_proj": [], "mean_rand_proj": []}
+    n_lists = {"mean_local_proj": [], "mean_rand_proj": []}
+
+    print(f"Computing echo-chamber metrics (step={step}, {len(eval_timesteps)} points, lag-1)...")
+    for t in eval_timesteps:
+        valid_idx = [i for i in range(len(network.all_agents))
+                     if agent_proj[i][t] is not None
+                     and network.all_agents[i].all_phq9_sumscores[t] is not None]
+        # Agents with valid projections at t-1 (for neighbor/random comparisons)
+        valid_t1 = {i for i in range(len(network.all_agents)) if agent_proj[i][t-1] is not None}
+        if len(valid_idx) < 4:
+            for lst in metric_lists.values():
+                lst.append(np.nan)
+            for k in std_lists:
+                std_lists[k].append(np.nan)
+                n_lists[k].append(0)
+            continue
+
+        projs = np.array([agent_proj[i][t] for i in valid_idx])
+        phq9s = np.array([float(network.all_agents[i].all_phq9_sumscores[t]) for i in valid_idx])
+
+        # Panel 1: depression-axis projection vs. PHQ-9
+        if projs.std() > 1e-10 and phq9s.std() > 1e-10:
+            r_align, _ = pearsonr(projs, phq9s)
+        else:
+            r_align = np.nan
+        metric_lists["depression_align_r"].append(r_align)
+
+        # Panel 2: local vs. random entrainment on depression axis (agent@t vs. neighbors@t-1)
+        # Scale uses all projections at t-1 for consistent normalization
+        all_projs_t1 = [agent_proj[i][t-1] for i in range(len(network.all_agents)) if agent_proj[i][t-1] is not None]
+        scale = np.std(all_projs_t1) + 1e-10 if all_projs_t1 else 1.0
+        local_sims, rand_sims = [], []
+        for i in valid_idx:
+            proj_i = agent_proj[i][t]
+            sources = graph.predecessors(network.all_agents[i].ID) if network.directed \
+                      else graph.neighbors(network.all_agents[i].ID)
+            neighbor_idx = [id_to_idx[nid] for nid in sources if id_to_idx.get(nid) in valid_t1]
+            if not neighbor_idx:
+                continue
+            local_sims.append(np.mean([1.0 - abs(proj_i - agent_proj[j][t-1]) / scale for j in neighbor_idx]))
+            other = [j for j in valid_t1 if j != i and j not in set(neighbor_idx)]
+            if len(other) >= len(neighbor_idx):
+                sampled = _random.sample(other, len(neighbor_idx))
+                rand_sims.append(np.mean([1.0 - abs(proj_i - agent_proj[j][t-1]) / scale for j in sampled]))
+
+        metric_lists["mean_local_proj"].append(np.mean(local_sims) if local_sims else np.nan)
+        std_lists["mean_local_proj"].append(np.std(local_sims) if local_sims else np.nan)
+        n_lists["mean_local_proj"].append(len(local_sims) if local_sims else 0)
+        metric_lists["mean_rand_proj"].append(np.mean(rand_sims)   if rand_sims  else np.nan)
+        std_lists["mean_rand_proj"].append(np.std(rand_sims) if rand_sims else np.nan)
+        n_lists["mean_rand_proj"].append(len(rand_sims) if rand_sims else 0)
+
+    # ── Plot (2 panels) ──
+    raw = {k: np.array(v) for k, v in metric_lists.items()}
+    raw_stds = {k: np.array(v) for k, v in std_lists.items()}
+    raw_ns = {k: np.array(v) for k, v in n_lists.items()}
+    timesteps = np.array(eval_timesteps)
+    sfx_parts = []
+    if step > 1:
+        sfx_parts.append(f"step={step}")
+    if smooth_window > 1:
+        sfx_parts.append(f"smooth w={smooth_window}")
+    sfx = f" ({', '.join(sfx_parts)})" if sfx_parts else ""
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+
+    # Panel 1: depression-axis alignment
+    _plot_smoothed(ax1, timesteps, raw["depression_align_r"], smooth_window, 'steelblue', None)
+    ax1.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax1.set_ylabel("Content–PHQ-9 Alignment (r)\n[depression axis projection]")
+    ax1.set_title(f"Depression Echo Chamber Analysis{sfx}")
+    ax1.grid(True, alpha=0.3)
+
+    # Panel 2: local vs. random
+    _plot_smoothed(ax2, timesteps, raw["mean_local_proj"], smooth_window, 'teal',
+                   'Local (neighbors)', linewidth=2,
+                   raw_std=raw_stds["mean_local_proj"], raw_n=raw_ns["mean_local_proj"])
+    _plot_smoothed(ax2, timesteps, raw["mean_rand_proj"], smooth_window, 'gray',
+                   'Random baseline', linewidth=1.5, linestyle='--', fill_alpha=0.1,
+                   raw_std=raw_stds["mean_rand_proj"], raw_n=raw_ns["mean_rand_proj"])
+    ax2.set_xlabel("Time Step")
+    ax2.set_ylabel("Depression-Axis Similarity\n(neighbors vs. random)")
+    ax2.legend(loc='best'); ax2.grid(True, alpha=0.3)
+
+    _save_and_close(fig, save, path, filename, "depression_echo_chamber", show_fig)
+    return fig, (ax1, ax2), raw
+
+
+#============= PHQ-9 Assortativity + Degree-Weighted Mean ==============#
+
+def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=True,
+                            step=10, bin_size=50):
+    """
+    Standalone plot: PHQ-9 assortativity (left axis) + degree-weighted mean PHQ-9
+    with cross-agent SE (right axis), shown as binned points with error bars.
+
+    Computed every `step` timesteps (default 10 to match PHQ-9 update cycle).
+    Then aggregated into bins of `bin_size` raw timesteps (default 30).
+    - Assortativity: bin mean ± temporal std (how much it fluctuates across PHQ-9 cycles).
+    - Degree-weighted PHQ-9: bin-midpoint value ± cross-agent SE.
+
+    Uses ALL agents (no embedding filter), degree-weighted like metrics.degree_weighted_mean.
+    """
+    graph, id_to_idx = metrics.build_network_graph(network)
+    undirected = graph.to_undirected()
+    T = _get_T(network, include_phq9=True)
+    eval_timesteps = list(range(0, T, step))
+
+    # Precompute per-agent degree (number of connections)
+    agent_degrees = np.array([len(a.agent_connections) for a in network.all_agents], dtype=float)
+    total_degree = agent_degrees.sum()
+
+    assort_list, dw_mean_list, dw_se_list = [], [], []
+
+    print(f"Computing PHQ-9 assortativity (step={step}, {len(eval_timesteps)} points)...")
+    for t in eval_timesteps:
+        # Gather PHQ-9 for ALL agents (no embedding filter)
+        phq9s = np.array([float(a.all_phq9_sumscores[t]) if a.all_phq9_sumscores[t] is not None else np.nan
+                          for a in network.all_agents])
+        valid_mask = ~np.isnan(phq9s)
+
+        if valid_mask.sum() < 4:
+            assort_list.append(np.nan); dw_mean_list.append(np.nan); dw_se_list.append(np.nan)
+            continue
+
+        # Assortativity
+        for node in undirected.nodes():
+            idx = id_to_idx[node]
+            undirected.nodes[node]['phq9'] = phq9s[idx] if valid_mask[idx] else 0.0
+        try:
+            assort_list.append(nx.numeric_assortativity_coefficient(undirected, 'phq9'))
+        except Exception:
+            assort_list.append(np.nan)
+
+        # Degree-weighted mean and SE
+        valid_phq9 = phq9s[valid_mask]
+        valid_degrees = agent_degrees[valid_mask]
+        n = len(valid_phq9)
+        if total_degree > 0:
+            weights = valid_degrees / valid_degrees.sum()
+            dw_mean = np.average(valid_phq9, weights=weights)
+            dw_std = np.sqrt(np.average((valid_phq9 - dw_mean) ** 2, weights=weights))
+        else:
+            dw_mean, dw_std = np.mean(valid_phq9), np.std(valid_phq9)
+        dw_mean_list.append(dw_mean)
+        dw_se_list.append(dw_std / np.sqrt(n))
+
+    raw_timesteps = np.array(eval_timesteps)
+    raw_assort = np.array(assort_list)
+    raw_dw_mean = np.array(dw_mean_list)
+    raw_dw_se = np.array(dw_se_list)
+
+    # ── Bin aggregation ──
+    points_per_bin = max(1, bin_size // step)
+    n_points = len(eval_timesteps)
+    n_bins = max(1, n_points // points_per_bin)
+
+    bin_t, bin_assort_mean, bin_assort_std = [], [], []
+    bin_dw_mean, bin_dw_min, bin_dw_max = [], [], []
+
+    for b in range(n_bins):
+        start = b * points_per_bin
+        end = min(start + points_per_bin, n_points)
+        sl = slice(start, end)
+
+        bin_t.append(np.nanmean(raw_timesteps[sl]))  # bin midpoint
+
+        # Assortativity: mean ± temporal std (can be negative, that's fine)
+        a = raw_assort[sl]
+        bin_assort_mean.append(np.nanmean(a))
+        bin_assort_std.append(np.nanstd(a))
+
+        # Degree-weighted PHQ-9: mean with min–max band (can't go negative)
+        bin_dw_mean.append(np.nanmean(raw_dw_mean[sl]))
+        bin_dw_min.append(np.nanmin(raw_dw_mean[sl]))
+        bin_dw_max.append(np.nanmax(raw_dw_mean[sl]))
+
+    bin_t = np.array(bin_t)
+    bin_assort_mean = np.array(bin_assort_mean)
+    bin_assort_std = np.array(bin_assort_std)
+    bin_dw_mean = np.array(bin_dw_mean)
+    bin_dw_min = np.array(bin_dw_min)
+    bin_dw_max = np.array(bin_dw_max)
+
+    # ── Plot ──
+    sfx = f" (binned, {bin_size} steps)"
+    fig, ax_left = plt.subplots(figsize=(5, 4))
+
+    # Left axis: assortativity with error bars (can go negative, no issue)
+    ax_left.errorbar(bin_t, bin_assort_mean, yerr=bin_assort_std, color='steelblue',
+                     fmt='o-', capsize=3, linewidth=1.5, markersize=4,
+                     label='Assortativity ± SD')
+    ax_left.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax_left.set_xlabel("Time Step")
+    ax_left.set_ylabel("PHQ-9 Assortativity (r)", color='steelblue')
+    ax_left.tick_params(axis='y', labelcolor='steelblue')
+    ax_left.grid(True, alpha=0.3)
+    ax_left.set_title(f"PHQ-9 Assortativity & Degree-Weighted Mean{sfx}")
+
+    # Right axis: degree-weighted mean PHQ-9 with min–max band (always ≥ 0)
+    ax_right = ax_left.twinx()
+    ax_right.plot(bin_t, bin_dw_mean, 's--', color='firebrick', linewidth=1.2,
+                  markersize=4, label='DW mean PHQ-9')
+    ax_right.fill_between(bin_t, bin_dw_min, bin_dw_max,
+                          color='firebrick', alpha=0.15, label='Min–max range')
+    ax_right.set_ylabel("Degree-Weighted PHQ-9 Score", color='firebrick')
+    y_lo, y_hi = np.nanmin(bin_dw_min), np.nanmax(bin_dw_max)
+    margin = max((y_hi - y_lo) * 0.1, 0.5)
+    ax_right.set_ylim(max(0, y_lo - margin), min(27, y_hi + margin))
+    ax_right.tick_params(axis='y', labelcolor='firebrick')
+
+    # Combined legend
+    lines1, labels1 = ax_left.get_legend_handles_labels()
+    lines2, labels2 = ax_right.get_legend_handles_labels()
+    ax_left.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=8)
+
+    _save_and_close(fig, save, path, filename, "phq9_assortativity", show_fig)
+    return fig, (ax_left, ax_right), {
+        "bin_timesteps": bin_t,
+        "bin_assort_mean": bin_assort_mean, "bin_assort_std": bin_assort_std,
+        "bin_dw_phq9_mean": bin_dw_mean, "bin_dw_phq9_min": bin_dw_min, "bin_dw_phq9_max": bin_dw_max,
+        "raw_timesteps": raw_timesteps, "raw_assort": raw_assort,
+        "raw_dw_mean": raw_dw_mean, "raw_dw_se": raw_dw_se,
+    }
+
+
+#============= PHQ-9 Neighbor Correlation ===============================#
+
+def plot_phq9_neighbor_correlation(network, path="", filename="", save=False, show_fig=True,
+                                   time_range=None):
+    """
+    Scatter of each agent's mean PHQ-9 vs. their neighbors' mean PHQ-9.
+
+    A positive correlation means depressed agents are surrounded by depressed neighbors.
+
+    Args:
+        time_range (tuple, optional): (start, end) timestep indices for averaging.
+            Supports negative indexing from the end, e.g. (-50, None) = last 50 steps.
+            None uses all timesteps.
+    """
+    from scipy.stats import pearsonr
+
+    graph, id_to_idx = metrics.build_network_graph(network)
+    undirected = graph.to_undirected()
+    T = _get_T(network, include_phq9=True)
+
+    # Resolve time range (supports negative indexing)
+    if time_range is not None:
+        t_start, t_end = time_range
+        if t_start is not None and t_start < 0:
+            t_start = max(0, T + t_start)
+        if t_end is not None and t_end < 0:
+            t_end = max(0, T + t_end)
+        t_start = t_start if t_start is not None else 0
+        t_end   = t_end   if t_end   is not None else T
+    else:
+        t_start, t_end = 0, T
+    t_range = range(t_start, t_end)
+
+    # PHQ-9 averaged over the selected time window per agent
+    mean_phq9 = {}
+    for agent in network.all_agents:
+        scores = [agent.all_phq9_sumscores[t] for t in t_range
+                  if agent.all_phq9_sumscores[t] is not None]
+        if scores:
+            mean_phq9[agent.ID] = np.mean(scores)
+
+    own, neigh_mean = [], []
+    for agent in network.all_agents:
+        if agent.ID not in mean_phq9:
+            continue
+        neighbor_scores = [mean_phq9[nid] for nid in undirected.neighbors(agent.ID) if nid in mean_phq9]
+        if not neighbor_scores:
+            continue
+        own.append(mean_phq9[agent.ID])
+        neigh_mean.append(np.mean(neighbor_scores))
+
+    own, neigh_mean = np.array(own), np.array(neigh_mean)
+    r, p = pearsonr(own, neigh_mean)
+
+    # Plot
+    range_label = f"t=[{t_start}:{t_end}]" if time_range is not None else "all t"
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(own, neigh_mean, alpha=0.5, s=25, c=own, cmap='RdYlGn_r', edgecolors='none')
+
+    m, b = np.polyfit(own, neigh_mean, 1)
+    x_line = np.array([own.min(), own.max()])
+    ax.plot(x_line, m * x_line + b, color='black', linewidth=1.5,
+            label=f'r = {r:.3f} (p = {p:.1e})')
+
+    lim = [min(own.min(), neigh_mean.min()) - 1, max(own.max(), neigh_mean.max()) + 1]
+    ax.plot(lim, lim, color='gray', linewidth=0.8, linestyle=':', alpha=0.5)
+    ax.set_xlabel("Agent's Mean PHQ-9 Score")
+    ax.set_ylabel("Neighbors' Mean PHQ-9 Score")
+    ax.set_title(f"PHQ-9 Neighbor Correlation ({range_label})")
+    ax.legend(loc='upper left')
+    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect('equal')
+    ax.grid(True, alpha=0.2)
+
+    _save_and_close(fig, save, path, filename, "phq9_neighbor_correlation", show_fig)
+    return fig, ax, {"r": r, "p": p}

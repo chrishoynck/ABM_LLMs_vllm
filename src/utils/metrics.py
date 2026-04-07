@@ -2,6 +2,7 @@ import re, csv, json, os
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import PCA
 import numpy as np
+import networkx as nx
 from sentence_transformers import models
 from sentence_transformers import SentenceTransformer as sbert
 import umap
@@ -207,6 +208,200 @@ def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False):
         model = sbert(model_name)
     return model
 
+def build_network_graph(network):
+    """
+    Build a NetworkX graph from a network object and return it alongside
+    a mapping from agent ID to index in network.all_agents.
+
+    Returns:
+        graph:      nx.DiGraph or nx.Graph (matches network.directed)
+        id_to_idx:  dict mapping agent.ID -> index in network.all_agents
+    """
+    graph = nx.DiGraph() if network.directed else nx.Graph()
+    for agent in network.all_agents:
+        graph.add_node(agent.ID)
+    for connection in network.connections:
+        graph.add_edge(connection[0].ID, connection[1].ID)
+    id_to_idx = {agent.ID: i for i, agent in enumerate(network.all_agents)}
+    return graph, id_to_idx
+
+def save_agent_embeddings(agent_embs, filepath):
+    """Save agent_embs (list[list[ndarray | None]]) to a .npz file.
+
+    None entries are stored as rows of NaN so the array stays rectangular.
+    A boolean mask is saved alongside to reconstruct Nones on load.
+    """
+    if not agent_embs or not agent_embs[0]:
+        print(f"[Warning] Empty agent_embs, nothing to save.")
+        return
+    n_agents = len(agent_embs)
+    T = len(agent_embs[0])
+    # infer embedding dim from first non-None entry
+    dim = next(e.shape[0] for row in agent_embs for e in row if e is not None)
+
+    data = np.full((n_agents, T, dim), np.nan)
+    mask = np.zeros((n_agents, T), dtype=bool)  # True where valid
+    for i, row in enumerate(agent_embs):
+        for t, emb in enumerate(row):
+            if emb is not None:
+                data[i, t, :] = emb
+                mask[i, t] = True
+
+    os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+    np.savez_compressed(filepath, embeddings=data, mask=mask)
+    print(f"[Info] Saved agent embeddings to {filepath}  "
+          f"(agents={n_agents}, T={T}, dim={dim})")
+
+
+def load_agent_embeddings(filepath):
+    """Load agent_embs from a .npz file written by save_agent_embeddings.
+
+    Returns:
+        agent_embs: list[list[ndarray | None]]  same format as build_agent_embeddings.
+    """
+    npz = np.load(filepath)
+    data = npz["embeddings"]   # (n_agents, T, dim)
+    mask = npz["mask"]         # (n_agents, T)
+    n_agents, T, _ = data.shape
+    agent_embs = []
+    for i in range(n_agents):
+        row = [data[i, t] if mask[i, t] else None for t in range(T)]
+        agent_embs.append(row)
+    print(f"[Info] Loaded agent embeddings from {filepath}  "
+          f"(agents={n_agents}, T={T})")
+    return agent_embs
+
+
+def save_tweet_embeddings(tweet_to_emb, filepath):
+    """Save a tweet→embedding dict to a .npz file."""
+    if not tweet_to_emb:
+        print("[Warning] Empty tweet_to_emb, nothing to save.")
+        return
+    tweets = list(tweet_to_emb.keys())
+    embs = np.stack([tweet_to_emb[t] for t in tweets])
+    os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+    np.savez_compressed(filepath, tweets=np.array(tweets, dtype=object), embeddings=embs)
+    print(f"[Info] Saved {len(tweets)} tweet embeddings to {filepath}")
+
+
+def load_tweet_embeddings(filepath):
+    """Load a tweet→embedding dict from a .npz file.
+
+    Returns:
+        tweet_to_emb: dict[str, ndarray]
+    """
+    npz = np.load(filepath, allow_pickle=True)
+    tweets = npz["tweets"]
+    embs = npz["embeddings"]
+    tweet_to_emb = {str(t): embs[i] for i, t in enumerate(tweets)}
+    print(f"[Info] Loaded {len(tweet_to_emb)} tweet embeddings from {filepath}")
+    return tweet_to_emb
+
+
+def build_tweet_embedding_cache(all_networks, mentalbert=True, cache_path=None):
+    """Collect all unique tweets across networks, encode once, return tweet→emb dict.
+
+    If cache_path exists, loads from disk. Otherwise encodes and saves.
+
+    Args:
+        all_networks: List of network dicts (each with "network" key).
+        mentalbert (bool): Model choice.
+        cache_path (str | None): Optional .npz path for caching.
+
+    Returns:
+        tweet_to_emb: dict[str, ndarray]
+        embedding_dim: int
+    """
+    if cache_path is not None:
+        if not cache_path.endswith(".npz"):
+            cache_path += ".npz"
+        if os.path.exists(cache_path):
+            print(f"[Cache hit] Loading tweet embeddings from {cache_path}")
+            tweet_to_emb = load_tweet_embeddings(cache_path)
+            dim = next(iter(tweet_to_emb.values())).shape[0]
+            return tweet_to_emb, dim
+
+    # Collect all unique tweets across every network
+    unique_tweets = set()
+    for net_dict in all_networks:
+        net = net_dict["network"]
+        for agent in net.all_agents:
+            for tweet in agent.tweethistory:
+                if tweet and tweet != FC.NO_CONTENT:
+                    unique_tweets.add(tweet)
+    unique_tweets = list(unique_tweets)
+
+    if not unique_tweets:
+        return {}, 0
+
+    print(f"Embedding {len(unique_tweets)} unique tweets across {len(all_networks)} networks...")
+    model = generate_sbert_model(mentalbert=mentalbert)
+    raw_embs = model.encode(unique_tweets, batch_size=64, show_progress_bar=True, convert_to_numpy=True)
+    tweet_to_emb = dict(zip(unique_tweets, raw_embs))
+
+    if cache_path is not None:
+        save_tweet_embeddings(tweet_to_emb, cache_path)
+
+    return tweet_to_emb, raw_embs.shape[1]
+
+
+def build_agent_embeddings(network, mentalbert=True, cache_path=None):
+    """
+    Embed all unique tweets from a network and return a per-agent, per-timestep lookup.
+
+    If cache_path is given and the file exists, embeddings are loaded from disk
+    instead of recomputed.  If cache_path is given but the file does not exist,
+    embeddings are computed and then saved to that path.
+
+    Args:
+        network: The network object containing agents.
+        mentalbert (bool): Whether to use MentalBERT or default SBERT.
+        cache_path (str | None): Optional .npz file path for saving / loading.
+
+    Returns:
+        agent_embs: list[list[ndarray | None]]  shape [n_agents][T]
+            agent_embs[i][t] is the embedding of agent i's tweet at timestep t,
+            or None if the agent posted NO_CONTENT at that step.
+    """
+    # ── try loading from cache ──
+    if cache_path is not None:
+        # ensure the extension is .npz
+        if not cache_path.endswith(".npz"):
+            cache_path += ".npz"
+        if os.path.exists(cache_path):
+            print(f"[Cache hit] Loading embeddings from {cache_path}")
+            return load_agent_embeddings(cache_path)
+
+    # ── compute embeddings ──
+    T = min(len(agent.tweethistory) for agent in network.all_agents)
+
+    unique_tweets = list({
+        agent.tweethistory[t]
+        for agent in network.all_agents
+        for t in range(T)
+        if agent.tweethistory[t] and agent.tweethistory[t] != FC.NO_CONTENT
+    })
+    if not unique_tweets:
+        return [[] for _ in network.all_agents]
+
+    print(f"Embedding {len(unique_tweets)} unique tweets...")
+    model = generate_sbert_model(mentalbert=mentalbert)
+    raw_embs = model.encode(unique_tweets, batch_size=64, show_progress_bar=True, convert_to_numpy=True)
+    tweet_to_emb = dict(zip(unique_tweets, raw_embs))
+
+    agent_embs = []
+    for agent in network.all_agents:
+        row = [tweet_to_emb.get(agent.tweethistory[t])
+               if (agent.tweethistory[t] and agent.tweethistory[t] != FC.NO_CONTENT) else None
+               for t in range(T)]
+        agent_embs.append(row)
+
+    # ── save to cache ──
+    if cache_path is not None:
+        save_agent_embeddings(agent_embs, cache_path)
+
+    return agent_embs
+
 def create_embedding(model, texts):
     """Generates embeddings for a list of texts using the provided SBERT model.
     
@@ -242,13 +437,20 @@ def network_list_w_slices(networks_per_setting: dict):
     return all_networks, setting_slices
     
 
-def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):    
+def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5,
+                            tweet_to_emb=None, embedding_dim=None):
     """Computes SBERT embeddings using Mean Pooling over time windows for a list of networks.
+
+    If tweet_to_emb is provided, embeddings are looked up from the dict
+    instead of calling model.encode (much faster on repeated/cached runs).
+
     Args:
-        model: Loaded SentenceTransformer model
+        model: Loaded SentenceTransformer model (can be None when tweet_to_emb is given).
         all_networks: List of network objects (each with "network" key).
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
+        tweet_to_emb: Optional dict[str, ndarray] — pre-computed tweet embeddings.
+        embedding_dim: Required when tweet_to_emb is given and model is None.
     Returns:
         global_sbert_means: List of (Time, dim) arrays for each network
         global_sbert_vars: List of (Time, dim) arrays for each network
@@ -259,21 +461,22 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
     global_sbert_vars = []
     global_phq9_means = []
 
-    embedding_dim = model.get_sentence_embedding_dimension()
-    
+    if embedding_dim is None:
+        embedding_dim = model.get_sentence_embedding_dimension()
+
     print(f"Starting embedding for {len(all_networks)} networks...")
 
 
-    # Here, we embed tweets in windows and mean-pool them, for every network. 
+    # Here, we embed tweets in windows and mean-pool them, for every network.
     for i, network in enumerate(all_networks):
 
         # Calculate number of windows based on total iterations
         net = network["network"]
         max_iters = net.iterations
         num_windows = max(1, (max_iters - num_steps) // shift + 1)
-        
+
         # collect one trajectory per agent, then average them to get the "Network Trajectory"
-        mean_net_window_vectors = [] 
+        mean_net_window_vectors = []
         var_net_window_vectors = []
         phq9_per_window = []
 
@@ -293,7 +496,7 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
                 phq9_per_window.append(np.mean(scores))
             else:
                 phq9_per_window.append(np.nan)
-            
+
             # Collect all valid tweets from all agents in this specific time window
             tweets_in_window = []
             for agent in net.all_agents:
@@ -303,29 +506,32 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
                     # Slice robustly
                     slice_end = min(len(hist), end_t)
                     window_segment = hist[start_t : slice_end]
-                    
+
                     # Filter out NO_TWEET
                     valid_tweets = [t for t in window_segment if t != FC.NO_CONTENT]
                     tweets_in_window.extend(valid_tweets)
-            
+
             # Embed and Average (Mean Pooling)
             if not tweets_in_window:
-                # Handle empty window (rare, but possible if no one tweets)
-                # Use a zero vector as a placeholder
                 window_centroid = np.zeros(embedding_dim)
                 window_variance = np.zeros(embedding_dim)
-
             else:
-                # Embed all tweets in this window individually
-                embeddings = model.encode(tweets_in_window, batch_size=64, show_progress_bar=True)
-                
-                # Calculate the Mean Vector (Centroid) for this window
+                if tweet_to_emb is not None:
+                    # Look up pre-computed embeddings
+                    emb_list = [tweet_to_emb[t] for t in tweets_in_window if t in tweet_to_emb]
+                    if emb_list:
+                        embeddings = np.stack(emb_list)
+                    else:
+                        embeddings = np.zeros((1, embedding_dim))
+                else:
+                    embeddings = model.encode(tweets_in_window, batch_size=64, show_progress_bar=True)
+
                 window_centroid = np.mean(embeddings, axis=0)
                 window_variance = np.var(embeddings, axis=0)
-            
+
             mean_net_window_vectors.append(window_centroid)
             var_net_window_vectors.append(window_variance)
-        
+
         # Stack to create (Time, dim) matrix for this specific network run
         global_sbert_means.append(np.stack(mean_net_window_vectors))
         global_sbert_vars.append(np.stack(var_net_window_vectors))
@@ -335,16 +541,21 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5):
     return global_sbert_means, global_sbert_vars, global_phq9_means
 
 
-def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert=True):
+def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert=True,
+                   cache_path=None):
     """
     Computes SBERT embeddings using Mean Pooling over time windows.
-    
+
+    If cache_path is given, tweet-level embeddings are loaded from / saved to
+    that .npz file, avoiding re-encoding on subsequent runs.
+
     Args:
         networks_per_setting: Dictionary of {setting_name: [list_of_networks]}
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
         mentalbert (bool): If True, use MentalBERT; else use default SBERT.
-        
+        cache_path (str | None): Optional .npz path for tweet embedding cache.
+
     Returns:
         mean_sbert_per_setting: {setting: (Time, dim) array} -> Average trajectory
         var_sbert_per_setting:  {setting: (Time, dim) array} -> Variance
@@ -354,10 +565,15 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
     # Flatten networks and get slices
     all_networks, setting_slices = network_list_w_slices(networks_per_setting)
 
-    # Compute SBERT embeddings for all networks (and per-window average PHQ-9)
-    model = generate_sbert_model(mentalbert=mentalbert)
+    # Build or load the tweet→embedding cache
+    tweet_to_emb, embedding_dim = build_tweet_embedding_cache(
+        all_networks, mentalbert=mentalbert, cache_path=cache_path
+    )
+
+    # Compute windowed means using cached lookups (no model needed)
     global_sbert_means, global_sbert_vars, global_phq9_means = mean_sbert_per_networks(
-        model, all_networks, num_steps=num_steps, shift=shift
+        model=None, all_networks=all_networks, num_steps=num_steps, shift=shift,
+        tweet_to_emb=tweet_to_emb, embedding_dim=embedding_dim
     )
 
     # Group by setting and compute mean trajectories
@@ -637,13 +853,49 @@ def reduce_dimensionality_umap(embedding_matrices, n_components=2, n_neighbors=1
     reduced_runs = [reducer.transform(embedding_matrix) for embedding_matrix in embedding_matrices]
     return reduced_runs, reducer
 
-def umap_on_means(embedding_per_setting, n_components=2):
-    settings = list(embedding_per_setting.keys())
-    mean_matrices = [embedding_per_setting[setting] for setting in settings]
-    embedding_stacked = np.vstack(mean_matrices)
-    
+def fit_shared_umap(all_embedding_dicts, n_components=2):
+    """Fit a single UMAP reducer on pooled embeddings from multiple configurations.
+
+    Use this to ensure the same 2D projection across separate plots (e.g.,
+    different network degrees). Pass the returned reducer as `shared_reducer`
+    to `umap_on_means`.
+
+    Args:
+        all_embedding_dicts: list of dicts, each {setting: (T, D) array}
+            (the mean_embedding_per_setting output from sbert_for_runs).
+        n_components: UMAP output dimensionality.
+
+    Returns:
+        reducer: fitted UMAP object.
+    """
+    all_matrices = []
+    for emb_dict in all_embedding_dicts:
+        for matrix in emb_dict.values():
+            all_matrices.append(matrix)
+
+    stacked = np.vstack(all_matrices)
     reducer = umap.UMAP(n_components=n_components, random_state=42)
-    reducer.fit(embedding_stacked)
+    reducer.fit(stacked)
+    return reducer
+
+
+def umap_on_means(embedding_per_setting, n_components=2, shared_reducer=None):
+    """Apply UMAP to per-setting mean embeddings.
+
+    Args:
+        shared_reducer: Pre-fitted UMAP reducer (from fit_shared_umap).
+            If provided, skips fitting and uses this reducer for transform.
+            If None, fits a new reducer on the provided embeddings.
+    """
+    settings = list(embedding_per_setting.keys())
+
+    if shared_reducer is not None:
+        reducer = shared_reducer
+    else:
+        mean_matrices = [embedding_per_setting[setting] for setting in settings]
+        embedding_stacked = np.vstack(mean_matrices)
+        reducer = umap.UMAP(n_components=n_components, random_state=44)
+        reducer.fit(embedding_stacked)
 
     mean_traj = {
         s: reducer.transform(embedding_per_setting[s])

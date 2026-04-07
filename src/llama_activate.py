@@ -425,13 +425,16 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
     vis.plot_distorted_fracs(fracs_dist_step, path, filename, save=args.save)
 
 
-def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shift=5):
-    """Perform PCA visualization on TF-IDF results across different network states.
+def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shift=5, shared_reducer=None):
+    """Perform PCA/UMAP visualization on embedding results across different network states.
 
     Args:
-        all_networks_results (list): List of tuples containing (state, network) pairs.      
-        path_manager (PathManager): Instance of PathManager for directory management.
+        all_networks_results: dict of {state: [list of network dicts per seed]}.
+        path: Directory to save plots.
+        filename: Filename suffix.
         args: Argument namespace containing visualization parameters.
+        shared_reducer: Pre-fitted UMAP reducer (from metrics.fit_shared_umap).
+            If provided, all degree configurations share the same 2D projection.
     """
     n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
     # wrapper dealing with multiple networks per setting
@@ -442,6 +445,10 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
 
     n_components = 2
 
+    # Tweet-level embedding cache for sbert_for_runs
+    emb_type = "mentalbert" if mentalbert else "sbert"
+    tweet_cache_path = os.path.join(path, f"{filename}_tweet_embs_{emb_type}.npz")
+
     # Use mean within-run variance for marker size (not between-run variance)
     if sbert:
         mean_embedding_per_setting, var_embedding_per_setting, all_mats_per_setting, mean_phq9_per_setting, mean_within_var_per_setting = metrics.sbert_for_runs(
@@ -449,6 +456,7 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
             num_steps=num_steps,
             shift=shift,
             mentalbert=mentalbert,
+            cache_path=tweet_cache_path,
         )
     else:
         mean_embedding_per_setting, all_mats_per_setting, mean_within_var_per_setting = metrics.tf_idf_for_runs(
@@ -460,16 +468,24 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
         mean_phq9_per_setting = None
 
     if use_umap:
-        mean_traj, _reducer = metrics.umap_on_means(mean_embedding_per_setting, n_components=n_components)
+        mean_traj, _reducer = metrics.umap_on_means(mean_embedding_per_setting, n_components=n_components, shared_reducer=shared_reducer)
         reduction = "umap"
     else:
         mean_traj, _ = metrics.pca_on_means(mean_embedding_per_setting, n_components=n_components)
         reduction = "pca"
 
+    # Compute assortativity data from the first network for panel (b)
+    first_state = list(all_networks_results.keys())[0]
+    first_network = all_networks_results[first_state][0]["network"]
+    _, _, assort_data = vis.plot_phq9_assortativity(
+        first_network, save=False, show_fig=False, step=10, bin_size=30
+    )
+
     vis.plot_embedding_PCA_runs(
         mean_traj,
         mean_within_var_per_setting=mean_within_var_per_setting,
         mean_phq9_per_setting=mean_phq9_per_setting,
+        assort_data=assort_data,
         num_steps=num_steps,
         shift=shift,
         sbert=sbert,
@@ -479,6 +495,11 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
         path=path,
         filename=filename,
     )
+
+    # Variance plot (extracted from the combined figure)
+    if mean_within_var_per_setting:
+        vis.plot_within_variance(mean_within_var_per_setting, shift=shift,
+                                path=path, filename=filename, save=args.save)
 
 
 def main(args, pipe, states):
@@ -526,11 +547,12 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level tokenizer."""
     tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
     
+  
     temp = args.temp
     top_p = args.top_p
     test_performance = False
     checkpoint = args.check_point
-    rounds = checkpoint * 28 + 1
+    rounds = checkpoint * 28
     checkpoint_every = checkpoint
     time_info = True
 
@@ -550,9 +572,12 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
         agentjes = None
     
     tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
-
     if args.use_saved_network is not None:
+        
         tester, mistake_dict = TestLLMs.load_checkpoint(tpm.get_run_directory(is_plot=False) / "checkpoint.json")
+        if args.use_saved_network == -1:
+            print("Not continuing, reading out the data to csv")
+            rounds = tester.iterations
 
     else:
         tester = TestLLMs(
@@ -606,7 +631,7 @@ def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
     if test_performance:
         vis.plot_bias(bias_per_phq9, all_bias, run_plot_dir)
         vis.plot_phq9_error(mae_per_phq9, total_mae, run_plot_dir)
-  
+
 
         # Combined plots across all seeds (in parent dir)
         agg_plot_dir = str(tpm.get_aggregate_directory(is_plot=True))
@@ -638,19 +663,26 @@ def run_llm_tests(args):
         models_to_run = models
     results = {}
     for model_id in models_to_run:
-        print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
-        tok = get_tokenizer(model_id)
-        pipe = get_llm(model_id=model_id)
-        total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok, use_deepseek=use_deepseek)
-        results[model_id] = {"total_mae": total_mae, "mae_per_phq9": mae_per_phq9}
+        for seed in args.seeds:
+            args.seed = seed
+            print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
+            if args.use_saved_network is not None:
+                if args.use_saved_network == -1:
+                    tok = None
+                    pipe = None
+                else: 
+                    tok = get_tokenizer(model_id)
+                    pipe = get_llm(model_id=model_id)
+            total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok, use_deepseek=use_deepseek)
+            results[(model_id, seed)] = {"total_mae": total_mae, "mae_per_phq9": mae_per_phq9}
         del pipe
         gc.collect()
         torch.cuda.empty_cache()
     print("\nTest summary (total PHQ-9 MAE per model; lower is better):")
-    for mid, res in results.items():
+    for (mid, seed), res in results.items():
         mae = res['total_mae']
-        print(f"  {mid}: {mae:.4f}" if mae is not None else f"  {mid}: N/A")
-    if len(results) > 1:
+        print(f"  {mid}: {seed}: {mae:.4f}" if mae is not None else f"  {mid}: {seed}: N/A")
+    if len(models_to_run) > 1: #FIX THAT THIS ONLY HAPPENS IF PERFORMANCE IS TESTED. 
         vis.plot_model_comparison_by_settings(csv_path=f"data/test{FC.DIR_SUFFIX}/results.csv", directory=f"plots/test{FC.DIR_SUFFIX}", save=args.save)
     sys.exit(0)
 
@@ -712,8 +744,22 @@ if __name__ == "__main__":
         plot_filename = path_manager.get_plot_name()
         
         print(f"\nVisualizing results for seed {network.seed}...")
-        # Clean tweet histories
-        metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
+        # Clean tweet histories — build (or load cached) embeddings
+        mb_cache = os.path.join(data_path, f"{data_filename}_mentalbert_embs.npz")
+        sb_cache = os.path.join(data_path, f"{data_filename}_sbert_embs.npz")
+        agent_embs_mb = metrics.build_agent_embeddings(network, mentalbert=True,  cache_path=mb_cache)
+        agent_embs_sb = metrics.build_agent_embeddings(network, mentalbert=False, cache_path=sb_cache)
+
+        window_size = 20
+
+        vis.plot_phq9_neighbor_correlation(network, path=plot_path, filename=plot_filename, save=args.save)
+        vis.plot_phq9_assortativity(network, path=plot_path, filename=plot_filename, save=args.save, step=10)
+        for emb_label, embs in [("mentalbert", agent_embs_mb), ("sbert", agent_embs_sb)]:
+            fn = f"{plot_filename}_{emb_label}"
+            vis.plot_semantic_entrainment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+            vis.plot_phq9_semantic_alignment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+            vis.plot_depression_echo_chamber(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+        metrics.print_histories(network, file_dir = data_path, file_name = data_filename,smooth_window=window_size, save=args.save)
 
         # Visualizations
         call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
@@ -722,6 +768,7 @@ if __name__ == "__main__":
     parent_plot_path = path_manager.get_aggregate_directory(is_plot=True)
     aggregate_filename = path_manager.get_aggregate_plot_name(args.seeds)
     vis.plot_degree_weighted_phq9(np.array(degree_weighted_phq9), parent_plot_path, aggregate_filename, save=args.save)
+    
     print("End of model run.")
 
     # PCA/UMAP over runs

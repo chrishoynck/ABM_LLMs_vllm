@@ -6,13 +6,14 @@ import os
 import re
 import csv
 import torch
+import glob
 import torch.nn as nn
 import copy
 import torch.optim as optim
-from src.utils.metrics import *
-from src.utils.format_config import FC
+from utils.metrics import *
+from utils.format_config import FC
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from src.classes.agent import Agent
+from classes.agent import Agent
 
 
 # ── Thinking-model helpers ────────────────────────────────────────────────
@@ -172,6 +173,7 @@ def parse_tweets_with_phq9_csv(file_path: str):
 
 FORMAT_SPLIT_MARKER = "### OPTIONS ###"
 LLAMA_70B = "meta-llama/Llama-3.3-70B-Instruct"
+QWEN_27 = "Qwen/Qwen3.5-27B"
 
 
 # def _split_system_prompt(full_system: str):
@@ -222,7 +224,7 @@ def _make_loss_prompt(true_answer: int, predicted: int) -> str:
         f"not on individual PHQ-9 item scores."
     )
 
-def train_val_test_split(rng, file_path: str,
+def train_val_test_split(rng, file_paths:list[str],
                          val_fraction: float = 0.10,
                          test_fraction: float = 0.10):
     """Split tweet-block data into train / validation / test sets.
@@ -231,23 +233,34 @@ def train_val_test_split(rng, file_path: str,
     -------
     train_data, val_data, test_data – each a tuple (blocks, answers, personas)
     """
-    if file_path.endswith(".csv"):
-        csv_path = file_path
-        txt_path = file_path.replace(".csv", ".txt")
-    else:
-        txt_path = file_path
-        csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
+    tweet_blocks_list = []
+    true_answers_list = []
+    personas_list = []
+    
+    for file_path in file_paths:
+        if file_path.endswith(".csv"):
+            csv_path = file_path
+            txt_path = file_path.replace(".csv", ".txt")
+        else:
+            txt_path = file_path
+            csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
 
-    if os.path.isfile(csv_path):
-        tweet_blocks, true_answers, personas = parse_tweets_with_phq9_csv(csv_path)
-        print(f"Parsed {len(tweet_blocks)} tweet blocks from {csv_path}")
-    else:
-        tweet_blocks, true_answers = parse_tweets_with_phq9(txt_path)
-        personas = [None] * len(tweet_blocks)
-        print(f"Parsed {len(tweet_blocks)} tweet blocks from {txt_path} (CSV not found, used TXT parser)")
+        if os.path.isfile(csv_path):
+            tweet_blocks, true_answers, personas = parse_tweets_with_phq9_csv(csv_path)
+            tweet_blocks_list.extend(tweet_blocks)
+            true_answers_list.extend(true_answers)
+            personas_list.extend(personas)
+            print(f"Parsed {len(tweet_blocks)} tweet blocks from {csv_path}")
+        else:
+            tweet_blocks, true_answers = parse_tweets_with_phq9(txt_path)
+            personas = [None] * len(tweet_blocks)
+            tweet_blocks_list.extend(tweet_blocks)
+            true_answers_list.extend(true_answers)
+            personas_list.extend(personas)
+            print(f"Parsed {len(tweet_blocks)} tweet blocks from {txt_path} (CSV not found, used TXT parser)")
 
-    perm = rng.permutation(len(tweet_blocks))
-    n = len(tweet_blocks)
+    perm = rng.permutation(len(tweet_blocks_list))
+    n = len(tweet_blocks_list)
     n_test = max(1, int(n * test_fraction))
     n_val  = max(1, int(n * val_fraction))
 
@@ -256,9 +269,9 @@ def train_val_test_split(rng, file_path: str,
     train_idx = perm[n_test + n_val:]
 
     def _select(indices):
-        return ([tweet_blocks[i] for i in indices],
-                [true_answers[i] for i in indices],
-                [personas[i] for i in indices])
+        return ([tweet_blocks_list[i] for i in indices],
+                [true_answers_list[i] for i in indices],
+                [personas_list[i] for i in indices])
 
     train_data = _select(train_idx)
     val_data   = _select(val_idx)
@@ -267,8 +280,8 @@ def train_val_test_split(rng, file_path: str,
     return train_data, val_data, test_data
 
 def call_optimizer_phq9(
-    file_path: str,
-    model_name: str = LLAMA_70B,
+    file_paths: list[str],
+    model_name: str = QWEN_27,
     batch_size: int = 4,
     max_instruction_words: int = 300,
     num_steps: int = None,
@@ -296,7 +309,7 @@ def call_optimizer_phq9(
     rng = np.random.default_rng(seed)
 
     train_data, val_data, test_data = train_val_test_split(
-        rng, file_path, val_fraction, test_fraction,
+        rng, file_paths, val_fraction, test_fraction,
     )
     train_blocks, train_answers, _train_personas = train_data
     val_blocks, val_answers, _val_personas = val_data
@@ -304,15 +317,25 @@ def call_optimizer_phq9(
 
     # Engine (single model for forward + backward)
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
-    engine = ChatVLLM(
+    student_engine = ChatVLLM(
         model_string=model_name,
         tensor_parallel_size=tp,
-        gpu_memory_utilization=0.90,
+        gpu_memory_utilization=0.45,
         max_model_len=16384,
         **vllm_kwargs,
     )
-    _make_engine_thinking_aware(engine)
-    tg.set_backward_engine(engine, override=True)
+    if model_name == QWEN_27:
+        student_engine.model.disable_thinking()
+    
+    teacher_engine = ChatVLLM(
+        model_string=model_name,
+        tensor_parallel_size=tp,
+        gpu_memory_utilization=0.45,
+        max_model_len=16384,
+        **vllm_kwargs,
+    )
+    _make_engine_thinking_aware(teacher_engine)
+    tg.set_backward_engine(teacher_engine, override=True)
 
     # --- split prompt into instruction (grad) + format (fixed) --------------
     with open(FC.PROMPTS_FILE, "r") as f:
@@ -361,7 +384,7 @@ def call_optimizer_phq9(
         batch_answers = [train_answers[i] for i in batch_idx]
 
         optimizer.zero_grad()
-        model = tg.BlackboxLLM(engine, system_prompt=instruction)
+        model = tg.BlackboxLLM(student_engine, system_prompt=instruction)
 
         losses = []
         step_errors = []
@@ -401,7 +424,7 @@ def call_optimizer_phq9(
             sampled_answers = [val_answers[i] for i in sample_idx]
 
             val_mae = _evaluate_instruction(
-                engine, instruction.value, format_block,
+                student_engine, instruction.value, format_block,
                 sampled_blocks, sampled_answers, prompts,
             )
             print(f"  -> Val MAE ({n_sample} samples): {val_mae:.2f}  (best: {best_val_mae:.2f})")
@@ -412,7 +435,7 @@ def call_optimizer_phq9(
 
     # ── final test evaluation ──────────────────────────────────────────────
     test_mae = _evaluate_instruction(
-        engine, best_instruction, format_block,
+        student_engine, best_instruction, format_block,
         test_blocks, test_answers, prompts,
     )
     print(f"\nTest MAE (n={len(test_blocks)}): {test_mae:.2f}")
@@ -1065,12 +1088,41 @@ def save_embeddings_for_file(file_path: str, base_model_name: str, device, menta
     torch.save({"embeddings": all_embs, "labels": all_labels}, torch_path)
     print(f"Saved embeddings + labels to {torch_path} (n={len(all_embs)}); split will be done at train time.")
     
+
+def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.txt") -> List[str]:
+    """
+    Generate all file paths for a given condition directory by finding 
+    all seed folders that contain the target file.
+    """
+    # Construct a wildcard pattern, e.g.: data/..._inter/seed_*/tweets_with_phq9.txt
+    search_pattern = os.path.join(base_dir, "seed_*", target_filename)
+    
+    # glob.glob returns a list of all file paths that match the pattern
+    found_paths = glob.glob(search_pattern)
+    
+    # Optional: sort them so seed_55 comes before seed_65, etc.
+    return sorted(found_paths)
+    
 if __name__ == "__main__":
     create_new_embeddings = False
     mental_bert = True
-    file_path = "data/test/meta-llama_Llama-3.1-8B-Instruct/temp_0.8_top_p_0.6_cp_10/seed_71/tweets_with_phq9.txt"
-    base_model_name = "meta-llama_Llama-3.1-8B-Instruct"
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    file_paths = []
+    
+    # Fixed the loop to iterate over a list of strings
+    for inter in ["no_inter", "inter"]:
+        base_dir = f"data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_{inter}"
+        
+        # This will return a list of paths for all seeds in the current base_dir
+        paths_for_condition = _generate_file_path(base_dir)
+        
+        # Use .extend() instead of .append() to add the items to the flat list
+        file_paths.extend(paths_for_condition)
+
+    for file_path in file_paths:
+        print(file_path)
+
+    base_model_name = "Qwen_Qwen3.5-27B"
+    model_name = "Qwen/Qwen3.5-27B"
     run_prompt_optimizer = True
 
     if torch.cuda.is_available():
@@ -1081,7 +1133,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     if run_prompt_optimizer:
-        call_optimizer_phq9(file_path, model_name=model_name, batch_size=4)
+        call_optimizer_phq9(file_paths, model_name=model_name, batch_size=4)
     else:
         if create_new_embeddings:
             save_embeddings_for_file(file_path, base_model_name, device, mentalbert=mental_bert)

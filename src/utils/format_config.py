@@ -39,7 +39,7 @@ class _FormatConfig:
 
         # Which prompt JSON to load
         self.PROMPTS_FILE = (
-            "data/prompts_post.json" if self.is_post else "data/prompts.json"
+            "data/prompts_post.json" if self.is_post else "data/prompts.json"    #Experimenting with Gemini prompts
         )
 
         # Suffix appended to data / plot base directories
