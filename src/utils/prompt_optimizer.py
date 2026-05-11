@@ -1,8 +1,13 @@
+import sys
+import os
+# Ensure src/ is on sys.path so sibling packages (utils, classes) resolve correctly
+# regardless of whether this file is run as a script or imported as src.utils.prompt_optimizer
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import textgrad as tg
 from textgrad.engine.vllm import ChatVLLM
 import json
 import numpy as np
-import os
 import re
 import csv
 import torch
@@ -174,6 +179,7 @@ def parse_tweets_with_phq9_csv(file_path: str):
 FORMAT_SPLIT_MARKER = "### OPTIONS ###"
 LLAMA_70B = "meta-llama/Llama-3.3-70B-Instruct"
 QWEN_27 = "Qwen/Qwen3.5-27B"
+MISTRAL_119B = "mistralai/Mistral-Small-4-119B-2603"
 
 
 # def _split_system_prompt(full_system: str):
@@ -185,29 +191,38 @@ QWEN_27 = "Qwen/Qwen3.5-27B"
 #     return full_system[:idx].rstrip(), full_system[idx:]
 
 
-def _build_user_message(format_block: str, tweet_block: list, prompts: dict) -> str:
-    """Compose the user message: fixed PHQ-9 format + tweet data."""
-    tweets_text = prompts["phq9"]["user_template_forced"].format(
-        tweets_block="\n".join(tweet_block)
-    )
+def _build_user_message(format_block: str, tweet_block: list, prompts: dict, persona: str = None) -> str:
+    """Compose the user message: fixed PHQ-9 format + tweet data (+ persona if available)."""
+    if persona:
+        tweets_text = prompts["phq9"]["user_template_persona"].format(
+            agent_id="AGENT",
+            persona=persona,
+            tweets_block="\n".join(tweet_block),
+        )
+    else:
+        tweets_text = prompts["phq9"]["user_template_forced"].format(
+            tweets_block="\n".join(tweet_block)
+        )
     return f"{format_block}\n\n{tweets_text}"
 
 
 
 
 def _evaluate_instruction(engine, instruction_text: str, format_block: str,
-                          blocks: list, answers: list, prompts: dict) -> float:
+                          blocks: list, answers: list, prompts: dict,
+                          personas: list = None) -> float:
     """Run the current instruction on *blocks* and return the MAE."""
     total_ae = 0
-    for tweet_block, true_answer in zip(blocks, answers):
-        user_msg = _build_user_message(format_block, tweet_block, prompts)
+    for i, (tweet_block, true_answer) in enumerate(zip(blocks, answers)):
+        persona = personas[i] if personas else None
+        user_msg = _build_user_message(format_block, tweet_block, prompts, persona)
         response = engine.generate(user_msg, system_prompt=instruction_text)
-        predicted = parse_phq9_answers(response)
+        predicted = Agent.parse_phq9_answers(response)
         total_ae += abs(predicted - true_answer)
     return total_ae / max(len(blocks), 1)
 
 
-def _make_loss_prompt(true_answer: int, predicted: int) -> str:
+def _make_loss_prompt(true_answer: int, predicted: int, persona: str = None) -> str:
     """Concise per-sample loss prompt for the backward engine."""
     error = predicted - true_answer
     if error > 0:
@@ -216,8 +231,9 @@ def _make_loss_prompt(true_answer: int, predicted: int) -> str:
         direction = f"underestimated by {abs(error)}"
     else:
         direction = "correct"
+    persona_note = f" Agent persona: {persona[:120]}." if persona else ""
     return (
-        f"True PHQ-9 sumscore = {true_answer}, predicted = {predicted} ({direction}). "
+        f"True PHQ-9 sumscore = {true_answer}, predicted = {predicted} ({direction}).{persona_note} "
         f"Give concise, actionable feedback (1-2 sentences) on what the system "
         f"instruction should say differently to improve reasoning from tweets "
         f"to PHQ-9 scores. Focus on calibration patterns and reasoning gaps, "
@@ -290,6 +306,7 @@ def call_optimizer_phq9(
     validate_every: int = 5,
     val_sample_size: int = 10,
     seed: int = 42,
+    output_dir: str = None,
     **vllm_kwargs,
 ):
     """
@@ -311,9 +328,9 @@ def call_optimizer_phq9(
     train_data, val_data, test_data = train_val_test_split(
         rng, file_paths, val_fraction, test_fraction,
     )
-    train_blocks, train_answers, _train_personas = train_data
-    val_blocks, val_answers, _val_personas = val_data
-    test_blocks, test_answers, _test_personas = test_data
+    train_blocks, train_answers, train_personas = train_data
+    val_blocks, val_answers, val_personas = val_data
+    test_blocks, test_answers, test_personas = test_data
 
     # Engine (single model for forward + backward)
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
@@ -321,7 +338,7 @@ def call_optimizer_phq9(
         model_string=model_name,
         tensor_parallel_size=tp,
         gpu_memory_utilization=0.45,
-        max_model_len=16384,
+        max_model_len=12288,
         **vllm_kwargs,
     )
     if model_name == QWEN_27:
@@ -331,7 +348,7 @@ def call_optimizer_phq9(
         model_string=model_name,
         tensor_parallel_size=tp,
         gpu_memory_utilization=0.45,
-        max_model_len=16384,
+        max_model_len=12288,
         **vllm_kwargs,
     )
     _make_engine_thinking_aware(teacher_engine)
@@ -382,6 +399,7 @@ def call_optimizer_phq9(
         )
         batch_blocks = [train_blocks[i] for i in batch_idx]
         batch_answers = [train_answers[i] for i in batch_idx]
+        batch_personas = [train_personas[i] for i in batch_idx]
 
         optimizer.zero_grad()
         model = tg.BlackboxLLM(student_engine, system_prompt=instruction)
@@ -389,20 +407,20 @@ def call_optimizer_phq9(
         losses = []
         step_errors = []
 
-        for tweet_block, true_answer in zip(batch_blocks, batch_answers):
-            user_msg = _build_user_message(format_block, tweet_block, prompts)
+        for tweet_block, true_answer, persona in zip(batch_blocks, batch_answers, batch_personas):
+            user_msg = _build_user_message(format_block, tweet_block, prompts, persona)
             question = tg.Variable(
                 user_msg,
-                role_description="PHQ-9 format, questions, and patient tweet history",
+                role_description="PHQ-9 format, questions, patient tweet history, and persona",
                 requires_grad=False,
             )
 
             prediction = model(question)
-            predicted_score = parse_phq9_answers(prediction.value)
+            predicted_score = Agent.parse_phq9_answers(prediction.value)
             error = predicted_score - true_answer
             step_errors.append(error)
 
-            loss_fn = tg.TextLoss(_make_loss_prompt(true_answer, predicted_score))
+            loss_fn = tg.TextLoss(_make_loss_prompt(true_answer, predicted_score, persona))
             loss = loss_fn(prediction)
             losses.append(loss)
 
@@ -420,28 +438,37 @@ def call_optimizer_phq9(
         if (step + 1) % validate_every == 0 or step == num_steps - 1:
             n_sample = min(val_sample_size, len(val_blocks))
             sample_idx = rng.choice(len(val_blocks), size=n_sample, replace=False)
-            sampled_blocks  = [val_blocks[i]  for i in sample_idx]
-            sampled_answers = [val_answers[i] for i in sample_idx]
+            sampled_blocks   = [val_blocks[i]   for i in sample_idx]
+            sampled_answers  = [val_answers[i]  for i in sample_idx]
+            sampled_personas = [val_personas[i] for i in sample_idx]
 
             val_mae = _evaluate_instruction(
                 student_engine, instruction.value, format_block,
-                sampled_blocks, sampled_answers, prompts,
+                sampled_blocks, sampled_answers, prompts, sampled_personas,
             )
             print(f"  -> Val MAE ({n_sample} samples): {val_mae:.2f}  (best: {best_val_mae:.2f})")
             if val_mae < best_val_mae:
                 best_val_mae = val_mae
                 best_instruction = instruction.value
                 print("  -> New best instruction saved!")
+                save_dir = output_dir or "data/test_post/optimized_phq9"
+                os.makedirs(save_dir, exist_ok=True)
+                with open(os.path.join(save_dir, "best_instruction.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(best_instruction)
+                with open(os.path.join(save_dir, "best_full_prompt.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(best_instruction + "\n\n" + format_block)
 
     # ── final test evaluation ──────────────────────────────────────────────
     test_mae = _evaluate_instruction(
         student_engine, best_instruction, format_block,
-        test_blocks, test_answers, prompts,
+        test_blocks, test_answers, prompts, test_personas,
     )
     print(f"\nTest MAE (n={len(test_blocks)}): {test_mae:.2f}")
 
     # ── save results ───────────────────────────────────────────────────────
-    output_dir = os.path.dirname(file_path)
+    if output_dir is None:
+        output_dir = "data/test_post/optimized_phq9"
+    os.makedirs(output_dir, exist_ok=True)
 
     instr_path = os.path.join(output_dir, "optimized_instruction.txt")
     with open(instr_path, "w", encoding="utf-8") as f:
@@ -501,18 +528,18 @@ def parse_phq9_answers(answers: str) -> int:
 
 
 def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
-                              persona: str, phq9_score: int) -> str:
-    """Build the user message for tweet generation from the forced template.
-
-    ``context_tweets`` are the (ground-truth) tweets that precede the one
-    the student model is asked to generate (teacher forcing).
-    """
-    if context_tweets:
-        prev_block = "### PREVIOUS POSTS ###\n" + "\n".join(
-            f"- {t}" for t in context_tweets
-        )
+                              persona: str, phq9_score: int,
+                              neighbor_tweets: list[str] = None) -> str:
+    """Build the user message for tweet generation from the forced template."""
+    no_content_values = {"NO_POST", "NO_TWEET", "no_post", "no_tweet", ""}
+    real_context = [t for t in context_tweets if t not in no_content_values]
+    if real_context:
+        prev_block = "### PREVIOUS POSTS ###\n" + "\n".join(f"- {t}" for t in real_context)
     else:
         prev_block = "### PREVIOUS POSTS ###\n(none yet)"
+
+    if neighbor_tweets:
+        prev_block += "\n### POSTS FROM OTHERS ###\n" + "\n".join(f"- {t}" for t in neighbor_tweets)
 
     template = prompts["tweet_gen"]["user_template_forced"]
     return template.format(
@@ -521,6 +548,16 @@ def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
         well_being=phq9_score,
         previous_tweet_block=prev_block,
     )
+
+
+def _sample_neighbor_tweets(all_tweets_flat: list[str], rng, exclude: list[str], n: int = 6) -> list[str]:
+    """Sample up to n random tweets from the pool, excluding current agent's tweets."""
+    exclude_set = set(exclude)
+    pool = [t for t in all_tweets_flat if t not in exclude_set]
+    n = min(n, len(pool))
+    if n == 0:
+        return []
+    return list(rng.choice(pool, size=n, replace=False))
 
 
 def parse_tweet_answers(raw_output: str) -> str:
@@ -546,72 +583,100 @@ def parse_tweet_answers(raw_output: str) -> str:
     return cleaned.split("\n\n")[0].strip()
 
 
-def _make_loss_prompt_tweet(predicted_tweet: str, true_tweet: str,
-                            persona: str, phq9_score: int) -> str:
-    """Per-sample loss prompt sent to the backward engine for tweet quality."""
+def _make_loss_prompt_tweet(predicted_tweet: str, persona: str, phq9_score: int) -> str:
+    """Per-sample loss prompt sent to the backward engine for tweet quality.
+
+    Evaluates standalone quality — no reference tweet comparison.
+    The teacher (thinking model) rates tone/mood alignment, naturalness, and originality.
+    Non-thinking constraints are handled by TGD, not here.
+    """
+    severity = "severe" if phq9_score >= 20 else "moderately severe" if phq9_score >= 15 else "moderate" if phq9_score >= 10 else "mild" if phq9_score >= 5 else "minimal"
     return (
-        f"The student model generated the following tweet:\n"
+        f"An AI agent generated the following social media post:\n"
         f"\"{predicted_tweet}\"\n\n"
-        f"A reference tweet for this agent (persona: {persona}, "
-        f"PHQ-9 = {phq9_score}) is:\n\"{true_tweet}\"\n\n"
-        "Evaluate the generated tweet on Tone/Mood alignment with the "
-        "PHQ-9 score, Content originality, and Naturalness. "
-        "Tweets should be diverse, emotionally unfiltered, and not too "
-        "obvious about symptoms or personality traits. "
-        "Sometimes mood can deviate from general well-being.\n"
-        "Give concise, actionable feedback (1-2 sentences) on what the "
-        "system instruction should say differently to improve tweet quality. "
-        "Do NOT base feedback on very specific persona details — those "
-        "differ from person to person."
+        f"Agent profile — persona: {persona}, PHQ-9 = {phq9_score} ({severity}).\n\n"
+        "Evaluate the post on:\n"
+        "1. Tone/Mood: Does the emotional tone match the PHQ-9 severity (without being too explicit)?\n"
+        "2. Originality: Is it specific and creative, not directly about symptoms or well-being?\n"
+        "3. Naturalness: Does it sound like a real, casual social media post?\n\n"
+        "Give concise, actionable feedback (1-2 sentences) on what the system instruction "
+        "should say differently to improve tweet quality. Focus on emotional alignment and content."
     )
 
 
-def _evaluate_tweet_instruction(engine, instruction_text: str, prompts: dict,
-                                blocks: list, answers: list, personas: list,
-                                rng, sample_size: int = None) -> float:
-    """Score tweet instruction quality by having the teacher rate outputs.
+def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text: str,
+                                prompts: dict, blocks: list, answers: list, personas: list,
+                                all_tweets_flat: list, rng, sample_size: int = None,
+                                format_block: str = "") -> float:
+    """Score tweet instruction quality by having the teacher (thinking) rate student outputs.
 
-    For each sample a tweet is generated (teacher-forced context), then the
-    teacher model rates it 0-10.  Returns the average score.
+    Student (non-thinking) generates tweets; teacher rates standalone quality 0-10.
+    No reference tweet comparison — pure quality assessment.
     """
     if sample_size and len(blocks) > sample_size:
         idx = rng.choice(len(blocks), size=sample_size, replace=False)
-        blocks  = [blocks[i]  for i in idx]
-        answers = [answers[i] for i in idx]
+        blocks   = [blocks[i]   for i in idx]
+        answers  = [answers[i]  for i in idx]
         personas = [personas[i] for i in idx]
 
     scores = []
+    printed_sample = False
     for tweet_block, phq9, persona in zip(blocks, answers, personas):
-        pos = min(1, len(tweet_block) - 1)
-        context = tweet_block[:pos]
-        true_tweet = tweet_block[pos]
+        context = tweet_block[:1] if len(tweet_block) > 1 else []
+        neighbor_tweets = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
 
-        user_msg = _build_user_message_tweet(context, prompts, persona, phq9)
-        response = engine.generate(user_msg, system_prompt=instruction_text)
+        user_msg = _build_user_message_tweet(context, prompts, persona, phq9, neighbor_tweets)
+        if format_block:
+            user_msg = user_msg + "\n\n" + format_block
+        response = student_engine.generate(user_msg, system_prompt=instruction_text)
         predicted_tweet = parse_tweet_answers(response)
 
+        if not printed_sample:
+            print(f"  --- raw output [NON-THINKING student] (eval, sample 0) ---")
+            print(response)
+            print(f"  --- parsed: {predicted_tweet!r} ---")
+            printed_sample = True
+
+        severity = "severe" if phq9 >= 20 else "moderately severe" if phq9 >= 15 else "moderate" if phq9 >= 10 else "mild" if phq9 >= 5 else "minimal"
         rating_prompt = (
-            f"Rate this generated tweet on a scale of 0-10 "
-            f"(0=terrible, 10=excellent) based on naturalness, emotional "
-            f"alignment with PHQ-9 score {phq9}, and similarity to this "
-            f"reference tweet.\n\nReference: \"{true_tweet}\"\n"
-            f"Generated: \"{predicted_tweet}\"\n\n"
-            f"Respond with ONLY a single number 0-10."
+            f"Rate this social media post on a scale of 0-10 "
+            f"(0=terrible, 10=excellent) based on:\n"
+            f"1. Emotional tone fits PHQ-9={phq9} ({severity} depression)\n"
+            f"2. Naturalness (sounds like a real social media post)\n"
+            f"3. Originality (not directly about symptoms or persona traits)\n"
+            f"4. Unfiltered expression — penalise if the post is overly polite, hedged, or sanitised; "
+            f"real social media users can be mean, blunt, disagreeable, or harsh regardless of their well-being — "
+            f"agreeableness is not required and should not be assumed\n"
+            f"5. NOT poetic — penalise flowery, lyrical, or metaphor-heavy language; "
+            f"social media posts are casual and direct, not literary\n\n"
+            f"Persona: {persona}\nPost: \"{predicted_tweet}\"\n\n"
+            f"Respond with exactly two lines:\n"
+            f"SCORE: <number 0-10>\n"
+            f"FEEDBACK: <one sentence>"
         )
-        rating_response = engine.generate(rating_prompt)
-        try:
-            score = float(re.search(r'\d+', rating_response).group())
-            score = min(10.0, max(0.0, score))
-        except (AttributeError, ValueError):
-            score = 5.0
+        rating_response = teacher_engine.generate(rating_prompt)
+        score = 5.0
+        feedback = ""
+        for line in rating_response.splitlines():
+            line = line.strip()
+            if line.upper().startswith("SCORE:"):
+                try:
+                    score = float(re.search(r'[\d.]+', line).group())
+                    score = min(10.0, max(0.0, score))
+                except (AttributeError, ValueError):
+                    pass
+            elif line.upper().startswith("FEEDBACK:"):
+                feedback = line.split(":", 1)[-1].strip()
+        if feedback:
+            print(f"  [teacher] score={score:.1f}  {feedback}")
         scores.append(score)
 
     return float(np.mean(scores)) if scores else 0.0
 
 
 def call_optimizer_tweets(
-    file_path: str,
-    model_name: str = LLAMA_70B,
+    file_paths: list[str],
+    model_name: str = QWEN_27,
     val_fraction: float = 0.10,
     test_fraction: float = 0.10,
     seed: int = 42,
@@ -621,59 +686,95 @@ def call_optimizer_tweets(
     validate_every: int = 5,
     val_sample_size: int = 8,
     max_chars: int = 240,
+    output_dir: str = None,
+    prompts_file: str = None,
     **vllm_kwargs,
 ):
     """
     Optimise the tweet generation system prompt using TextGrad.
 
-    Design
-    ------
-    * **Teacher forcing**: for each tweet position *i* in a ground-truth
-      block, the student sees the *true* prior tweets ``block[:i]`` and must
-      generate tweet *i*.  Each prediction is individually compared with the
-      ground truth via a ``TextLoss`` evaluated by the teacher / backward
-      engine.  This gives clean gradient flow per tweet.
-    * Multiple tweet blocks per batch prevent skewing towards a single PHQ-9
-      level.
-    * The engine is patched to strip ``<think>`` blocks so reasoning models
-      (Qwen3.5) work as the teacher without leaking chain-of-thought into
-      gradients.  Non-thinking models are unaffected.
-    * Train / val / test split with sampled validation for efficiency.
+    Student (non-thinking Qwen): generates tweets — this is the model we are optimising for.
+    Teacher (thinking Qwen): evaluates tweet quality as the backward engine.
+    No reference tweet comparison: quality is assessed standalone by the teacher.
+    Neighbor tweets are randomly sampled from the data pool (max 6) to provide context.
+    Inter and no-inter data are combined; file_paths should include both.
+    Train / val / test split with sampled validation for efficiency.
     """
     rng = np.random.default_rng(seed)
     train_data, val_data, test_data = train_val_test_split(
-        rng, file_path, val_fraction, test_fraction,
+        rng, file_paths, val_fraction, test_fraction,
     )
     train_blocks, train_answers, train_personas = train_data
     val_blocks, val_answers, val_personas = val_data
     test_blocks, test_answers, test_personas = test_data
 
-    # Engine (single model for forward + backward)
+    # Flat pool of all tweets for neighbor sampling
+    all_tweets_flat = [
+        t for block in train_blocks + val_blocks + test_blocks
+        for t in block if t and t not in ("NO_POST", "NO_TWEET")
+    ]
+
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or torch.cuda.device_count()
-    engine = ChatVLLM(
+
+    # Student: non-thinking Qwen — prompt is optimised for this model
+    student_engine = ChatVLLM(
         model_string=model_name,
         tensor_parallel_size=tp,
-        gpu_memory_utilization=0.90,
-        max_model_len=16384,
+        gpu_memory_utilization=0.45,
+        max_model_len=12288,
         **vllm_kwargs,
     )
-    _make_engine_thinking_aware(engine)
-    tg.set_backward_engine(engine, override=True)
+    if model_name == QWEN_27:
+        student_engine.model.disable_thinking()
+
+    # Teacher: thinking Qwen — evaluates quality and drives backward pass
+    teacher_engine = ChatVLLM(
+        model_string=model_name,
+        tensor_parallel_size=tp,
+        gpu_memory_utilization=0.45,
+        max_model_len=12288,
+        **vllm_kwargs,
+    )
+    _make_engine_thinking_aware(teacher_engine)
+    tg.set_backward_engine(teacher_engine, override=True)
 
     # ── prompts ────────────────────────────────────────────────────────────
-    with open(FC.PROMPTS_FILE, "r") as f:
+    prompts_path = prompts_file or FC.PROMPTS_FILE
+    with open(prompts_path, "r") as f:
         prompts = json.load(f)
 
     raw_instruction = prompts["tweet_gen"]["system_forced"]
-    instruction_text = raw_instruction.replace("{max_chars}", str(max_chars))
+    raw_instruction = raw_instruction.replace("{max_chars}", str(max_chars))
+
+    # Two-stage split:
+    # 1. Split at ### RULES ### — the intro (including "Do NOT think") becomes
+    #    the fixed prefix, only the rules content is optimisable.
+    # 2. Split the rules tail at ### CONSTRAINTS ### — constraints + format are
+    #    also fixed and appended to every user message.
+    _rules_marker = "### RULES ###"
+    _constraints_marker = "### CONSTRAINTS ###"
+    if _rules_marker in raw_instruction and _constraints_marker in raw_instruction:
+        fixed_intro, rules_and_rest = raw_instruction.split(_rules_marker, 1)
+        instruction_text, fixed_tail = rules_and_rest.split(_constraints_marker, 1)
+        instruction_text = _rules_marker + instruction_text.rstrip()
+        format_block_tweet = fixed_intro.rstrip() + "\n\n" + _constraints_marker + fixed_tail
+    else:
+        # Fallback: split only at ### CONSTRAINTS ###
+        if _constraints_marker in raw_instruction:
+            instruction_text, fixed_tail = raw_instruction.split(_constraints_marker, 1)
+            format_block_tweet = _constraints_marker + fixed_tail
+        else:
+            instruction_text = raw_instruction
+            format_block_tweet = ""
+    instruction_text = instruction_text.rstrip()
 
     instruction = tg.Variable(
         instruction_text,
         role_description=(
-            "System-prompt INSTRUCTION for tweet generation. "
-            "Contains task framing, tone/mood guidance, and constraints. "
-            "The user template (persona, PHQ-9, history) is provided "
-            "separately and must NOT be duplicated here."
+            "System-prompt INSTRUCTION for post generation. "
+            "Contains task framing and ### RULES ### guidance only. "
+            "Length constraints, no-thinking rules, and output format are fixed and "
+            "appended separately: do NOT duplicate or alter them here."
         ),
         requires_grad=True,
     )
@@ -681,11 +782,13 @@ def call_optimizer_tweets(
     optimizer = tg.TGD(
         parameters=[instruction],
         constraints=[
-            f"The instruction MUST stay concise — at most {max_instruction_words} words.",
-            "Do NOT include the user template (persona, history, etc.) — "
-            "those are provided separately in the user message.",
-            "Focus on actionable guidance for tone, mood, content diversity, "
-            "and originality that produces natural, emotionally-aligned tweets.",
+            f"HARD LIMIT: the instruction MUST be at most {max_instruction_words} words. Count carefully and cut if needed.",
+            "Only refine EXISTING guidance — do NOT introduce new concepts, topics, or vocabulary not already present.",
+            "Do NOT repeat phrases or ideas already stated. Each sentence must add unique value.",
+            "Focus exclusively on tone, mood, and content diversity guidance within ### RULES ###.",
+            "Do NOT include constraints, length limits, thinking rules, or output format: those are fixed elsewhere.",
+            "PRESERVE the unfiltered emotional range: the instruction MUST allow posts to be harsh, blunt, disagreeable, raw, emotional, or enthusiastic — real users are not always nice or agreeable. Do NOT soften, hedge, or add politeness filters.",
+            "Do NOT use poetic, lyrical, or metaphorical language in the instruction itself. Write plainly and directly.",
         ],
         gradient_memory=0,
     )
@@ -703,94 +806,104 @@ def call_optimizer_tweets(
             size=min(batch_size, len(train_blocks)),
             replace=False,
         )
-        batch_blocks  = [train_blocks[i]  for i in batch_idx]
-        batch_answers = [train_answers[i] for i in batch_idx]
+        batch_blocks   = [train_blocks[i]   for i in batch_idx]
+        batch_answers  = [train_answers[i]  for i in batch_idx]
         batch_personas = [train_personas[i] for i in batch_idx]
 
         optimizer.zero_grad()
-        model = tg.BlackboxLLM(engine, system_prompt=instruction)
+        model = tg.BlackboxLLM(student_engine, system_prompt=instruction)
 
         losses = []
-        n_tweets = 0
 
-        for tweet_block, phq9, persona in zip(batch_blocks, batch_answers,
-                                              batch_personas):
-            # Teacher forcing: ground-truth prior tweets as context
-            for i in range(len(tweet_block)):
-                context = tweet_block[:i]
-                true_tweet = tweet_block[i]
+        for idx, (tweet_block, phq9, persona) in enumerate(zip(batch_blocks, batch_answers, batch_personas)):
+            # Use first tweet as own-history context; sample random neighbors
+            context = tweet_block[:1] if len(tweet_block) > 1 else []
+            neighbor_tweets = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
 
-                user_msg = _build_user_message_tweet(
-                    context, prompts, persona, phq9,
-                )
-                question = tg.Variable(
-                    user_msg,
-                    role_description=(
-                        "User template with persona, PHQ-9 score, "
-                        "and tweet history"
-                    ),
-                    requires_grad=False,
-                )
-                prediction = model(question)
-                predicted_tweet = parse_tweet_answers(prediction.value)
+            user_msg = _build_user_message_tweet(context, prompts, persona, phq9, neighbor_tweets)
+            user_msg = user_msg + "\n\n" + format_block_tweet
+            question = tg.Variable(
+                user_msg,
+                role_description="User template: persona, PHQ-9, own history, neighbor context",
+                requires_grad=False,
+            )
+            prediction = model(question)
+            predicted_tweet = parse_tweet_answers(prediction.value)
 
-                loss_fn = tg.TextLoss(
-                    _make_loss_prompt_tweet(
-                        predicted_tweet, true_tweet, persona, phq9,
-                    )
-                )
-                loss = loss_fn(prediction)
-                losses.append(loss)
-                n_tweets += 1
+            if idx == 0:
+                print(f"  --- raw output [NON-THINKING student] (step {step+1}, sample 0) ---")
+                print(prediction.value)
+                print(f"  --- parsed: {predicted_tweet!r} ---")
+
+            loss_fn = tg.TextLoss(_make_loss_prompt_tweet(predicted_tweet, persona, phq9))
+            loss = loss_fn(prediction)
+            losses.append(loss)
 
         total_loss = tg.sum(losses)
         total_loss.backward()
         optimizer.step()
 
-        print(f"[Step {step+1}/{num_steps}]  tweets evaluated: {n_tweets}")
+        # Hard-enforce word limit — truncate at sentence boundary where possible
+        words = instruction.value.split()
+        if len(words) > max_instruction_words:
+            truncated = " ".join(words[:max_instruction_words])
+            last_stop = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+            instruction.value = truncated[:last_stop + 1] if last_stop > 0 else truncated
 
-        if (step + 1) % 5 == 0:
-            print(f"  Current instruction:\n    {instruction.value[:200]}...")
+        print(f"[Step {step+1}/{num_steps}]  batch size: {len(losses)}")
+        print(f"  Updated instruction ({len(instruction.value.split())} words):\n{instruction.value}\n")
+
+        save_dir = output_dir or "data/test_post/optimized_tweets"
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, "latest_instruction_tweet.txt"), "w", encoding="utf-8") as fh:
+            fh.write(instruction.value)
 
         # periodic validation on a sampled subset
         if (step + 1) % validate_every == 0 or step == num_steps - 1:
             val_score = _evaluate_tweet_instruction(
-                engine, instruction.value, prompts,
+                student_engine, teacher_engine, instruction.value, prompts,
                 val_blocks, val_answers, val_personas,
-                rng, sample_size=val_sample_size,
+                all_tweets_flat, rng, sample_size=val_sample_size,
+                format_block=format_block_tweet,
             )
-            print(
-                f"  -> Val quality score: {val_score:.2f}/10  "
-                f"(best: {best_val_score:.2f})"
-            )
+            print(f"  -> Val quality score: {val_score:.2f}/10  (best: {best_val_score:.2f})")
             if val_score > best_val_score:
                 best_val_score = val_score
                 best_instruction = instruction.value
                 print("  -> New best instruction saved!")
+                save_dir = output_dir or "data/test_post/optimized_tweets"
+                os.makedirs(save_dir, exist_ok=True)
+                with open(os.path.join(save_dir, "best_instruction_tweet.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(best_instruction)
+                with open(os.path.join(save_dir, "best_full_prompt_tweet.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
+                             f"=== FORMAT BLOCK (fixed) ===\n{format_block_tweet}")
 
     # ── final test evaluation ──────────────────────────────────────────────
     test_score = _evaluate_tweet_instruction(
-        engine, best_instruction, prompts,
-        test_blocks, test_answers, test_personas, rng,
+        student_engine, teacher_engine, best_instruction, prompts,
+        test_blocks, test_answers, test_personas,
+        all_tweets_flat, rng,
+        format_block=format_block_tweet,
     )
     print(f"\nTest quality score: {test_score:.2f}/10")
 
     # ── save results ───────────────────────────────────────────────────────
-    output_dir = os.path.dirname(file_path)
+    if output_dir is None:
+        output_dir = "data/test_post/optimized_tweets"
+    os.makedirs(output_dir, exist_ok=True)
 
     instr_path = os.path.join(output_dir, "optimized_instruction_tweet.txt")
     with open(instr_path, "w", encoding="utf-8") as f:
         f.write(best_instruction)
-    print(
-        f"Best tweet instruction "
-        f"(val={best_val_score:.2f}, test={test_score:.2f}) → {instr_path}"
-    )
+    print(f"Best tweet instruction (val={best_val_score:.2f}, test={test_score:.2f}) → {instr_path}")
 
     full_path = os.path.join(output_dir, "optimized_full_prompt_tweet.txt")
     with open(full_path, "w", encoding="utf-8") as f:
         user_template = prompts["tweet_gen"]["user_template_forced"]
         f.write(
             f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
+            f"=== FORMAT BLOCK (fixed) ===\n{format_block_tweet}\n\n"
             f"=== USER TEMPLATE ===\n{user_template}"
         )
     print(f"Full prompt → {full_path}")
@@ -1089,7 +1202,7 @@ def save_embeddings_for_file(file_path: str, base_model_name: str, device, menta
     print(f"Saved embeddings + labels to {torch_path} (n={len(all_embs)}); split will be done at train time.")
     
 
-def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.txt") -> List[str]:
+def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.csv") -> list[str]:
     """
     Generate all file paths for a given condition directory by finding 
     all seed folders that contain the target file.
@@ -1107,23 +1220,21 @@ if __name__ == "__main__":
     create_new_embeddings = False
     mental_bert = True
     file_paths = []
-    
-    # Fixed the loop to iterate over a list of strings
+
     for inter in ["no_inter", "inter"]:
         base_dir = f"data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_{inter}"
-        
-        # This will return a list of paths for all seeds in the current base_dir
-        paths_for_condition = _generate_file_path(base_dir)
-        
-        # Use .extend() instead of .append() to add the items to the flat list
-        file_paths.extend(paths_for_condition)
+        file_paths.extend(_generate_file_path(base_dir))
 
-    for file_path in file_paths:
-        print(file_path)
+    for fp in file_paths:
+        print(fp)
 
-    base_model_name = "Qwen_Qwen3.5-27B"
-    model_name = "Qwen/Qwen3.5-27B"
-    run_prompt_optimizer = True
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    base_model_name = model_name
+    # model_name = "Qwen/Qwen3.5-27B"
+    # base_model_name = model_name
+
+    # Choose which optimizer to run: "phq9", "tweets", or "bert"
+    run_mode = "tweets"
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1132,16 +1243,25 @@ if __name__ == "__main__":
 
     print(f"Using device: {device}")
 
-    if run_prompt_optimizer:
-        call_optimizer_phq9(file_paths, model_name=model_name, batch_size=4)
+    if run_mode == "phq9":
+        call_optimizer_phq9(
+            file_paths,
+            model_name=model_name,
+            batch_size=4,
+            output_dir="data/test_post/optimized_phq9",
+        )
+    elif run_mode == "tweets":
+        call_optimizer_tweets(
+            file_paths,
+            model_name=model_name,
+            batch_size=4,
+            output_dir="data/test_post/optimized_tweets",
+            prompts_file="data/prompts_post_no_thinking.json",
+        )
     else:
         if create_new_embeddings:
-            save_embeddings_for_file(file_path, base_model_name, device, mentalbert=mental_bert)
-        
-        if mental_bert:
-            dir_name = "mentalbert_embeddings"
-        else:
-            dir_name = "sbert_embeddings"
+            save_embeddings_for_file(file_paths[0], base_model_name, device, mentalbert=mental_bert)
 
+        dir_name = "mentalbert_embeddings" if mental_bert else "sbert_embeddings"
         embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
         train_BERT_model(embeddings_path, base_model_name, device, mental_bert=mental_bert)

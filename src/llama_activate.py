@@ -36,8 +36,8 @@ MODEL_ID = os.environ.get("LLAMA_ID", llama_model)
 CACHE_DIR = os.environ.get("TRANSFORMERS_CACHE", None)
 models = [ "Qwen/Qwen3-4B-Instruct-2507", 
             "google/gemma-3-12b-it",
-            "meta-llama/Llama-3.1-8B-Instruct", 
-            "Qwen/Qwen3-14B", 
+            "meta-llama/Llama-4-8B-Instruct", 
+            "mistralai/Mistral-Small-4-119B-2603"
             "mistralai/Mistral-7B-Instruct-v0.3", 
             "meta-llama/Llama-3.3-70B-Instruct", 
             "Qwen/Qwen3.5-27B" ]
