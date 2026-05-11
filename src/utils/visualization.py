@@ -399,14 +399,18 @@ def plot_embedding_PCA_runs(mean_traj,
                         sbert=False,
                         mentalbert=False,
                         reduction="pca",
-                        save=False):
+                        save=False,
+                        use_sd_band=False):
     """
     Two-panel figure: (a) UMAP/PCA trajectory, (b) assortativity + DW mean PHQ-9.
 
     Args:
         assort_data (dict): Pre-computed output from plot_phq9_assortativity, containing
             bin_timesteps, bin_assort_mean, bin_assort_std, bin_dw_phq9_mean,
-            bin_dw_phq9_min, bin_dw_phq9_max. If None, panel (b) is left empty.
+            bin_dw_phq9_min, bin_dw_phq9_max, bin_dw_phq9_sd.
+            If None, panel (b) is left empty.
+        use_sd_band (bool): If True, show mean ± cross-agent SD band instead of
+            the min–max range on panel (b). Default False (min–max).
     """
     # Increased height slightly to accommodate the labels underneath
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 3.4))
@@ -454,16 +458,22 @@ def plot_embedding_PCA_runs(mean_traj,
 
         ax1.plot(traj[:, 0], traj[:, 1], alpha=0.4, color="gray", linewidth=1)
 
-        # Flag start and end points
-        ax1.scatter(traj[0, 0], traj[0, 1], marker='o', s=180, edgecolors='black',
-                    facecolors='lime', linewidths=2, zorder=10, label='Start' if setting == list(mean_traj.keys())[0] else None)
-        ax1.scatter(traj[-1, 0], traj[-1, 1], marker='X', s=180, edgecolors='black',
-                    facecolors='red', linewidths=1.5, zorder=10, label='End' if setting == list(mean_traj.keys())[0] else None)
+        # Flag start and end points — offset text toward trajectory center
+        center = traj.mean(axis=0)
+        for pt, label, color in [(traj[0], 'Start', 'black'), (traj[-1], 'End', 'black')]:
+            dx = center[0] - pt[0]
+            dy = center[1] - pt[1]
+            norm = np.sqrt(dx**2 + dy**2) + 1e-10
+            off_pts = 14  # offset in points
+            ax1.annotate(label, xy=(pt[0], pt[1]),
+                         xytext=(off_pts * dx / norm, off_pts * dy / norm),
+                         textcoords='offset points',
+                         fontsize=8, fontweight='bold', color=color, zorder=11,
+                         arrowprops=dict(arrowstyle='->', color=color, lw=1.5))
 
     # --- Formatting AX1 ---
     ax1.set_xlabel(f"{reduc_label} 1")
     ax1.set_ylabel(f"{reduc_label} 2")
-    ax1.legend(loc='best', fontsize=6)
     ax1.grid(alpha=0.3)
 
     # Add (a) subscript underneath
@@ -487,15 +497,25 @@ def plot_embedding_PCA_runs(mean_traj,
         ax2.tick_params(axis='y', labelcolor='steelblue')
         ax2.grid(alpha=0.3)
 
-        # Right axis: DW mean PHQ-9 with min–max band
+        # Right axis: DW mean PHQ-9 with error band
         ax2_right = ax2.twinx()
-        ax2_right.plot(bin_t, assort_data["bin_dw_phq9_mean"], 's--', color='firebrick',
+        dw_mean = assort_data["bin_dw_phq9_mean"]
+        ax2_right.plot(bin_t, dw_mean, 's--', color='firebrick',
                        linewidth=1.0, markersize=3, label='DW mean PHQ-9')
-        ax2_right.fill_between(bin_t, assort_data["bin_dw_phq9_min"], assort_data["bin_dw_phq9_max"],
-                               color='firebrick', alpha=0.15, label='Min–max range')
+        if use_sd_band:
+            dw_sd = assort_data["bin_dw_phq9_sd"]
+            band_lo = np.maximum(0, dw_mean - 0.1 * dw_sd)
+            band_hi = dw_mean + 0.1 * dw_sd
+            ax2_right.fill_between(bin_t, band_lo, band_hi,
+                                   color='firebrick', alpha=0.15, label='± 0.1 cross-agent SD')
+        else:
+            band_lo = assort_data["bin_dw_phq9_min"]
+            band_hi = assort_data["bin_dw_phq9_max"]
+            ax2_right.fill_between(bin_t, band_lo, band_hi,
+                                   color='firebrick', alpha=0.15, label='Min–max range')
         ax2_right.set_ylabel("DW PHQ-9 Score", color='firebrick')
-        y_lo = np.nanmin(assort_data["bin_dw_phq9_min"])
-        y_hi = np.nanmax(assort_data["bin_dw_phq9_max"])
+        y_lo = np.nanmin(band_lo)
+        y_hi = np.nanmax(band_hi)
         margin = max((y_hi - y_lo) * 0.1, 0.5)
         ax2_right.set_ylim(max(0, y_lo - margin), min(27, y_hi + margin))
         ax2_right.tick_params(axis='y', labelcolor='firebrick')
@@ -1467,7 +1487,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
     with cross-agent SE (right axis), shown as binned points with error bars.
 
     Computed every `step` timesteps (default 10 to match PHQ-9 update cycle).
-    Then aggregated into bins of `bin_size` raw timesteps (default 30).
+    Then aggregated into bins of `bin_size` raw timesteps (default 50).
     - Assortativity: bin mean ± temporal std (how much it fluctuates across PHQ-9 cycles).
     - Degree-weighted PHQ-9: bin-midpoint value ± cross-agent SE.
 
@@ -1482,7 +1502,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
     agent_degrees = np.array([len(a.agent_connections) for a in network.all_agents], dtype=float)
     total_degree = agent_degrees.sum()
 
-    assort_list, dw_mean_list, dw_se_list = [], [], []
+    assort_list, dw_mean_list, dw_se_list, dw_sd_list = [], [], [], []
 
     print(f"Computing PHQ-9 assortativity (step={step}, {len(eval_timesteps)} points)...")
     for t in eval_timesteps:
@@ -1492,7 +1512,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
         valid_mask = ~np.isnan(phq9s)
 
         if valid_mask.sum() < 4:
-            assort_list.append(np.nan); dw_mean_list.append(np.nan); dw_se_list.append(np.nan)
+            assort_list.append(np.nan); dw_mean_list.append(np.nan); dw_se_list.append(np.nan); dw_sd_list.append(np.nan)
             continue
 
         # Assortativity
@@ -1515,11 +1535,13 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
         else:
             dw_mean, dw_std = np.mean(valid_phq9), np.std(valid_phq9)
         dw_mean_list.append(dw_mean)
+        dw_sd_list.append(dw_std)
         dw_se_list.append(dw_std / np.sqrt(n))
 
     raw_timesteps = np.array(eval_timesteps)
     raw_assort = np.array(assort_list)
     raw_dw_mean = np.array(dw_mean_list)
+    raw_dw_sd = np.array(dw_sd_list)
     raw_dw_se = np.array(dw_se_list)
 
     # ── Bin aggregation ──
@@ -1528,7 +1550,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
     n_bins = max(1, n_points // points_per_bin)
 
     bin_t, bin_assort_mean, bin_assort_std = [], [], []
-    bin_dw_mean, bin_dw_min, bin_dw_max = [], [], []
+    bin_dw_mean, bin_dw_min, bin_dw_max, bin_dw_sd = [], [], [], []
 
     for b in range(n_bins):
         start = b * points_per_bin
@@ -1546,6 +1568,8 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
         bin_dw_mean.append(np.nanmean(raw_dw_mean[sl]))
         bin_dw_min.append(np.nanmin(raw_dw_mean[sl]))
         bin_dw_max.append(np.nanmax(raw_dw_mean[sl]))
+        # Cross-agent SD: mean of per-timestep SDs within this bin
+        bin_dw_sd.append(np.nanmean(raw_dw_sd[sl]))
 
     bin_t = np.array(bin_t)
     bin_assort_mean = np.array(bin_assort_mean)
@@ -1553,6 +1577,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
     bin_dw_mean = np.array(bin_dw_mean)
     bin_dw_min = np.array(bin_dw_min)
     bin_dw_max = np.array(bin_dw_max)
+    bin_dw_sd = np.array(bin_dw_sd)
 
     # ── Plot ──
     sfx = f" (binned, {bin_size} steps)"
@@ -1591,8 +1616,9 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
         "bin_timesteps": bin_t,
         "bin_assort_mean": bin_assort_mean, "bin_assort_std": bin_assort_std,
         "bin_dw_phq9_mean": bin_dw_mean, "bin_dw_phq9_min": bin_dw_min, "bin_dw_phq9_max": bin_dw_max,
+        "bin_dw_phq9_sd": bin_dw_sd,
         "raw_timesteps": raw_timesteps, "raw_assort": raw_assort,
-        "raw_dw_mean": raw_dw_mean, "raw_dw_se": raw_dw_se,
+        "raw_dw_mean": raw_dw_mean, "raw_dw_sd": raw_dw_sd, "raw_dw_se": raw_dw_se,
     }
 
 

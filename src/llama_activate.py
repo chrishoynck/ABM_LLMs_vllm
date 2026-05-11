@@ -425,7 +425,7 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
     vis.plot_distorted_fracs(fracs_dist_step, path, filename, save=args.save)
 
 
-def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shift=5, shared_reducer=None):
+def pca_visualize(all_networks_results, path, filename, args, num_steps=35, shift=5, shared_reducer=None):
     """Perform PCA/UMAP visualization on embedding results across different network states.
 
     Args:
@@ -478,7 +478,7 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
     first_state = list(all_networks_results.keys())[0]
     first_network = all_networks_results[first_state][0]["network"]
     _, _, assort_data = vis.plot_phq9_assortativity(
-        first_network, save=False, show_fig=False, step=10, bin_size=30
+        first_network, save=False, show_fig=False, step=10, bin_size=50
     )
 
     vis.plot_embedding_PCA_runs(
@@ -494,6 +494,7 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=30, shif
         save=args.save,
         path=path,
         filename=filename,
+        use_sd_band=True,
     )
 
     # Variance plot (extracted from the combined figure)
@@ -747,22 +748,22 @@ if __name__ == "__main__":
         # Clean tweet histories — build (or load cached) embeddings
         mb_cache = os.path.join(data_path, f"{data_filename}_mentalbert_embs.npz")
         sb_cache = os.path.join(data_path, f"{data_filename}_sbert_embs.npz")
-        agent_embs_mb = metrics.build_agent_embeddings(network, mentalbert=True,  cache_path=mb_cache)
-        agent_embs_sb = metrics.build_agent_embeddings(network, mentalbert=False, cache_path=sb_cache)
+        # agent_embs_mb = metrics.build_agent_embeddings(network, mentalbert=True,  cache_path=mb_cache)
+        # agent_embs_sb = metrics.build_agent_embeddings(network, mentalbert=False, cache_path=sb_cache)
 
         window_size = 20
 
         vis.plot_phq9_neighbor_correlation(network, path=plot_path, filename=plot_filename, save=args.save)
         vis.plot_phq9_assortativity(network, path=plot_path, filename=plot_filename, save=args.save, step=10)
-        for emb_label, embs in [("mentalbert", agent_embs_mb), ("sbert", agent_embs_sb)]:
-            fn = f"{plot_filename}_{emb_label}"
-            vis.plot_semantic_entrainment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-            vis.plot_phq9_semantic_alignment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-            vis.plot_depression_echo_chamber(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-        metrics.print_histories(network, file_dir = data_path, file_name = data_filename,smooth_window=window_size, save=args.save)
+        # for emb_label, embs in [("mentalbert", agent_embs_mb), ("sbert", agent_embs_sb)]:
+        #     fn = f"{plot_filename}_{emb_label}"
+        #     vis.plot_semantic_entrainment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+        #     vis.plot_phq9_semantic_alignment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+        #     vis.plot_depression_echo_chamber(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
+        # metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
 
         # Visualizations
-        call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
+        # call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
 
     # Aggregate plots (over runs): save in parent folder with seeds in filename
     parent_plot_path = path_manager.get_aggregate_directory(is_plot=True)

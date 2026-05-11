@@ -874,7 +874,7 @@ def fit_shared_umap(all_embedding_dicts, n_components=2):
             all_matrices.append(matrix)
 
     stacked = np.vstack(all_matrices)
-    reducer = umap.UMAP(n_components=n_components, random_state=42)
+    reducer = umap.UMAP(n_components=n_components, random_state=58)
     reducer.fit(stacked)
     return reducer
 
@@ -894,7 +894,7 @@ def umap_on_means(embedding_per_setting, n_components=2, shared_reducer=None):
     else:
         mean_matrices = [embedding_per_setting[setting] for setting in settings]
         embedding_stacked = np.vstack(mean_matrices)
-        reducer = umap.UMAP(n_components=n_components, random_state=44)
+        reducer = umap.UMAP(n_components=n_components, random_state=58)
         reducer.fit(embedding_stacked)
 
     mean_traj = {
