@@ -236,13 +236,18 @@ class Agent:
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
 
-        # own history block
-        own_block = "" 
+        # own history block — grows with each round up to max_history posts
+        max_history = 2
+        own_block = ""
         if len(self.tweethistory) == 0:
             own_block = f"(no own previous {FC.label_plural})"
         else:
-            recent = list(reversed(self.tweethistory[-1:]))  # newest first
-            own_block = "\n(do not repeat)".join(f"- {t[:max_chars]}" for t in recent)
+            recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
+            if recent:
+                items = "\n".join(f"- {t[:max_chars]}" for t in reversed(recent))
+                own_block = items + f"\n(Do not repeat topics or reuse words from your previous {FC.label_plural}.)"
+            else:
+                own_block = f"(no own previous {FC.label_plural})"
         
         neighbor_block = f"(no neighbor {FC.label_plural})" if len(neighbor_pairs) == 0 else "\n".join(
             f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs 
@@ -286,14 +291,17 @@ class Agent:
                     )
                 else:
                     previous_tweet_block = ""
-            elif self.last_tweet and self.last_tweet != FC.NO_CONTENT:
-                previous_tweet_block = (
-                    f"\nYour previous {FC.label}: \"{self.last_tweet[:max_chars]}\"\n"
-                    f"(Do NOT adopt the same topic or reuse the same words. "
-                    f"Be original and vary your content.)"
-                )
             else:
-                previous_tweet_block = ""
+                max_history = 2
+                recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
+                if recent:
+                    items = "\n".join(f'- "{t[:max_chars]}"' for t in reversed(recent))
+                    previous_tweet_block = (
+                        f"\nYour recent {FC.label_plural}:\n{items}\n"
+                        f"(Do NOT repeat topics or reuse words. Be original.)"
+                    )
+                else:
+                    previous_tweet_block = ""
 
             user_content = prompt_cfg["user_template_forced"].format(
                 agent_id = self.ID,
