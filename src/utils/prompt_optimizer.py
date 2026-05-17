@@ -8,8 +8,11 @@ import logging
 logging.getLogger("textgrad").setLevel(logging.WARNING)
 
 import argparse
+from collections import defaultdict
 import textgrad as tg
 from textgrad.engine.vllm import ChatVLLM
+from textgrad.optimizer.optimizer_prompts import GLOSSARY_TEXT
+from vllm import SamplingParams
 import json
 import numpy as np
 import re
@@ -30,34 +33,31 @@ from classes.agent import Agent
 QWEN_MODELS    = frozenset({})          # filled below after constants are defined
 MISTRAL_MODELS = frozenset({})
 
+# Custom optimizer system prompt that avoids placeholder confusion.
+# Textgrad's default includes literal "{improved variable}" / "{the improved variable}"
+# as format examples, which thinking models (Qwen3.5, Mistral) echo back verbatim
+# instead of replacing with actual content.
+_OPTIMIZER_SYSTEM_PROMPT = (
+    "You are part of an optimization system that improves text (i.e., a variable). "
+    "You will receive feedback on a variable and must produce an improved version. "
+    "The feedback may be noisy — identify what is important and what is correct. "
+    "Pay attention to the role description of the variable and the context in which it is used. "
+    "IMPORTANT: Write the actual improved text itself between "
+    "{new_variable_start_tag} and {new_variable_end_tag} tags. "
+    "Do NOT write placeholder words like 'improved variable' between the tags — "
+    "write the real improved content.\n\n"
+    f"{GLOSSARY_TEXT}"
+)
 
-def strip_teacher_thinking(text: str) -> str:
-    """Strip ``<think>…</think>`` reasoning blocks from teacher-model output.
-    No-op for models that don't produce thinking tags."""
-    return Agent.strip_model_thinking(text)
 
-
-def _make_engine_thinking_aware(engine):
-    """Monkey-patch *engine*.generate so every output has thinking blocks
-    stripped automatically.  Safe for non-thinking models."""
-    _orig = engine.generate
-    def _patched(*args, **kwargs):
-        raw = _orig(*args, **kwargs)
-        if isinstance(raw, str):
-            return strip_teacher_thinking(raw)
-        if isinstance(raw, list):
-            return [strip_teacher_thinking(r) if isinstance(r, str) else r
-                    for r in raw]
-        return raw
-    engine.generate = _patched
-    return engine
 
 
 class _StudentEngine(tg.engine.EngineLM):
     """Wraps a shared ChatVLLM; disables reasoning per-request.
 
-    Qwen:    prepends /no_think to the system prompt.
-    Mistral: passes reasoning_effort='none' in extra_body.
+    Qwen:    applies chat template directly with enable_thinking=False and
+             prefills 'POST: ' so the model cannot reason inline.
+    Mistral: delegates unchanged (reasoning_effort not supported via ChatVLLM).
     Other:   delegates unchanged.
     """
     def __init__(self, base: ChatVLLM, model_name: str):
@@ -70,24 +70,47 @@ class _StudentEngine(tg.engine.EngineLM):
 
     def generate(self, content, system_prompt=None, **kwargs):
         if self._model_name in QWEN_MODELS:
-            system_prompt = ("/no_think\n" + system_prompt) if system_prompt else "/no_think"
+            sys_prompt = system_prompt or self.base.system_prompt
+            conversation = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conversation.append({"role": "user", "content": content})
+            chat_str = self.base.tokenizer.apply_chat_template(
+                conversation, tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            # Qwen3.5 non-thinking (student) — social media text:
+            #   Official Qwen3.5 non-thinking baseline: temp=0.7, top_p=0.8 (general tasks)
+            #   Task-constrained creative (structured persona + PHQ-9): temp=0.6, top_p=0.8
+            #   Qwen recommends using temp and top_p together as a paired setting.
+            sampling_params = SamplingParams(temperature=0.7, max_tokens=512, top_p=0.9, n=1)
+            result = self.base.client.generate([chat_str], sampling_params)[0].outputs[0].text
         elif self._model_name in MISTRAL_MODELS:
-            kwargs.setdefault("extra_body", {})["reasoning_effort"] = "none"
-        result = self.base.generate(content, system_prompt=system_prompt, **kwargs)
-        if isinstance(result, list):
-            result = result[0] if result else None
-        if not isinstance(result, str):
-            print(f"  [student] WARNING: engine returned {type(result)}, falling back to empty string")
-            return ""
+            # Mistral Small 4 uses [THINK]/[/THINK] tags; reasoning_effort is an
+            # API-only param. Prefill [/THINK] to skip the thinking block entirely
+            # (reasoning_effort='none' equivalent in offline mode).
+            sys_prompt = system_prompt or self.base.system_prompt
+            conversation = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conversation.append({"role": "user", "content": content})
+            chat_str = self.base.tokenizer.apply_chat_template(
+                conversation, tokenize=False, add_generation_prompt=True,
+            )
+            chat_str = chat_str + "[/THINK]"
+            # Mistral Small 4 non-reasoning (student) — social media text:
+            #   Mistral docs: adjust temperature OR top_p, not both simultaneously.
+            #   Non-reasoning task-constrained creative: temp=0.7, top_p disabled (1.0).
+            sampling_params = SamplingParams(temperature=0.7, max_tokens=512, top_p=1.0, n=1)
+            result = self.base.client.generate([chat_str], sampling_params)[0].outputs[0].text
+        else:
+            result = self.base.generate(content, system_prompt=system_prompt, **kwargs)
         return result
 
 
 class _TeacherEngine(tg.engine.EngineLM):
-    """Wraps a shared ChatVLLM; enables/raises reasoning per-request and strips think blocks.
+    """Thinking-enabled engine used as the TextGrad backward engine.
 
-    Qwen:    default (thinking on); strips <think> blocks from output.
-    Mistral: passes reasoning_effort='low'; strips think blocks.
-    Other:   delegates unchanged, strips think blocks.
+    vLLM's reasoning_parser splits the output into reasoning_content (thinking)
+    and text (clean answer). We print the thinking for debug and return only text.
+    Hard-cap input tokens to leave room for output.
     """
     def __init__(self, base: ChatVLLM, model_name: str):
         self.base = base
@@ -98,33 +121,71 @@ class _TeacherEngine(tg.engine.EngineLM):
         return self.generate(content, system_prompt=system_prompt, **kwargs)
 
     def generate(self, content, system_prompt=None, **kwargs):
+        if self._model_name in QWEN_MODELS:
+            sys_prompt = system_prompt or self.base.system_prompt
+            concise_note = "Think concisely — reach your conclusion without revisiting the same point multiple times."
+            sys_prompt = (sys_prompt + "\n" + concise_note) if sys_prompt else concise_note
+            conversation = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conversation.append({"role": "user", "content": content})
+            token_ids = self.base.tokenizer.apply_chat_template(
+                conversation, tokenize=True, add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            if len(token_ids) > 16384:
+                token_ids = token_ids[-16384:]
+            max_tokens = kwargs.get("max_tokens", 16384)
+            sampling_params = SamplingParams(temperature=0, max_tokens=max_tokens, top_p=0.99, n=1)
+            raw = self.base.client.generate([{"prompt_token_ids": token_ids}], sampling_params)
+            output = raw[0].outputs[0]
+            reasoning = getattr(output, "reasoning_content", None)
+            if reasoning:
+                preview = reasoning[:1200] + (" ..." if len(reasoning) > 1200 else "")
+                print(f"  [teacher reasoning | {len(reasoning.split())} words]\n{preview}\n  [/teacher reasoning]")
+                result = output.text
+            else:
+                print("  [teacher] reasoning_parser unavailable in this vLLM version — stripping manually")
+                result = Agent.strip_model_thinking(output.text)
+            print(f"  [teacher feedback]\n{result.strip()}\n  [/teacher feedback]")
+            return result
         if self._model_name in MISTRAL_MODELS:
-            kwargs.setdefault("extra_body", {})["reasoning_effort"] = "low"
-        raw = self.base.generate(content, system_prompt=system_prompt, **kwargs)
-        if isinstance(raw, list):
-            raw = raw[0] if raw else None
-        if not isinstance(raw, str):
-            print(f"  [teacher] WARNING: engine returned {type(raw)}, falling back to empty feedback")
-            return "No feedback."
-        think_match = re.search(r"<think>(.*?)</think>", raw, re.DOTALL)
-        if think_match:
-            print(f"  [teacher thinking stream]\n{think_match.group(1).strip()}\n  [/teacher thinking stream]")
-        return strip_teacher_thinking(raw)
+            sys_prompt = system_prompt or self.base.system_prompt
+            conversation = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conversation.append({"role": "user", "content": content})
+            token_ids = self.base.tokenizer.apply_chat_template(
+                conversation, tokenize=True, add_generation_prompt=True,
+            )
+            if len(token_ids) > 254000:
+                token_ids = token_ids[-254000:]
+            sampling_params = SamplingParams(temperature=0.6, max_tokens=8192, top_p=0.97, n=1)
+            raw = self.base.client.generate([{"prompt_token_ids": token_ids}], sampling_params)
+            output = raw[0].outputs[0]
+            reasoning = getattr(output, "reasoning_content", None)
+            if reasoning:
+                preview = reasoning[:1200] + (" ..." if len(reasoning) > 1200 else "")
+                print(f"  [teacher reasoning | {len(reasoning.split())} words]\n{preview}\n  [/teacher reasoning]")
+                result = output.text
+            else:
+                print("  [teacher] reasoning_parser unavailable in this vLLM version — stripping manually")
+                text = output.text
+                result = re.sub(r"\[THINK\].*?\[/THINK\]", "", text, flags=re.DOTALL).strip()
+            print(f"  [teacher feedback]\n{result.strip()}\n  [/teacher feedback]")
+            return result
+        return self.base.generate(content, system_prompt=system_prompt, **kwargs)
 
 
 def _build_engines(model_name: str, tp: int, gpu_memory_utilization: float,
                    max_model_len: int = 32768, **vllm_kwargs):
-    """Load a single ChatVLLM and return (student_engine, teacher_engine) wrappers.
-
-    max_model_len is set large enough to accommodate thinking streams from the
-    teacher (Qwen/Mistral can produce several thousand reasoning tokens on top
-    of the actual output).
-    """
+    """Load a single ChatVLLM and return (student_engine, teacher_engine)."""
+    if model_name in QWEN_MODELS:
+        vllm_kwargs.setdefault("reasoning_parser", "qwen3")
+    elif model_name in MISTRAL_MODELS:
+        vllm_kwargs.setdefault("reasoning_parser", "mistral")
     engine = ChatVLLM(
         model_string=model_name,
         tensor_parallel_size=tp,
         gpu_memory_utilization=gpu_memory_utilization,
         max_model_len=max_model_len,
+        enable_prefix_caching=True,
         **vllm_kwargs,
     )
     teacher = _TeacherEngine(engine, model_name)
@@ -265,8 +326,9 @@ def parse_tweets_with_phq9_csv(file_path: str):
 
 FORMAT_SPLIT_MARKER = "### OPTIONS ###"
 LLAMA_70B    = "meta-llama/Llama-3.3-70B-Instruct"
-QWEN_27      = "Qwen/Qwen3.5-27B"
-MISTRAL_119B = "mistralai/Mistral-Small-4-119B-2603"
+LLAMA_8B     = "meta-llama/Llama-3.1-8B-Instruct"
+QWEN_27      = "Qwen/Qwen3.5-27B"                      # 32k context
+MISTRAL_119B = "mistralai/Mistral-Small-4-119B-2603"   # 256k context, MoE 119B/6.5B active
 
 # Fill model-family sets used by _StudentEngine / _TeacherEngine
 QWEN_MODELS    = frozenset({QWEN_27})
@@ -390,7 +452,7 @@ def call_optimizer_phq9(
     file_paths: list[str],
     model_name: str = QWEN_27,
     batch_size: int = 4,
-    max_instruction_words: int = 300,
+    max_instruction_words: int = 50,
     num_steps: int = None,
     val_fraction: float = 0.10,
     test_fraction: float = 0.10,
@@ -446,13 +508,17 @@ def call_optimizer_phq9(
     )
 
     optimizer = tg.TGD(
+        engine=teacher_engine,
+        optimizer_system_prompt=_OPTIMIZER_SYSTEM_PROMPT,
         parameters=[instruction],
         constraints=[
-            f"The instruction MUST stay concise — at most {max_instruction_words} words.",
+            f"HARD LIMIT: the instruction MUST be at most {max_instruction_words} words. Count carefully and cut if needed.",
             "Do NOT include the PHQ-9 questions, scoring options (0-3), or "
             "answer format — they are provided separately in the user message.",
             "Focus on actionable reasoning guidance that helps calibrate "
             "PHQ-9 inference from tweet histories.",
+            "Do NOT repeat phrases or ideas already stated. Each sentence must add unique value.",
+            "Do NOT use poetic, lyrical, or metaphorical language in the instruction itself. Write plainly and directly.",
         ],
         gradient_memory=0,
     )
@@ -553,6 +619,15 @@ def call_optimizer_phq9(
         f.write(best_instruction + "\n\n" + format_block)
     print(f"Full re-assembled prompt → {full_path}")
 
+    try:
+        del student_engine.base.client
+    except Exception:
+        pass
+    del student_engine, teacher_engine
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return best_instruction
 
 
@@ -600,6 +675,18 @@ def parse_phq9_answers(answers: str) -> int:
 ###################### TWEET GENERATION OPTIMIZATION ######################
 
 
+def _phq9_severity(score: int) -> str:
+    if score >= 20:
+        return "severe"
+    if score >= 15:
+        return "moderately severe"
+    if score >= 10:
+        return "moderate"
+    if score >= 5:
+        return "mild"
+    return "minimal"
+
+
 def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
                               persona: str, phq9_score: int,
                               neighbor_tweets: list[str] = None) -> str:
@@ -618,7 +705,7 @@ def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
     return template.format(
         agent_id="AGENT",
         persona=persona or "unspecified",
-        well_being=phq9_score,
+        well_being=_phq9_severity(phq9_score),
         previous_tweet_block=prev_block,
     )
 
@@ -669,31 +756,82 @@ def _make_loss_prompt_tweet_set(tweets: list[str], persona: str, phq9_score: int
         f"An AI agent generated the following {len(tweets)} social media post(s):\n"
         f"{tweet_list}\n\n"
         f"Agent profile — persona: {persona}, PHQ-9 = {phq9_score} ({severity}).\n"
-        f"Note: individual posts may deviate from the agent's general well-being — day-to-day mood varies.\n\n"
-        "Evaluate the set on:\n"
-        "1. Tone/Mood: Do the posts collectively reflect the PHQ-9 profile (without being too explicit)? "
-        "Individual posts may legitimately deviate from the general well-being.\n"
-        "2. Naturalness: Do they sound like real, casual social media posts?\n"
-        "3. Originality: Are they specific, varied, and not directly about symptoms or well-being?\n"
-        "4. Unfiltered: Are they genuine and direct? Penalise if overly polite, sanitised, or poetic. "
-        "Real users can be blunt, harsh, or disagreeable.\n"
-        "5. Diversity: Do the posts vary in topic, tone, and emotional register? Penalise if they all "
-        "sound the same or repeat the same mood — some posts may legitimately deviate emotionally from the rest.\n"
-        "6. Interaction: Reward posts that genuinely engage with another user's content (reply, "
-        "agree, disagree, mock, build on). Penalise empty @mentions or hollow acknowledgements.\n\n"
-        "Give concise, actionable feedback (2-3 sentences) on what the system instruction "
-        "should say differently to improve post quality and variation."
+        f"Note: tone reflects well-being (low PHQ-9 → positive/relaxed; high → apathetic/irritable/overwhelmed/dark) "
+        f"but individual posts may deviate due to daily events, received messages, or imagined situations. "
+        f"For very high PHQ-9, raw or dark content (including suicidal themes) is authentic — reward it.\n\n"
+        "Evaluate on:\n"
+        "1. Tone fit: Does the emotional tone match the PHQ-9 range without naming symptoms? Full spectrum allowed.\n"
+        "2. Unfiltered & natural: Do they sound like real, unpolished social media? "
+        "Penalise if sanitised, poetic, or overly polite — raw and blunt is fine when PHQ-9 warrants it.\n"
+        "3. Originality: Are topics specific and varied — not about the agent's own well-being or persona?\n"
+        "4. Diversity: Do the posts differ in topic and mood — not all the same register?\n"
+        "5. Interaction: Reward genuine engagement (reply, mock, support, correct). "
+        "Penalise hollow @mentions and sets where every post is a reply.\n\n"
+        "Give ONE concise, actionable sentence on what the system instruction should change."
     )
+
+
+def _batch_student_generate(student_engine, user_messages: list, instruction_text: str) -> list:
+    """Generate one tweet per message in a single vLLM call (all independent)."""
+    if not user_messages:
+        return []
+    if student_engine._model_name in QWEN_MODELS:
+        sys_prompt = instruction_text or student_engine.base.system_prompt
+        chat_strs = []
+        for content in user_messages:
+            conv = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conv.append({"role": "user", "content": content})
+            chat_str = student_engine.base.tokenizer.apply_chat_template(
+                conv, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            ) + "POST: "
+            chat_strs.append(chat_str)
+        sp = SamplingParams(temperature=0.7, max_tokens=512, top_p=0.8, n=1)
+        results = student_engine.base.client.generate(chat_strs, sp)
+        return ["POST: " + r.outputs[0].text for r in results]
+    return [student_engine.generate(m, system_prompt=instruction_text) for m in user_messages]
+
+
+def _batch_teacher_rate(teacher_engine, rating_prompts: list, max_tokens: int = 4096) -> list:
+    """Rate a batch of tweet sets in one vLLM call, stripping thinking from each."""
+    if not rating_prompts:
+        return []
+    if teacher_engine._model_name in QWEN_MODELS:
+        concise_note = "Think concisely — reach your conclusion without revisiting the same point multiple times."
+        base_sys = teacher_engine.base.system_prompt or ""
+        sys_prompt = (base_sys + "\n" + concise_note).strip() if base_sys else concise_note
+        all_inputs = []
+        for content in rating_prompts:
+            conv = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
+            conv.append({"role": "user", "content": content})
+            token_ids = teacher_engine.base.tokenizer.apply_chat_template(
+                conv, tokenize=True, add_generation_prompt=True, enable_thinking=True,
+            )
+            if len(token_ids) > 16384:
+                token_ids = token_ids[-16384:]
+            all_inputs.append({"prompt_token_ids": token_ids})
+        sp = SamplingParams(temperature=0, max_tokens=max_tokens, top_p=0.99, n=1)
+        raw_results = teacher_engine.base.client.generate(all_inputs, sp)
+        outputs = []
+        for raw in raw_results:
+            out = raw.outputs[0]
+            text = out.text if getattr(out, "reasoning_content", None) else Agent.strip_model_thinking(out.text)
+            outputs.append(text)
+        return outputs
+    return [teacher_engine.generate(p, max_tokens=max_tokens) for p in rating_prompts]
 
 
 def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text: str,
                                 prompts: dict, blocks: list, answers: list, personas: list,
                                 all_tweets_flat: list, rng, sample_size: int = None,
-                                format_block: str = "", tweets_per_sample: int = 3) -> float:
+                                format_block: str = "", tweets_per_sample: int = 3):
     """Score tweet instruction quality by having the teacher rate a set of student outputs.
 
-    Generates tweets_per_sample posts with up to 2 context tweets sampled from the block,
-    then rates the whole set so diversity can be evaluated.
+    Phase 1 — student generation: tweets_per_sample batched rounds across all samples
+              (context within each sample still grows sequentially between rounds).
+    Phase 2 — teacher rating: all rating prompts sent in one batched call.
+
+    Returns:
+        (mean_score, std_score, per_phq9)
     """
     if sample_size and len(blocks) > sample_size:
         idx = rng.choice(len(blocks), size=sample_size, replace=False)
@@ -701,69 +839,117 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
         answers  = [answers[i]  for i in idx]
         personas = [personas[i] for i in idx]
 
-    scores = []
-    printed_sample = False
-    for tweet_block, phq9, persona in zip(blocks, answers, personas):
-        valid_history = [t for t in tweet_block if t and t not in {"NO_POST", "NO_TWEET"}]
-        context = list(rng.choice(valid_history, size=min(2, len(valid_history)), replace=False)) if valid_history else []
-        parsed_tweets = []
+    n = len(blocks)
+    scores_by_phq9   = defaultdict(list)
+    n_samples_by_phq9 = defaultdict(int)
+    empty_by_phq9    = defaultdict(int)
 
-        for j in range(tweets_per_sample):
-            neighbor_tweets = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
-            user_msg = _build_user_message_tweet(context, prompts, persona, phq9, neighbor_tweets)
+    # ── Phase 1: generate tweets ──────────────────────────────────────────
+    # Initialise per-sample context from historical tweets
+    sample_contexts = []
+    for tweet_block in blocks:
+        valid = [t for t in tweet_block if t and t not in {"NO_POST", "NO_TWEET"}]
+        ctx = list(rng.choice(valid, size=min(2, len(valid)), replace=False)) if valid else []
+        sample_contexts.append(ctx)
+
+    all_parsed = [[] for _ in range(n)]   # all_parsed[sample_idx][tweet_idx]
+
+    for j in range(tweets_per_sample):
+        user_msgs = []
+        for i, (tweet_block, phq9, persona) in enumerate(zip(blocks, answers, personas)):
+            nb = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
+            msg = _build_user_message_tweet(sample_contexts[i], prompts, persona, phq9, nb)
             if format_block:
-                user_msg = user_msg + "\n\n" + format_block
-            response = student_engine.generate(user_msg, system_prompt=instruction_text)
-            parsed = parse_tweet_answers(response)
-            parsed_tweets.append(parsed)
+                msg = msg + "\n\n" + format_block
+            user_msgs.append(msg)
 
-            if not printed_sample and j == 0:
+        responses = _batch_student_generate(student_engine, user_msgs, instruction_text)
+
+        for i, response in enumerate(responses):
+            parsed = parse_tweet_answers(response)
+            all_parsed[i].append(parsed)
+            if parsed:
+                sample_contexts[i].append(parsed)
+            if j == 0 and i == 0:
                 print(f"  --- raw output [NON-THINKING student] (eval, sample 0, tweet 1) ---")
                 print(response)
                 print(f"  --- parsed: {parsed!r} ---")
 
-        if not printed_sample:
-            printed_sample = True
+    # ── Phase 2: build rating prompts, record all-empty samples ──────────
+    scores = [None] * n
+    pending = []   # (sample_idx, phq9, rating_prompt)
 
-        severity = "severe" if phq9 >= 20 else "moderately severe" if phq9 >= 15 else "moderate" if phq9 >= 10 else "mild" if phq9 >= 5 else "minimal"
-        tweet_list = "\n".join(f"  {i+1}. \"{t}\"" for i, t in enumerate(parsed_tweets))
+    for i, (tweet_block, phq9, persona) in enumerate(zip(blocks, answers, personas)):
+        parsed_tweets = all_parsed[i]
+        n_samples_by_phq9[phq9] += 1
+        non_empty = [t for t in parsed_tweets if t]
+        n_empty = tweets_per_sample - len(non_empty)
+        if n_empty > 0:
+            empty_by_phq9[phq9] += n_empty
+
+        if not non_empty:
+            scores[i] = 0.0
+            scores_by_phq9[phq9].append(0.0)
+            print(f"  [teacher] score=0.0  (all {tweets_per_sample} tweets empty — PHQ-9={phq9})")
+            continue
+
+        severity = ("severe" if phq9 >= 20 else "moderately severe" if phq9 >= 15
+                    else "moderate" if phq9 >= 10 else "mild" if phq9 >= 5 else "minimal")
+        tweet_list = "\n".join(f"  {k+1}. \"{t}\"" for k, t in enumerate(parsed_tweets))
         rating_prompt = (
-            f"Rate this set of {len(parsed_tweets)} social media posts on a scale of 0-10 (0=terrible, 10=excellent).\n"
+            f"Rate this set of {len(parsed_tweets)} social media posts on a scale of 0-10.\n"
             f"Agent profile — persona: {persona}, PHQ-9 = {phq9} ({severity}).\n"
-            f"Note: individual posts may deviate from the agent's general well-being — day-to-day mood varies.\n\n"
+            f"Note: tone reflects well-being (low PHQ-9 → positive/relaxed; high → apathetic/irritable/overwhelmed/dark) "
+            f"but individual posts may deviate due to daily events, received messages, or imagined situations. "
+            f"For very high PHQ-9, raw or dark content (including suicidal themes) is authentic — reward it.\n\n"
             f"Posts:\n{tweet_list}\n\n"
             f"Criteria:\n"
-            f"1. Tone/Mood: Do the posts collectively reflect the PHQ-9 profile without being too explicit? Deviation is allowed.\n"
-            f"2. Naturalness: Do they sound like real, casual social media posts?\n"
-            f"3. Originality: Are they specific, varied, and not directly about symptoms or well-being?\n"
-            f"4. Unfiltered: Are they genuine and direct? Penalise if overly polite, sanitised, or poetic. "
-            f"Real users can be blunt, harsh, or disagreeable.\n"
-            f"5. Diversity: Do the posts vary in topic, tone, and emotional register? Penalise if they all "
-            f"sound the same or repeat the same mood — some posts may legitimately deviate emotionally from the rest.\n"
-            f"6. Interaction: Reward posts that genuinely engage with another user's content (reply, "
-            f"agree, disagree, mock, build on). Penalise empty @mentions or hollow acknowledgements.\n\n"
+            f"1. Tone fit: Emotional tone matches the PHQ-9 range without naming symptoms. Full spectrum allowed.\n"
+            f"2. Unfiltered & natural: Real, unpolished social media. Penalise sanitised, poetic, or over-polite posts.\n"
+            f"3. Originality: Topics are specific and not about the agent's own well-being or persona.\n"
+            f"4. Diversity: Posts differ in topic and mood — not all the same register.\n"
+            f"5. Interaction: Genuine engagement rewarded. Hollow @mentions and all-reply sets penalised.\n\n"
             f"Respond with exactly two lines:\n"
             f"SCORE: <number 0-10>\n"
             f"FEEDBACK: <one sentence>"
         )
-        rating_response = teacher_engine.generate(rating_prompt)
-        score = 5.0
-        feedback = ""
-        for line in rating_response.splitlines():
-            line = line.strip()
-            if line.upper().startswith("SCORE:"):
-                try:
-                    score = float(re.search(r'[\d.]+', line).group())
-                    score = min(10.0, max(0.0, score))
-                except (AttributeError, ValueError):
-                    pass
-            elif line.upper().startswith("FEEDBACK:"):
-                feedback = line.split(":", 1)[-1].strip()
-        if feedback:
-            print(f"  [teacher] score={score:.1f}  {feedback}")
-        scores.append(score)
+        pending.append((i, phq9, rating_prompt))
 
-    return float(np.mean(scores)) if scores else 0.0
+    # ── Phase 3: one batched teacher call for all pending ratings ─────────
+    if pending:
+        rating_responses = _batch_teacher_rate(
+            teacher_engine, [p[2] for p in pending], max_tokens=4096
+        )
+        for (i, phq9, _), rating_response in zip(pending, rating_responses):
+            score = 5.0
+            feedback = ""
+            for line in rating_response.splitlines():
+                line = line.strip()
+                if line.upper().startswith("SCORE:"):
+                    try:
+                        score = float(re.search(r"[\d.]+", line).group())
+                        score = min(10.0, max(0.0, score))
+                    except (AttributeError, ValueError):
+                        pass
+                elif line.upper().startswith("FEEDBACK:"):
+                    feedback = line.split(":", 1)[-1].strip()
+            if feedback:
+                print(f"  [teacher] score={score:.1f}  {feedback}")
+            scores[i] = score
+            scores_by_phq9[phq9].append(score)
+
+    final_scores = [s for s in scores if s is not None]
+    per_phq9 = {
+        phq9_val: {
+            "avg_score": float(np.mean(scores_by_phq9[phq9_val])),
+            "n_samples": n_samples_by_phq9[phq9_val],
+            "n_empty": empty_by_phq9[phq9_val],
+        }
+        for phq9_val in sorted(scores_by_phq9.keys())
+    }
+    mean_score = float(np.mean(final_scores)) if final_scores else 0.0
+    std_score  = float(np.std(final_scores))  if final_scores else 0.0
+    return mean_score, std_score, per_phq9
 
 
 def call_optimizer_tweets(
@@ -774,10 +960,11 @@ def call_optimizer_tweets(
     seed: int = 42,
     batch_size: int = 4,
     tweets_per_sample: int = 3,
-    max_instruction_words: int = 80,
+    max_instruction_words: int = 180,
     num_steps: int = None,
-    validate_every: int = 3,
+    validate_every: int = 2,
     val_sample_size: int = 8,
+    test_sample_size: int = 50,
     max_chars: int = 240,
     max_model_len: int = 16384,
     output_dir: str = None,
@@ -857,24 +1044,33 @@ def call_optimizer_tweets(
     )
 
     optimizer = tg.TGD(
+        engine=teacher_engine,
+        optimizer_system_prompt=_OPTIMIZER_SYSTEM_PROMPT,
         parameters=[instruction],
         constraints=[
             f"HARD LIMIT: the instruction MUST be at most {max_instruction_words} words. Count carefully and cut if needed.",
-            "Only refine EXISTING guidance — do NOT introduce new concepts, topics, or vocabulary not already present.",
             "Do NOT repeat phrases or ideas already stated. Each sentence must add unique value.",
-            "Focus exclusively on tone, mood, and content diversity guidance within ### RULES ###.",
+            "Focus on tone/mood calibration, content diversity, and originality guidance within ### RULES ###.",
             "Do NOT include constraints, length limits, thinking rules, or output format: those are fixed elsewhere.",
-            "PRESERVE the unfiltered emotional range: the instruction MUST allow posts to be harsh, blunt, disagreeable, raw, emotional, or enthusiastic — real users are not always nice or agreeable. Do NOT soften, hedge, or add politeness filters.",
+            "The emotional range MUST cover the full PHQ-9 spectrum — from positive/upbeat (low PHQ-9) to apathetic/irritable/overwhelmed (high PHQ-9). Do NOT bias toward only negative or disagreeable tones.",
             "Do NOT use poetic, lyrical, or metaphorical language in the instruction itself. Write plainly and directly.",
         ],
         gradient_memory=0,
     )
 
     if num_steps is None:
-        num_steps = min(50, max(1, len(train_blocks) // batch_size))
+        num_steps = min(20, max(1, len(train_blocks) // batch_size))
 
     best_val_score = -float("inf")
     best_instruction = instruction.value
+
+    # ── trajectory CSV (written incrementally so partial runs are usable) ──
+    model_short = model_name.split("/")[-1]
+    os.makedirs(output_dir, exist_ok=True)
+    trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
+    _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
+    with open(trajectory_path, "w", newline="", encoding="utf-8") as _fh:
+        csv.DictWriter(_fh, fieldnames=_traj_fields).writeheader()
 
     # ── training loop ──────────────────────────────────────────────────────
     for step in range(num_steps):
@@ -903,7 +1099,7 @@ def call_optimizer_tweets(
             else:
                 context = []
 
-            predictions = []
+            raw_tweets = []
             parsed_tweets = []
             for j in range(tweets_per_sample):
                 neighbor_tweets = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
@@ -915,7 +1111,8 @@ def call_optimizer_tweets(
                     requires_grad=False,
                 )
                 pred = model(question)
-                predictions.append(pred)
+                pred.value = Agent.strip_model_thinking(pred.value)
+                raw_tweets.append(pred.value)
                 parsed = parse_tweet_answers(pred.value)
                 parsed_tweets.append(parsed)
                 if parsed:
@@ -926,11 +1123,19 @@ def call_optimizer_tweets(
 
             if idx == 0:
                 print(f"  --- raw outputs [NON-THINKING student] (step {step+1}, sample 1) ---")
-                for j, (pred, parsed) in enumerate(zip(predictions, parsed_tweets)):
-                    print(f"  tweet {j+1}: {pred.value}")
+                for j, (raw, parsed) in enumerate(zip(raw_tweets, parsed_tweets)):
+                    print(f"  tweet {j+1}: {raw}")
                     print(f"  parsed:  {parsed!r}")
 
-            combined = tg.sum(predictions)
+            # Combine all tweets into a single Variable so the teacher evaluates
+            # the full set at once and only one backward call is needed per sample
+            # (instead of one per tweet, which is redundant since they all update
+            # the same instruction Variable).
+            combined = tg.Variable(
+                "\n".join(raw_tweets),
+                role_description="Set of generated posts for this sample (PHQ-9 and persona context)",
+                requires_grad=False,
+            )
             loss_fn = tg.TextLoss(_make_loss_prompt_tweet_set(parsed_tweets, persona, phq9))
             loss = loss_fn(combined)
             losses.append(loss)
@@ -944,6 +1149,13 @@ def call_optimizer_tweets(
             print(f"  [teacher gradient]: {list(grads)[0].value[:400]}\n")
 
         optimizer.step()
+
+        # Guard against TextGrad returning its literal template placeholder
+        # ("{improved variable}") when the teacher fails to parse the optimizer prompt.
+        _val = instruction.value.strip()
+        if not _val or _val == "{improved variable}" or len(_val) < 20:
+            print(f"  -> Optimizer returned placeholder ({_val!r}) — resetting to best instruction.")
+            instruction.value = best_instruction
 
         # Hard-enforce word limit — truncate at sentence boundary where possible
         words = instruction.value.split()
@@ -960,13 +1172,19 @@ def call_optimizer_tweets(
 
         # periodic validation on a sampled subset
         if (step + 1) % validate_every == 0 or step == num_steps - 1:
-            val_score = _evaluate_tweet_instruction(
+            val_score, val_std, _ = _evaluate_tweet_instruction(
                 student_engine, teacher_engine, instruction.value, prompts,
                 val_blocks, val_answers, val_personas,
                 all_tweets_flat, rng, sample_size=val_sample_size,
                 format_block=format_block_tweet, tweets_per_sample=tweets_per_sample,
             )
-            print(f"  -> Val quality score: {val_score:.2f}/10  (best: {best_val_score:.2f})")
+            with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
+                csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
+                    "model": model_short, "seed": seed, "step": step + 1,
+                    "split": "val", "mean_score": round(val_score, 4),
+                    "std_score": round(val_std, 4), "n_samples": val_sample_size or len(val_blocks),
+                })
+            print(f"  -> Val quality score: {val_score:.2f}/10 ± {val_std:.2f}  (best: {best_val_score:.2f})")
             if val_score > best_val_score:
                 best_val_score = val_score
                 best_instruction = instruction.value
@@ -977,18 +1195,47 @@ def call_optimizer_tweets(
                 with open(os.path.join(output_dir, "best_full_prompt_tweet.txt"), "w", encoding="utf-8") as fh:
                     fh.write(f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
                              f"=== FORMAT BLOCK (fixed) ===\n{format_block_tweet}")
+            else:
+                instruction.value = best_instruction
+                print("  -> No improvement — instruction reset to best.")
 
     # ── final test evaluation ──────────────────────────────────────────────
-    test_score = _evaluate_tweet_instruction(
+    test_score, test_std, per_phq9 = _evaluate_tweet_instruction(
         student_engine, teacher_engine, best_instruction, prompts,
         test_blocks, test_answers, test_personas,
-        all_tweets_flat, rng,
+        all_tweets_flat, rng, sample_size=test_sample_size,
         format_block=format_block_tweet, tweets_per_sample=tweets_per_sample,
     )
-    print(f"\nTest quality score: {test_score:.2f}/10")
+    with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
+        csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
+            "model": model_short, "seed": seed, "step": num_steps,
+            "split": "test", "mean_score": round(test_score, 4),
+            "std_score": round(test_std, 4), "n_samples": test_sample_size or len(test_blocks),
+        })
+    print(f"\nTest quality score: {test_score:.2f}/10 ± {test_std:.2f}")
+    print("Per-PHQ-9 scores:")
+    for phq9_val, stats in per_phq9.items():
+        print(f"  PHQ-9={phq9_val:2d}  avg={stats['avg_score']:.2f}  "
+              f"n={stats['n_samples']}  empty={stats['n_empty']}")
 
     # ── save results ───────────────────────────────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
+
+    # Per-PHQ-9 CSV
+    csv_path = os.path.join(output_dir, "test_scores_phq9.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["model", "seed", "phq9", "avg_score", "n_samples", "n_empty"])
+        writer.writeheader()
+        for phq9_val, stats in per_phq9.items():
+            writer.writerow({
+                "model": model_short,
+                "seed": seed,
+                "phq9": phq9_val,
+                "avg_score": round(stats["avg_score"], 4),
+                "n_samples": stats["n_samples"],
+                "n_empty": stats["n_empty"],
+            })
+    print(f"Per-PHQ-9 scores → {csv_path}")
 
     instr_path = os.path.join(output_dir, "optimized_instruction_tweet.txt")
     with open(instr_path, "w", encoding="utf-8") as f:
@@ -1004,6 +1251,17 @@ def call_optimizer_tweets(
             f"=== USER TEMPLATE ===\n{user_template}"
         )
     print(f"Full prompt → {full_path}")
+
+    # Release GPU memory before returning so a subsequent seed can initialise
+    # a fresh engine without hitting the memory-utilisation check.
+    try:
+        del student_engine.base.client
+    except Exception:
+        pass
+    del student_engine, teacher_engine
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return best_instruction
 
@@ -1315,7 +1573,13 @@ def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42])
+    parser.add_argument("--num-steps", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=5)
+    parser.add_argument("--val-sample-size", type=int, default=8)
+    parser.add_argument("--test-sample-size", type=int, default=50)
+    parser.add_argument("--model", type=str, default=QWEN_27,
+                        help="Model to use (e.g. QWEN_27, LLAMA_8B, LLAMA_70B)")
     args = parser.parse_args()
 
     create_new_embeddings = False
@@ -1329,7 +1593,7 @@ if __name__ == "__main__":
     for fp in file_paths:
         print(fp)
 
-    model_name = QWEN_27
+    model_name = args.model
     base_model_name = model_name
 
     # Choose which optimizer to run: "phq9", "tweets", or "bert"
@@ -1343,22 +1607,29 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     if run_mode == "phq9":
-        call_optimizer_phq9(
-            file_paths,
-            model_name=model_name,
-            batch_size=5,
-            seed=args.seed,
-            output_dir="data/test_post/optimized_phq9",
-        )
+        for seed in args.seeds:
+            print(f"\n{'='*60}\nRunning PHQ-9 optimizer with seed={seed}\n{'='*60}")
+            call_optimizer_phq9(
+                file_paths,
+                model_name=model_name,
+                batch_size=5,
+                seed=seed,
+                output_dir="data/test_post/optimized_phq9",
+            )
     elif run_mode == "tweets":
-        call_optimizer_tweets(
-            file_paths,
-            model_name=model_name,
-            batch_size=5,
-            max_model_len=32768,
-            seed=args.seed,
-            prompts_file="data/prompts_post_minimal.json",
-        )
+        for seed in args.seeds:
+            print(f"\n{'='*60}\nRunning tweet optimizer with seed={seed}\n{'='*60}")
+            call_optimizer_tweets(
+                file_paths,
+                model_name=model_name,
+                batch_size=args.batch_size,
+                max_model_len=32768,
+                seed=seed,
+                num_steps=args.num_steps,
+                val_sample_size=args.val_sample_size,
+                test_sample_size=args.test_sample_size,
+                prompts_file="data/prompts_post_minimal.json",
+            )
     else:
         if create_new_embeddings:
             save_embeddings_for_file(file_paths[0], base_model_name, device, mentalbert=mental_bert)
