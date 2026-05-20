@@ -174,7 +174,7 @@ class _Network:
                 raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
                 templated = tokenizer.apply_chat_template(
                     raw_messages, tokenize=False, add_generation_prompt=True,
-                    chat_template_kwargs={"enable_thinking": True}
+                    chat_template_kwargs={"enable_thinking": False}
                 )
                 prompts.append(templated)
                 # prompt = add_salt(prompt)
@@ -189,7 +189,7 @@ class _Network:
                 # prompt = add_salt(prompt)
                 templated = tokenizer.apply_chat_template(
                     raw_messages, tokenize=False, add_generation_prompt=True,
-                    chat_template_kwargs={"enable_thinking": True}
+                    chat_template_kwargs={"enable_thinking": False}
                 )
                 prompts.append(templated)
                 agents_w_prompt.append(agent)
@@ -224,7 +224,7 @@ class _Network:
             )
             templated = tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True,
-                chat_template_kwargs={"enable_thinking": True}
+                chat_template_kwargs={"enable_thinking": False}
             )
             prompts.append(templated)
         
@@ -256,24 +256,24 @@ class _Network:
         if not prompts:
             return []
         
-        if phq9: 
+        # Sampling params match the prompt_optimizer student engine so the
+        # optimized prompt is deployed under the same inference distribution
+        # it was trained against (non-thinking Qwen3.5, lower diversity).
+        if phq9:
             sampling_params_clinical = SamplingParams(
-                    temperature=0.8, 
-                    top_p=0.6,
-                    max_tokens=1024,
-                    seed= self.seed + self.iterations
+                    temperature=0.2,
+                    top_p=0.9,
+                    max_tokens=256,
+                    seed=self.seed + self.iterations,
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
             return outputs
-    
-        # Define Sampling Parameters
+
         sampling_params = SamplingParams(
-            temperature=1.0,
+            temperature=0.7,
             top_p=0.9,
-            presence_penalty=0.4,
-            repetition_penalty=1.05,
-            max_tokens=4096,
-            seed= self.seed + self.iterations  # vLLM handles seeding here
+            max_tokens=512,
+            seed=self.seed + self.iterations,
         )
 
         # VLLM does batching automatically. 

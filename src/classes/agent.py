@@ -88,6 +88,8 @@ class Agent:
         (e.g. Qwen3.5) produce even with thinking enabled/disabled.
 
         Handles (in order):
+        0. Leading "assistant" role header Qwen3.5 sometimes emits when
+           enable_thinking=False is used without a prefill.
         1. Full <think>...</think> XML blocks (Qwen3 format)
         2. Qwen3.5 format: <think> is placed in the *prompt* by the chat
            template, so only </think> appears in the generated output.
@@ -95,6 +97,11 @@ class Agent:
         3. Unclosed <think> blocks (model started but never closed)
         4. Plain-text "Thinking Process:" blocks
         """
+        # 0. Strip spurious leading "assistant" role header.
+        stripped = text.lstrip()
+        if stripped.lower().startswith("assistant"):
+            text = stripped[len("assistant"):].lstrip("\n :")
+
         # 1. Remove complete <think>...</think> XML blocks
         cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 

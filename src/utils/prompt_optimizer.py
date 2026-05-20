@@ -56,10 +56,14 @@ def _teacher_call_kind(content: str) -> str:
     Returns:
         'backward' (gradient computation), 'optimizer' (instruction rewrite), or 'loss' (SCORE/FEEDBACK rating).
     """
-    if "<CONVERSATION>" in content:
-        return "backward"
+    # Optimizer first: optimizer prompts may embed prior conversations via GRADIENT_TEMPLATE,
+    # but only optimizer prompts instruct the model to write between <IMPROVED_VARIABLE> tags.
     if "IMPROVED_VARIABLE" in content:
         return "optimizer"
+    # Backward prompts wrap the prior conversation in <LM_INPUT>/<LM_OUTPUT> and reference
+    # an <OBJECTIVE_FUNCTION>. (TextGrad does NOT emit a literal <CONVERSATION> tag here.)
+    if "<LM_INPUT>" in content or "<OBJECTIVE_FUNCTION>" in content:
+        return "backward"
     return "loss"
 
 # Custom optimizer system prompt — TextGrad's default includes literal "{improved variable}"
@@ -169,7 +173,10 @@ class _TeacherEngine(tg.engine.EngineLM):
         """
         if self._model_name in QWEN_MODELS:
             sys_prompt = system_prompt or self.base.system_prompt
-            concise_note = "Be brief in your thinking. Identify the key point and act on it immediately — do not re-examine the same idea multiple times or draft more than once."
+            concise_note = (
+                "Keep your thinking short. In one or two sentences, identify the key point and then answer. "
+                "Do not re-examine the same idea or draft multiple alternatives — one pass is enough."
+            )
             sys_prompt = (sys_prompt + "\n" + concise_note) if sys_prompt else concise_note
             conversation = ([{"role": "system", "content": sys_prompt}] if sys_prompt else [])
             conversation.append({"role": "user", "content": content})
@@ -192,7 +199,9 @@ class _TeacherEngine(tg.engine.EngineLM):
                 cur_max_tokens = base_max_tokens * (2 if attempt else 1)
                 if attempt:
                     print(f"  [teacher] retrying optimizer call with max_tokens={cur_max_tokens} (was {base_max_tokens})")
-                sampling_params = SamplingParams(temperature=0, max_tokens=cur_max_tokens, top_p=0.99, n=1)
+                # temp=0.2 (not pure greedy) tends to end Qwen3.5 thinking earlier
+                # than temp=0, which can get stuck in self-confirming loops.
+                sampling_params = SamplingParams(temperature=0.2, max_tokens=cur_max_tokens, top_p=0.99, n=1)
                 raw = self.base.client.generate([{"prompt_token_ids": token_ids}], sampling_params)
                 output = raw[0].outputs[0]
                 reasoning = getattr(output, "reasoning_content", None)
@@ -213,7 +222,9 @@ class _TeacherEngine(tg.engine.EngineLM):
                     result = ""
                     break
                 answer = raw_text.rsplit("</think>", 1)[1].strip()
-                if "<CONVERSATION>" not in content and "IMPROVED_VARIABLE" not in content:
+                # Only loss calls produce structured SCORE/FEEDBACK; backward/optimizer
+                # outputs are free-form and must be returned verbatim.
+                if _teacher_call_kind(content) == "loss":
                     result = _extract_score_feedback(answer)
                     if not result:
                         print("  [teacher] FEEDBACK not found — discarding feedback")
@@ -1116,7 +1127,10 @@ def _batch_teacher_rate(teacher_engine, rating_prompts: list, max_tokens: int = 
     if not rating_prompts:
         return []
     if teacher_engine._model_name in QWEN_MODELS:
-        concise_note = "Be brief in your thinking. Identify the key point and act on it immediately — do not re-examine the same idea multiple times or draft more than once."
+        concise_note = (
+                "Keep your thinking short. In one or two sentences, identify the key point and then answer. "
+                "Do not re-examine the same idea or draft multiple alternatives — one pass is enough."
+            )
         base_sys = teacher_engine.base.system_prompt or ""
         sys_prompt = (base_sys + "\n" + concise_note).strip() if base_sys else concise_note
         all_inputs = []
@@ -1129,7 +1143,7 @@ def _batch_teacher_rate(teacher_engine, rating_prompts: list, max_tokens: int = 
             if len(token_ids) > 16384:
                 token_ids = token_ids[-16384:]
             all_inputs.append({"prompt_token_ids": token_ids})
-        sp = SamplingParams(temperature=0, max_tokens=max_tokens, top_p=0.99, n=1)
+        sp = SamplingParams(temperature=0.2, max_tokens=max_tokens, top_p=0.99, n=1)
         raw_results = teacher_engine.base.client.generate(all_inputs, sp)
         outputs = []
         for raw in raw_results:
@@ -1235,54 +1249,43 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
             scores[i] = 0.0
             scores_by_phq9[phq9].append(0.0)
             print(f"  [teacher] score=0.0  (all {tweets_per_sample} tweets empty — PHQ-9={phq9})")
-            continue
-
-        severity = ("severe" if phq9 >= 20 else "moderately severe" if phq9 >= 15
-                    else "moderate" if phq9 >= 10 else "mild" if phq9 >= 5 else "minimal")
-        tweet_list = "\n".join(f"  {k+1}. \"{t}\"" for k, t in enumerate(parsed_tweets))
-        rating_prompt = (
-            f"Rate this set of {len(parsed_tweets)} social media posts on a scale of 0-10.\n"
-            f"Agent profile — persona: {persona}, PHQ-9 = {phq9} ({severity}).\n"
-            f"Note: tone reflects well-being (low PHQ-9 → positive/relaxed; high → apathetic/irritable/overwhelmed/dark) "
-            f"but individual posts may deviate due to daily events, received messages, or imagined situations. "
-            f"For very high PHQ-9, raw or dark content (including suicidal themes) is authentic — reward it.\n\n"
-            f"Posts:\n{tweet_list}\n\n"
-            f"Criteria:\n"
-            f"1. Tone fit: Emotional tone matches the PHQ-9 range without naming symptoms. Full spectrum allowed.\n"
-            f"2. Unfiltered & natural: Real, unpolished social media. Penalise sanitised, poetic, or over-polite posts.\n"
-            f"3. Originality: Topics are specific and not about the agent's own well-being or persona.\n"
-            f"4. Diversity: Posts cover somewhat different topics or moods. Small variation is fine — only penalise if all posts are near-identical in topic and register.\n"
-            f"5. Interaction: Genuine engagement rewarded. Hollow @mentions and all-reply sets penalised.\n\n"
-            f"Score proportionally: partial credit when only some criteria are met; "
-            f"0 only for posts that are unreadable or completely empty; 10 only when all criteria are fully met.\n\n"
-            f"Respond with exactly two lines:\n"
-            f"SCORE: <number 0-10>\n"
-            f"FEEDBACK: <one sentence>"
-        )
-        pending.append((i, phq9, rating_prompt))
+        else:
+            # Use the exact same rating prompt training uses, so train-time and
+            # eval-time scores are directly comparable (same criteria, same
+            # FEEDBACK framing, same SCORE scale).
+            rating_prompt = _make_loss_prompt_tweet_set(parsed_tweets, persona, phq9)
+            pending.append((i, phq9, rating_prompt))
 
     # Phase 3 — one batched teacher call rates all pending sets.
     if pending:
         rating_responses = _batch_teacher_rate(
             teacher_engine, [p[2] for p in pending], max_tokens=4096
         )
+        n_unparsed = 0
         for (i, phq9, _), rating_response in zip(pending, rating_responses):
-            score = 5.0
+            score = None
             feedback = ""
             for line in rating_response.splitlines():
                 line = line.strip()
                 if line.upper().startswith("SCORE:"):
                     try:
-                        score = float(re.search(r"[\d.]+", line).group())
-                        score = min(10.0, max(0.0, score))
+                        parsed = float(re.search(r"[\d.]+", line).group())
+                        score = min(10.0, max(0.0, parsed))
                     except (AttributeError, ValueError):
                         pass
                 elif line.upper().startswith("FEEDBACK:"):
                     feedback = line.split(":", 1)[-1].strip()
-            if feedback:
+            if score is None:
+                n_unparsed += 1
+                print(f"  [teacher] SCORE not parsed — excluding sample {i} from average")
+            elif feedback:
                 print(f"  [teacher] score={score:.1f}  {feedback}")
-            scores[i] = score
-            scores_by_phq9[phq9].append(score)
+            # Only contribute to the average when we actually have a score.
+            scores[i] = score  # may be None; global filter at the end drops Nones.
+            if score is not None:
+                scores_by_phq9[phq9].append(score)
+        if n_unparsed:
+            print(f"  [teacher] {n_unparsed}/{len(pending)} ratings could not be parsed (excluded from mean)")
 
     final_scores = [s for s in scores if s is not None]
     per_phq9 = {
@@ -1306,9 +1309,9 @@ def call_optimizer_tweets(
     seed: int = 42,
     batch_size: int = 4,
     tweets_per_sample: int = 3,
-    max_instruction_words: int = 200,
+    max_instruction_words: int = 350,
     num_steps: int = None,
-    validate_every: int = 2,
+    validate_every: int = 1,
     val_sample_size: int = 8,
     test_sample_size: int = 50,
     max_chars: int = 240,
@@ -1416,7 +1419,7 @@ def call_optimizer_tweets(
         parameters=[instruction],
         constraints=[
             f"Keep the instruction under {max_instruction_words} words.",
-            "Do NOT repeat phrases or ideas already stated. Each sentence must add unique value.",
+            "Maintain a diverse set of concrete rules — preserve specific guidance (tone, format, content, interaction) even when rules sit alongside more general framing.",
             "Focus on tone/mood calibration, content diversity, and originality guidance within ### RULES ###.",
             "Do NOT include constraints, length limits, or output format: those are fixed elsewhere.",
             "Tone scales with PHQ-9: low → positive/upbeat, high → apathetic/irritable/overwhelmed/raw. High PHQ-9 negativity is correct — only prevent flattening all agents to the same tone.",
@@ -1490,6 +1493,9 @@ def call_optimizer_tweets(
             else:
                 context = []
 
+            predictions = []   # tg.Variables — kept so the backward graph stays
+                                # connected to `instruction` (severed if we build
+                                # `combined` from raw strings via tg.Variable).
             raw_tweets = []
             parsed_tweets = []
             for j in range(tweets_per_sample):
@@ -1503,6 +1509,7 @@ def call_optimizer_tweets(
                 )
                 pred = model(question)
                 pred.value = Agent.strip_model_thinking(pred.value)
+                predictions.append(pred)
                 raw_tweets.append(pred.value)
                 parsed = parse_tweet_answers(pred.value)
                 parsed_tweets.append(parsed)
@@ -1518,14 +1525,11 @@ def call_optimizer_tweets(
                     print(f"  tweet {j+1}: {raw}")
                     print(f"  parsed:  {parsed!r}")
 
-            # Combine all tweets into one Variable so the teacher rates the full set
-            # in a single backward call (one per tweet would just redundantly update
-            # the same instruction Variable).
-            combined = tg.Variable(
-                "\n".join(raw_tweets),
-                role_description="Set of generated posts for this sample (PHQ-9 and persona context)",
-                requires_grad=False,
-            )
+            # Combine via tg.sum so the backward graph stays connected:
+            # loss -> combined -> predictions -> instruction. Building `combined`
+            # from raw strings (tg.Variable("\n".join(raw_tweets), ...)) would
+            # detach the graph and make loss.backward() a silent no-op.
+            combined = tg.sum(predictions)
             loss_fn = tg.TextLoss(_make_loss_prompt_tweet_set(parsed_tweets, persona, phq9))
             loss = loss_fn(combined)
 
