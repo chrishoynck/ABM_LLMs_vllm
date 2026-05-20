@@ -46,17 +46,30 @@ class TestLLMs:
         # that acts as the "true" target sequence across questionnaires.
         
         self.client = None
+        self.api_model = None
         if self.deepseek:
-            self.setup_deepseek()
-        
+            self.setup_api_client()
 
-    def setup_deepseek(self):
+
+    def setup_api_client(self):
         """
-        Setup the DeepSeek client.
+        Set up the remote LLM client (xAI Grok, OpenAI-compatible API).
+
+        Configure via environment variables:
+            XAI_API_KEY      - required: your xAI API key (https://console.x.ai)
+            LLM_API_BASE_URL - base URL (default: https://api.x.ai/v1)
+            LLM_API_MODEL    - model name (default: grok-3)
         """
-        api_key = "sk-b6503fb67b2b44829ee430515b13b1e7"
-        base_url = "https://api.deepseek.com"
+        api_key = os.environ.get("XAI_API_KEY") or os.environ.get("LLM_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "No API key found. Set XAI_API_KEY (from https://console.x.ai) "
+                "to use the remote Grok API path."
+            )
+        base_url = os.environ.get("LLM_API_BASE_URL", "https://api.x.ai/v1")
+        self.api_model = os.environ.get("LLM_API_MODEL", "grok-3")
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        print(f"[API] Grok client ready: model={self.api_model} base_url={base_url}")
 
     def _prepare_prompts(self, tokenizer) -> list:
         """
@@ -120,18 +133,69 @@ class TestLLMs:
 
         return outputs
     
-    # async def _generate_outputs_deepseek(self, prompts, temp=1.0, top_p=1.0):
-    #     async def generate_outje(prompt):
-    #         response = await self.client.chat.completions.create(
-    #             model="deepseek-chat",
-    #             messages=prompt,
-    #             temperature=temp,
-    #             top_p=top_p,
-    #             seed=self.seed + self.iterations)
-    #         return response.choices[0].message.content
-    #     todos = [generate_outje(prompt) for prompt in prompts]
-    #     outputs = await asyncio.gather(*todos)
-    #     return outputs
+    async def _generate_outputs_api(self, prompts, temp=1.0, top_p=1.0,
+                                    phq9=False, max_concurrency=8):
+        """
+        Generate outputs via the remote LLM API (Grok, OpenAI-compatible).
+
+        Parameters
+        ----------
+        prompts : list[list[dict]]
+            One OpenAI-style message list per agent (built by _prepare_prompts
+            / phq9_questionnaire_prompt when self.deepseek is True).
+        phq9 : bool
+            True for the PHQ-9 questionnaire step, False for tweet generation.
+        max_concurrency : int
+            Cap on simultaneous in-flight requests (keeps within rate limits).
+
+        Returns
+        -------
+        list[str]
+            Generated text per prompt, aligned with `prompts`. Empty string
+            on permanent failure so a long run degrades instead of crashing.
+        """
+        if not prompts:
+            return []
+
+        if phq9:
+            gen_kwargs = dict(temperature=temp, top_p=top_p, max_tokens=1600)
+        else:
+            # Mirror the local vLLM tweet sampling: discourage repetition.
+            gen_kwargs = dict(temperature=0.7, top_p=0.8, max_tokens=800,
+                              presence_penalty=0.4, frequency_penalty=0.3)
+
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _one(idx, messages):
+            async with sem:
+                for attempt in range(6):
+                    try:
+                        resp = await self.client.chat.completions.create(
+                            model=self.api_model,
+                            messages=messages,
+                            seed=self.seed + self.iterations,
+                            **gen_kwargs,
+                        )
+                        return (resp.choices[0].message.content or "").strip()
+                    except Exception as exc:
+                        # Honour a server-provided retry delay if present,
+                        # otherwise back off exponentially (rate limits etc.).
+                        wait = min(60, 2 ** attempt)
+                        headers = getattr(getattr(exc, "response", None), "headers", None)
+                        if headers:
+                            try:
+                                wait = float(headers.get("retry-after", wait))
+                            except (TypeError, ValueError):
+                                pass
+                        print(f"[API] prompt {idx} failed (attempt {attempt + 1}/6): "
+                              f"{exc} - retrying in {wait:.0f}s")
+                        await asyncio.sleep(wait)
+                print(f"[API] prompt {idx} permanently failed; returning empty string")
+                return ""
+
+        return list(await asyncio.gather(
+            *(_one(i, m) for i, m in enumerate(prompts))
+        ))
     
     def _phq9_questionnaire(self, tokenizer, pipe, mistakes, check_point, temp, top_p):
         """
@@ -147,18 +211,26 @@ class TestLLMs:
         prompts = []
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(tokenizer, agent.tweethistory[-(check_point):], force_active=True)
-            templated = tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True, chat_template_kwargs={"enable_thinking": True}
-            )
-            prompts.append(templated)
-        
+            if self.deepseek:
+                prompts.append(prompt)
+            else:
+                templated = tokenizer.apply_chat_template(
+                    prompt, tokenize=False, add_generation_prompt=True, chat_template_kwargs={"enable_thinking": True}
+                )
+                prompts.append(templated)
+
         # inference with LLM
-        out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
+        if self.deepseek:
+            out = asyncio.run(
+                self._generate_outputs_api(prompts, temp=temp, top_p=top_p, phq9=True)
+            )
+        else:
+            out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
         # update well-being scores based on responses
         for agent, answer in zip(self.all_agents, out):
+            questionnaire_answers = answer if self.deepseek else answer.outputs[0].text.strip()
             if agent.ID < 10:
-                print(f"answer agent {agent.ID}: ", answer.outputs[0].text.strip(), "\n\n")
-            questionnaire_answers = answer.outputs[0].text.strip()
+                print(f"answer agent {agent.ID}: ", questionnaire_answers, "\n\n")
             sum_score = agent.parse_phq9_answers(questionnaire_answers)
 
             true_score, next_score = self._old_new_phq9(agent, new_phq9=True)
@@ -246,8 +318,9 @@ class TestLLMs:
         if not self.deepseek:
             out = self._generate_outputs(pipe, prompts)
         else:
-            out = None
-            # out = asyncio.run(self._generate_outputs_deepseek(prompts))
+            out = asyncio.run(
+                self._generate_outputs_api(prompts, temp=temp, top_p=top_p)
+            )
         t2 = time.perf_counter()
 
         # agents send out their tweets + state update + stats

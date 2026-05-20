@@ -3,8 +3,8 @@ import os
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import utils.metrics as metrics
-from utils.format_config import FC
+from . import metrics
+from .format_config import FC
 import pandas as pd
 
 def print_network(network, path="", filename="default.png", save=False):
@@ -1697,3 +1697,270 @@ def plot_phq9_neighbor_correlation(network, path="", filename="", save=False, sh
 
     _save_and_close(fig, save, path, filename, "phq9_neighbor_correlation", show_fig)
     return fig, ax, {"r": r, "p": p}
+
+
+# ── Prompt optimizer plots ────────────────────────────────────────────────────
+
+def _phq9_severity_color(phq9: int) -> str:
+    if phq9 >= 20: return "#8B0000"   # severe — dark red
+    if phq9 >= 15: return "#D73027"   # moderately severe — red
+    if phq9 >= 10: return "#FC8D59"   # moderate — orange
+    if phq9 >= 5:  return "#FEE090"   # mild — yellow
+    return "#91CF60"                   # minimal — green
+
+
+def plot_optimizer_trajectory(trajectory_csv: str, output_dir: str, title: str, mode: str = "tweets"):
+    """Line plot of train and validation scores over optimizer steps.
+
+    mode='tweets': higher mean_score (0-10) is better.
+    mode='phq9':   lower mean_score (MAE) is better.
+    """
+    df = pd.read_csv(trajectory_csv)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    palette = {"train": "#4292C6", "val": "#E6550D"}
+    labels  = {"train": "Train", "val": "Validation"}
+
+    for split in ["train", "val"]:
+        sub = df[df["split"] == split].sort_values("step")
+        if sub.empty:
+            continue
+        ax.plot(sub["step"], sub["mean_score"], marker="o", markersize=4,
+                color=palette[split], label=labels[split], linewidth=1.8)
+        ax.fill_between(
+            sub["step"],
+            sub["mean_score"] - sub["std_score"],
+            sub["mean_score"] + sub["std_score"],
+            color=palette[split], alpha=0.15,
+        )
+
+    ax.set_xlabel("Optimizer step")
+    if mode == "phq9":
+        ax.set_ylabel("MAE  (↓ better)")
+    else:
+        ax.set_ylabel("Quality score 0–10  (↑ better)")
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+
+    fig.tight_layout()
+    out = os.path.join(output_dir, "trajectory.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Trajectory plot → {out}")
+    return out
+
+
+def plot_test_scores_by_phq9(per_phq9: dict, output_dir: str, title: str, mode: str = "tweets"):
+    """Bar plot of test performance grouped by depression severity category.
+
+    per_phq9 keys are integer PHQ-9 values.
+    For tweets: values have key 'avg_score'.
+    For phq9:   values have key 'avg_mae'.
+    Bars show weighted mean per category; error bars show std across PHQ-9 averages.
+    """
+    from matplotlib.patches import Patch
+
+    score_key = "avg_score" if mode == "tweets" else "avg_mae"
+
+    categories = [
+        ("Minimal\n(0–4)",       range(0,  5),  "#91CF60"),
+        ("Mild\n(5–9)",          range(5, 10),  "#FEE090"),
+        ("Moderate\n(10–14)",    range(10, 15), "#FC8D59"),
+        ("Mod. severe\n(15–19)", range(15, 20), "#D73027"),
+        ("Severe\n(20–27)",      range(20, 28), "#8B0000"),
+    ]
+
+    labels, means, stds, totals, colors = [], [], [], [], []
+    for label, phq_range, color in categories:
+        vals, ns = [], []
+        for k in phq_range:
+            if k in per_phq9:
+                vals.append(per_phq9[k].get(score_key, 0.0))
+                ns.append(per_phq9[k].get("n_samples", 1))
+        if not vals:
+            continue
+        ns = np.array(ns, dtype=float)
+        vals = np.array(vals)
+        wmean = float(np.average(vals, weights=ns))
+        wstd  = float(np.sqrt(np.average((vals - wmean) ** 2, weights=ns)))
+        labels.append(label)
+        means.append(wmean)
+        stds.append(wstd)
+        totals.append(int(ns.sum()))
+        colors.append(color)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    x = np.arange(len(labels))
+    bars = ax.bar(x, means, color=colors, edgecolor="white", linewidth=0.8,
+                  yerr=stds, capsize=5, error_kw={"elinewidth": 1.5, "ecolor": "black"})
+
+    for bar, n in zip(bars, totals):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 0.5,
+                f"n={n}", ha="center", va="center", fontsize=9, color="black")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=10)
+    ax.set_xlabel("Depression severity")
+    if mode == "phq9":
+        ax.set_ylabel("MAE  (↓ better)")
+    else:
+        ax.set_ylabel("Quality score 0–10  (↑ better)")
+        ax.set_ylim(0, 10)
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.25)
+
+    fig.tight_layout()
+    out = os.path.join(output_dir, "test_by_phq9.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+
+
+_PROMPT_TYPE_META = {
+    "post_gen": {
+        "base_dir": "data/test_post/optimized_tweets",
+        "filename": "best_instruction_tweet.txt",
+    },
+    "phq9": {
+        "base_dir": "data/test_post/optimized_phq9",
+        "filename": "best_instruction_phq9.txt",
+    },
+}
+
+
+def load_best_prompts(model_name: str, seeds: list,
+                      prompt_type: str = "post_gen") -> list:
+    """Read the best instruction file for each seed run.
+
+    Expects folders named ``<model_name>_seed<seed>`` inside the appropriate
+    base directory (``optimized_tweets`` for post_gen, ``optimized_phq9`` for phq9).
+
+    Returns a list of prompt strings in seed order.
+    """
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    meta = _PROMPT_TYPE_META[prompt_type]
+    prompts = []
+    for seed in seeds:
+        path = os.path.join(meta["base_dir"], f"{model_name}_seed{seed}", meta["filename"])
+        with open(path) as f:
+            prompts.append(f.read().strip())
+    return prompts
+
+
+def load_test_scores(model_name: str, seeds: list,
+                     prompt_type: str = "post_gen") -> list:
+    """Read the final test-split mean_score from training_trajectory.csv for each seed.
+
+    Returns a list of floats in seed order.
+    """
+    import csv
+
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    base_dir = _PROMPT_TYPE_META[prompt_type]["base_dir"]
+    scores = []
+    for seed in seeds:
+        path = os.path.join(base_dir, f"{model_name}_seed{seed}", "training_trajectory.csv")
+        test_score = None
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["split"] == "test":
+                    test_score = float(row["mean_score"])
+        if test_score is None:
+            raise ValueError(f"No test split found in {path}")
+        scores.append(test_score)
+    return scores
+
+
+def plot_prompt_sensitivity(robustness: dict, model_name: str,
+                             prompt_type: str = "post_gen") -> None:
+    """Side-by-side prompt sensitivity figure saved to
+    ``<base_dir>/<model_name>/prompt_sensitivity_<prompt_type>.png``.
+
+    prompt_type: ``"post_gen"`` for post-generation prompt,
+                 ``"phq9"`` for PHQ-9 assessment prompt.
+
+    Left panel : N×N pairwise cosine similarity heatmap across optimised prompts.
+    Right panel: cosine distance from baseline vs. test score per run (omitted if
+                 robustness['baseline_distances'] is None).
+    """
+    import seaborn as sns
+
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+
+    type_label = "Post-Generation Prompt" if prompt_type == "post_gen" else "PHQ-9 Assessment Prompt"
+    suptitle = f"{model_name} – Prompt Sensitivity Analysis\n({type_label})"
+
+    sim = np.array(robustness["sim_matrix"])
+    labels = robustness["labels"]
+    has_baseline = robustness.get("baseline_distances") is not None
+    ncols = 2 if has_baseline else 1
+    n = len(labels)
+
+    heatmap_w = max(4.5, n * 0.9)
+    scatter_w = 5.0
+    fig_w = heatmap_w + scatter_w if has_baseline else heatmap_w
+    fig_h = max(4.0, n * 0.85)
+
+    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, fig_h),
+                              gridspec_kw={"width_ratios": [heatmap_w, scatter_w]} if has_baseline else None)
+    if ncols == 1:
+        axes = [axes]
+
+    # --- left: performance-coloured similarity heatmap ---
+    # Cell colour = mean test score of the two runs; annotation = cosine similarity.
+    test_scores_arr = np.array(robustness["test_scores"])
+    score_matrix = (test_scores_arr[:, None] + test_scores_arr[None, :]) / 2.0
+    score_range = score_matrix.max() - score_matrix.min()
+    vmin = score_matrix.min() - 0.05 * score_range
+    vmax = score_matrix.max() + 0.05 * score_range
+
+    # Build string annotation matrix: "score\n(sim)"
+    annot_matrix = np.empty((n, n), dtype=object)
+    for i in range(n):
+        for j in range(n):
+            annot_matrix[i, j] = f"{score_matrix[i, j]:.1f}\n({sim[i, j]:.2f})"
+
+    ax_heat = axes[0]
+    sns.heatmap(
+        score_matrix,
+        ax=ax_heat,
+        xticklabels=labels,
+        yticklabels=labels,
+        vmin=vmin,
+        vmax=vmax,
+        annot=annot_matrix,
+        fmt="",
+        cmap="RdYlGn",
+        linewidths=0.4,
+        linecolor="white",
+        cbar_kws={"label": "mean test score", "shrink": 0.8},
+    )
+    ax_heat.set_title("Pairwise prompt similarity\n(colour = mean test score, annotation = cosim)", fontsize=10)
+    ax_heat.tick_params(axis="x", rotation=45)
+    ax_heat.tick_params(axis="y", rotation=0)
+
+    # --- right: distance from baseline vs. test score ---
+    if has_baseline:
+        ax_sc = axes[1]
+        distances = robustness["baseline_distances"]
+        scores = robustness["test_scores"]
+        ax_sc.scatter(distances, scores, color="#4C72B0", s=70, zorder=3)
+        for d, s, lbl in zip(distances, scores, labels):
+            ax_sc.annotate(lbl, (d, s), textcoords="offset points", xytext=(6, 3), fontsize=8)
+        ax_sc.set_xlabel("Cosine distance from baseline prompt\n(↑ more different from initial)", fontsize=9)
+        ax_sc.set_ylabel("Test score", fontsize=9)
+        ax_sc.set_title("Prompt deviation vs. performance", fontsize=10)
+        ax_sc.grid(True, alpha=0.25)
+
+    fig.suptitle(suptitle, fontsize=12, fontweight="bold", y=1.03)
+    fig.tight_layout()
+    output_dir = os.path.join(_PROMPT_TYPE_META[prompt_type]["base_dir"], f"{model_name}_sensitivity")
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(output_dir, f"prompt_sensitivity_{prompt_type}.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)

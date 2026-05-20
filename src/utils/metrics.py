@@ -6,7 +6,7 @@ import networkx as nx
 from sentence_transformers import models
 from sentence_transformers import SentenceTransformer as sbert
 import umap
-from utils.format_config import FC
+from .format_config import FC
 
 def print_histories(network, file_dir, file_name, save=False):
     """
@@ -1038,11 +1038,51 @@ def all_agent__tweet_cd(network, window_size, shift=1):
         binary_sequence = [1 if tweet != FC.NO_CONTENT else 0 for tweet in history]
         
         variances, autocorrs = calculate_agent_cd(binary_sequence, window_size, shift)
-        
+
         cd_results[agent.ID] = {
             'variance': variances.tolist(),
             'autocorrelation': autocorrs.tolist()
         }
     return cd_results
+
+
+# ── Prompt robustness metrics ─────────────────────────────────────────────────
+
+def compute_prompt_robustness(prompts: list[str], test_scores: list[float],
+                               baseline_prompt: str = None,
+                               model_name: str = "all-MiniLM-L6-v2") -> dict:
+    """Compute pairwise cosine similarity and distance-from-baseline for optimised prompts.
+
+    Args:
+        prompts:         Optimised prompt strings (one per seed/run).
+        test_scores:     Corresponding test scores (same order as prompts).
+        baseline_prompt: Un-optimised starting prompt; if given, computes cosine
+                         distance from baseline for each optimised prompt.
+        model_name:      SBERT model for embedding.
+
+    Returns dict with keys:
+        'sim_matrix'         – (N, N) pairwise cosine similarity
+        'labels'             – ["run 1", "run 2", ...]
+        'test_scores'        – echo of input
+        'baseline_distances' – cosine distances from baseline, or None
+    """
+    model = generate_sbert_model(model_name=model_name)
+    embeddings = model.encode(prompts, convert_to_numpy=True, show_progress_bar=False)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / np.maximum(norms, 1e-10)
+    sim_matrix = (normed @ normed.T).astype(float)
+
+    baseline_distances = None
+    if baseline_prompt is not None:
+        base_emb = model.encode([baseline_prompt], convert_to_numpy=True, show_progress_bar=False)
+        base_norm = base_emb / np.maximum(np.linalg.norm(base_emb, keepdims=True), 1e-10)
+        baseline_distances = [float(1.0 - float(base_norm @ normed[i])) for i in range(len(prompts))]
+
+    return {
+        "sim_matrix": sim_matrix,
+        "labels": [f"run {i+1}" for i in range(len(prompts))],
+        "test_scores": list(test_scores),
+        "baseline_distances": baseline_distances,
+    }
 
 

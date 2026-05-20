@@ -1,6 +1,10 @@
 import numpy as np
-import utils.metrics as metrics
-from utils.format_config import FC
+try:
+    from ..utils import metrics
+    from ..utils.format_config import FC
+except ImportError:
+    from utils import metrics
+    from utils.format_config import FC
 import re
 import json
 

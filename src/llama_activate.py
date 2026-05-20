@@ -545,8 +545,12 @@ def _sanitize_model_name(model_id):
 
 
 def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
-    """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level tokenizer."""
-    tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
+    """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level
+    tokenizer; the remote API path (use_deepseek) needs no tokenizer at all."""
+    if use_deepseek:
+        tok = None
+    else:
+        tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
     
   
     temp = args.temp
@@ -664,14 +668,17 @@ def run_llm_tests(args):
         models_to_run = models
     results = {}
     for model_id in models_to_run:
+        pipe = None
+        tok = None
         for seed in args.seeds:
             args.seed = seed
             print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
-            if args.use_saved_network is not None:
+            # The remote API path (Grok) needs no local model or tokenizer.
+            if not use_deepseek and args.use_saved_network is not None:
                 if args.use_saved_network == -1:
                     tok = None
                     pipe = None
-                else: 
+                else:
                     tok = get_tokenizer(model_id)
                     pipe = get_llm(model_id=model_id)
             total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok, use_deepseek=use_deepseek)
