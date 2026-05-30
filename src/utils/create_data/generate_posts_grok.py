@@ -7,8 +7,8 @@ issues ONE request per block and asks Grok to produce all posts of a block
 (same persona, same PHQ-9) in a single completion. That keeps the persona +
 PHQ-9 context billed once per block instead of once per post.
 
-Output is written in the same CSV/TXT schema as
-`TestLLMs.export_tweets_with_phq9_txt`, so the result feeds straight into
+Output is written in the same CSV schema as
+`TestLLMs.export_tweets_with_phq9`, so the result feeds straight into
 `prompt_optimizer.parse_tweets_with_phq9_csv` / `train_val_test_split`.
 
 Each block is streamed to disk (with a flush) the moment it finishes, so an
@@ -19,7 +19,7 @@ extend the dataset. Block ids are seed-prefixed so reruns never collide.
 Usage
 -----
     export XAI_API_KEY=xai-...                # from https://console.x.ai
-    python -m utils.generate_posts_grok \
+    python -m utils.create_data.generate_posts_grok \
         --num-blocks 300 --posts-per-block 10 \
         --output data/grok_posts/posts_with_phq9.csv
     # interrupted? just run it again (same or different --seed) - it appends.
@@ -114,23 +114,43 @@ Generate {n_posts} posts now using the MANDATORY OUTPUT FORMAT."""
 _OUTPUT_FORMAT_MARKER = "### MANDATORY OUTPUT FORMAT ###"
 
 
-def build_batch_system_prompt(prompts_file, n_posts, max_chars):
+def build_batch_system_prompt(prompts_file, n_posts, max_chars, tweet_instruction=None):
     """Load `tweet_gen.system_forced` from `prompts_file` and adapt it to a
     batch request: keep the rules/constraints, replace the single-post output
     section with one that asks for `n_posts` enumerated posts.
+
+    When `tweet_instruction` is given (the optimised ### RULES ### block written
+    by prompt_optimizer), the original rules block is swapped for it before the
+    batch-format adapter runs — so Grok ends up using the optimised rules
+    inside its existing system-prompt structure.
     """
     with open(prompts_file, encoding="utf-8") as f:
         tweet_gen = json.load(f)["tweet_gen"]
 
     system_forced = tweet_gen["system_forced"].replace("{max_chars}", str(max_chars))
+
+    if tweet_instruction is not None:
+        rules_marker = "### RULES ###"
+        constraints_marker = "### CONSTRAINTS ###"
+        if rules_marker in system_forced and constraints_marker in system_forced:
+            intro, rest = system_forced.split(rules_marker, 1)
+            _old_rules, tail = rest.split(constraints_marker, 1)
+            opt = tweet_instruction.strip()
+            if not opt.startswith(rules_marker):
+                opt = f"{rules_marker}\n{opt}"
+            system_forced = (intro.rstrip() + "\n\n" + opt.rstrip()
+                             + "\n\n" + constraints_marker + tail)
+        else:
+            # No rules/constraints structure to splice into — use the optimised
+            # instruction as the whole pre-output-format prompt.
+            system_forced = tweet_instruction.strip()
+
     # Keep everything before the single-post output-format section.
     base = system_forced.split(_OUTPUT_FORMAT_MARKER)[0].rstrip()
 
     return (
         f"{base}\n\n"
-        f"### STYLE ###\n"
-        f"You may be harsh, dark, blunt, or overly enthusiastic! be UNFILTERED, direct and raw. Don't scare away of deeply depressive thoughts (when high PHQ-9) or raw emotion\n\n"
-        f"### TASK ###\n"
+        f"### POST-SET CONTEXT ###\n"
         f"You are writing {n_posts} separate posts that this SAME user published on "
         f"different days over the past two weeks. They all sit at the SAME well-being "
         f"level, but each post is a DIFFERENT, specific topic - do not reuse topics "
@@ -149,48 +169,28 @@ def build_batch_system_prompt(prompts_file, n_posts, max_chars):
     )
 
 
-# Matches the `tweet="..."` field of an export TXT line.
-_NEIGHBOR_TXT_RE = re.compile(r'tweet="(.*)"\s*$')
-# Matches a `=== Agent <id> ...` header in a TXT export.
-_NEIGHBOR_HDR_RE = re.compile(r'^\s*===\s*Agent\s+(\S+)\s')
-# Strips a leading "POST:" / "TWEET 3:" style prefix from a post.
 _PREFIX_RE = re.compile(r'^\s*(?:POST|TWEET)\s*#?\s*\d*\s*[:.)\-]\s*', re.IGNORECASE)
 
 
 def load_neighbor_pool(path):
-    """Load (agent_id, post_text) pairs from a tweets_with_phq9 file.
+    """Load (agent_id, post_text) pairs from a tweets_with_phq9 CSV.
 
-    Accepts either the CSV schema (`agent_id`, `tweet` columns) or the TXT
-    export format (`=== Agent <id> ...` headers followed by `step N: ...
-    tweet="..."` lines). Leading POST:/TWEET: prefixes and NO_POST
-    placeholders are removed. agent_ids are kept so the caller can format
-    neighbour posts as `@user_<id>: ...` for the model to reply to.
+    Reads the `agent_id` + `tweet` columns. Leading POST:/TWEET: prefixes and
+    NO_POST placeholders are stripped. agent_ids are kept so the caller can
+    format neighbour posts as `@user_<id>: ...` for the model to reply to.
     """
-    raw = []
-    if path.endswith(".csv"):
-        with open(path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                raw.append((
-                    (row.get("agent_id") or "").strip(),
-                    (row.get("tweet") or "").strip(),
-                ))
-    else:
-        current_id = ""
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                header = _NEIGHBOR_HDR_RE.match(line)
-                if header:
-                    current_id = header.group(1)
-                    continue
-                match = _NEIGHBOR_TXT_RE.search(line)
-                if match:
-                    raw.append((current_id, match.group(1).strip()))
-
+    if not path.endswith(".csv"):
+        raise ValueError(
+            f"neighbour pool must be a .csv (got {path}); legacy .txt support removed"
+        )
     pool = []
-    for agent_id, text in raw:
-        text = _PREFIX_RE.sub("", text).strip().strip('"').strip()
-        if text and text.upper() not in {"NO_POST", "NO_TWEET"}:
-            pool.append((agent_id, text))
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            agent_id = (row.get("agent_id") or "").strip()
+            text = (row.get("tweet") or "").strip()
+            text = _PREFIX_RE.sub("", text).strip().strip('"').strip()
+            if text and text.upper() not in {"NO_POST", "NO_TWEET"}:
+                pool.append((agent_id, text))
     return pool
 
 
@@ -211,13 +211,19 @@ class GrokPostGenerator:
     def __init__(self, personas, well_beings, num_blocks=300, posts_per_block=10,
                  seed=42, model=None, max_concurrency=8,
                  neighbor_pool=None, num_neighbors=12,
-                 prompts_file="data/prompts_post_minimal.json", max_chars=240):
+                 prompts_file="data/prompts_post_minimal.json", max_chars=240,
+                 tweet_instruction=None, phq9_assignments=None):
         if len(personas) < num_blocks:
             raise ValueError(
                 f"Need >= {num_blocks} personas, got {len(personas)}."
             )
         if not well_beings:
             raise ValueError("well_beings must be non-empty (used for agent age).")
+        if phq9_assignments is not None and len(phq9_assignments) < num_blocks:
+            raise ValueError(
+                f"phq9_assignments has {len(phq9_assignments)} entries but "
+                f"num_blocks={num_blocks} requested."
+            )
 
         self.num_blocks = num_blocks
         self.posts_per_block = posts_per_block
@@ -227,13 +233,19 @@ class GrokPostGenerator:
         self.well_beings = list(well_beings)
         self.neighbor_pool = list(neighbor_pool) if neighbor_pool else []
         self.num_neighbors = num_neighbors
+        self.phq9_assignments = (
+            [int(x) for x in phq9_assignments[:num_blocks]]
+            if phq9_assignments is not None else None
+        )
 
         self.model = model or os.environ.get("LLM_API_MODEL", "grok-4")
         self.client = self._setup_client()
 
-        # System prompt loaded from the prompt JSON, adapted to a batch request.
+        # System prompt loaded from the prompt JSON, adapted to a batch request;
+        # the optimised instruction (if any) is spliced in before the adapter.
         self.system_prompt = build_batch_system_prompt(
-            prompts_file, posts_per_block, max_chars
+            prompts_file, posts_per_block, max_chars,
+            tweet_instruction=tweet_instruction,
         )
 
         self.blocks = self._build_blocks()
@@ -256,12 +268,16 @@ class GrokPostGenerator:
     def _build_blocks(self):
         """Assign each block a distinct persona and a PHQ-9 score.
 
-        Scores 0-27 are cycled (round-robin) then shuffled, so coverage is
-        balanced and block order is not sorted by severity.
+        With `phq9_assignments` supplied, scores come from the file in order
+        (so every model run sees the same persona → PHQ-9 mapping). Otherwise
+        scores 0-27 are cycled then shuffled, balanced and unsorted.
         """
         rng = np.random.default_rng(self.seed)
-        scores = np.array([i % 28 for i in range(self.num_blocks)])
-        rng.shuffle(scores)
+        if self.phq9_assignments is not None:
+            scores = np.array(self.phq9_assignments, dtype=int)
+        else:
+            scores = np.array([i % 28 for i in range(self.num_blocks)])
+            rng.shuffle(scores)
 
         blocks = []
         for i in range(self.num_blocks):
@@ -388,8 +404,8 @@ class GrokPostGenerator:
         collide when appended to the same output file."""
         return f"{self.seed}_{block['agent_id']}"
 
-    def _write_block(self, writer, txt_f, block, posts):
-        """Append one finished block's rows to the open CSV and TXT files."""
+    def _write_block(self, writer, block, posts):
+        """Append one finished block's rows to the open CSV."""
         row_id = self._row_id(block)
 
         # Echo every generated post to stdout as the block is written.
@@ -403,21 +419,14 @@ class GrokPostGenerator:
             writer.writerow([row_id, block["persona"], block["age"],
                              step, block["phq9"], clean, False])
 
-        txt_f.write(f"=== Agent {row_id} persona: {block['persona']} "
-                    f"phq9: {block['phq9']} ===\n")
-        for step, post in enumerate(posts):
-            clean = post.replace("\n", " ").replace("\r", " ").strip()
-            txt_f.write(f'step {step}: phq9={block["phq9"]}  tweet="{clean}"\n')
-        txt_f.write("\n")
-
     def generate(self, csv_path):
         """Generate every block, streaming each to disk as soon as it finishes.
 
-        Rows are flushed to `csv_path` (+ a `.txt` sibling) after every block,
-        so an interrupted run - rate-limit exhaustion, a kill, a crash - keeps
-        every block completed so far. Existing files are APPENDED to: rerun
-        (e.g. with a different --seed) to extend the dataset. Block ids are
-        seed-prefixed so reruns never collide.
+        Rows are flushed to `csv_path` after every block, so an interrupted
+        run - rate-limit exhaustion, a kill, a crash - keeps every block
+        completed so far. The file is APPENDED to: rerun (e.g. with a
+        different --seed) to extend the dataset. Block ids are seed-prefixed
+        so reruns never collide.
 
         Returns self.results (the blocks written this run).
         """
@@ -426,9 +435,7 @@ class GrokPostGenerator:
 
     async def _generate_streaming(self, csv_path):
         os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-        txt_path = csv_path.replace(".csv", ".txt")
         csv_is_new = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
-        txt_is_new = not os.path.exists(txt_path) or os.path.getsize(txt_path) == 0
 
         t0 = time.perf_counter()
         self.results = []
@@ -438,17 +445,12 @@ class GrokPostGenerator:
 
         # Append mode: a rerun extends the file instead of overwriting it.
         csv_f = open(csv_path, "a", newline="", encoding="utf-8")
-        txt_f = open(txt_path, "a", encoding="utf-8")
         try:
             writer = csv.writer(csv_f)
             if csv_is_new:
                 writer.writerow(["agent_id", "persona", "age", "step",
                                  "phq9", "tweet", "interaction"])
-            if txt_is_new:
-                txt_f.write(f"model_name: {self.model}\n"
-                            f"posts_per_block: {self.posts_per_block}\n\n")
             csv_f.flush()
-            txt_f.flush()
 
             sem = asyncio.Semaphore(self.max_concurrency)
             tasks = [asyncio.create_task(self._generate_block(sem, b))
@@ -462,9 +464,8 @@ class GrokPostGenerator:
                 if len(posts) < 2:  # parse_tweets_with_phq9_csv needs > 1 post
                     dropped += 1
                     continue
-                self._write_block(writer, txt_f, block, posts)
+                self._write_block(writer, block, posts)
                 csv_f.flush()
-                txt_f.flush()
                 self.results.append({
                     "agent_id": self._row_id(block),
                     "persona": block["persona"],
@@ -477,7 +478,6 @@ class GrokPostGenerator:
                           f"({len(self.results)} written, {dropped} dropped)")
         finally:
             csv_f.close()
-            txt_f.close()
 
         elapsed = time.perf_counter() - t0
         total_posts = sum(len(r["posts"]) for r in self.results)
@@ -500,42 +500,83 @@ def main():
     parser.add_argument("--concurrency", type=int, default=8,
                         help="Max simultaneous API requests (mind rate limits).")
     parser.add_argument("--personas-file", default="data/personas_short_10k.csv")
-    parser.add_argument("--phq9-file", default="data/confidential/phq9.sav",
-                        help="Real PHQ-9 survey file - used only for agent age.")
-    parser.add_argument(
-        "--neighbor-source",
-        default="data/test/Qwen_Qwen3-4B-Instruct-2507/temp_0.8_top_p_0.6_cp_10/tweets_with_phq9.txt",
-        help="tweets_with_phq9 file (.csv or .txt) to sample neighbor posts from.")
     parser.add_argument("--num-neighbors", type=int, default=12,
-                        help="Feed posts shown as context per block; the model picks "
-                             "which to react to across its posts (0 to disable).")
-    parser.add_argument("--prompts-file", default="data/prompts_post_minimal.json",
-                        help="Prompt JSON; tweet_gen.system_forced is adapted to batch.")
-    parser.add_argument("--max-chars", type=int, default=240,
-                        help="Approx character budget per post (fills {max_chars}).")
+                        help="Feed posts shown as context per block (0 to disable).")
     parser.add_argument("--output", default="data/grok_posts/posts_with_phq9.csv")
+    parser.add_argument(
+        "--persona-pool", default="data/personas_eval_1000.csv",
+        help="Shared eval-persona file; built on first call if missing. "
+             "Pass '' to bypass and use the legacy --personas-file sampling.",
+    )
+    parser.add_argument(
+        "--persona-phq9-file", default=None,
+        help="CSV with `persona` + `phq9` columns (built by "
+             "utils.tools.build_persona_phq9_eval). When set, both personas and "
+             "PHQ-9 scores come from this file in order.",
+    )
+    parser.add_argument(
+        "--tweet-instruction-file", default=None,
+        help="Path to best_instruction_tweet.txt from a prompt_optimizer tweet "
+             "run. When set, the optimised ### RULES ### block is spliced into "
+             "the system prompt before Grok's batch-output adapter runs.",
+    )
     args = parser.parse_args()
+
+    # Hardcoded defaults (previously CLI flags; restore as args if you need to override).
+    PHQ9_FILE = "data/confidential/phq9.sav"
+    NEIGHBOR_SOURCE = "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter/seed_75/tweets_with_phq9.csv"
+    PROMPTS_FILE = "data/prompts_post_minimal.json"
+    MAX_CHARS = 240
 
     # Imported lazily so the GrokPostGenerator class can be used without pandas.
     try:
-        import utils.load_personas as lp
+        import utils.tools.load_personas as lp
     except ImportError:  # allow running from inside src/utils
-        from . import load_personas as lp
+        from ..tools import load_personas as lp
 
-    personas = lp.load_personas_from_file(
-        args.personas_file, personass_to_load=args.num_blocks, seed=args.seed
-    )
+    phq9_assignments = None
+    if args.persona_phq9_file:
+        import pandas as pd
+        df_pp = pd.read_csv(args.persona_phq9_file)
+        if len(df_pp) < args.num_blocks:
+            raise ValueError(
+                f"--persona-phq9-file has {len(df_pp)} rows but "
+                f"--num-blocks={args.num_blocks} requested."
+            )
+        personas = df_pp["persona"].head(args.num_blocks).tolist()
+        phq9_assignments = df_pp["phq9"].head(args.num_blocks).astype(int).tolist()
+        print(f"[persona-phq9] using {args.num_blocks} pairs from {args.persona_phq9_file}")
+    elif args.persona_pool:
+        personas = lp.load_or_build_persona_pool(
+            n_needed=args.num_blocks,
+            pool_path=args.persona_pool,
+            source=args.personas_file,
+        )
+    else:
+        personas = lp.load_personas_from_file(
+            args.personas_file, personass_to_load=args.num_blocks, seed=args.seed
+        )
+
+    tweet_instruction = None
+    if args.tweet_instruction_file:
+        try:
+            from utils.create_data.test_phq9_llms import load_instruction_file
+        except ImportError:
+            from .test_phq9_llms import load_instruction_file
+        tweet_instruction = load_instruction_file(args.tweet_instruction_file)
+        print(f"[align] system prompt uses optimised instruction from "
+              f"{args.tweet_instruction_file} ({len(tweet_instruction.split())} words)")
     # Only `age` is taken from this; loading fewer rows than blocks is fine
     # (ages are cycled). 28 covers every PHQ-9 score at least once.
     well_beings = lp.load_phq9(
-        args.phq9_file, personass_to_load=max(28, args.num_blocks // 4),
+        PHQ9_FILE, personass_to_load=max(28, args.num_blocks // 4),
         seed=args.seed,
     )
 
     neighbor_pool = []
     if args.num_neighbors > 0:
-        neighbor_pool = load_neighbor_pool(args.neighbor_source)
-        print(f"Loaded {len(neighbor_pool)} neighbor posts from {args.neighbor_source}")
+        neighbor_pool = load_neighbor_pool(NEIGHBOR_SOURCE)
+        print(f"Loaded {len(neighbor_pool)} neighbor posts from {NEIGHBOR_SOURCE}")
 
     generator = GrokPostGenerator(
         personas=personas,
@@ -547,8 +588,10 @@ def main():
         max_concurrency=args.concurrency,
         neighbor_pool=neighbor_pool,
         num_neighbors=args.num_neighbors,
-        prompts_file=args.prompts_file,
-        max_chars=args.max_chars,
+        prompts_file=PROMPTS_FILE,
+        max_chars=MAX_CHARS,
+        tweet_instruction=tweet_instruction,
+        phq9_assignments=phq9_assignments,
     )
     # Streams each block to args.output as it finishes; appends if the file
     # already exists, so a rerun (e.g. different --seed) extends the dataset.

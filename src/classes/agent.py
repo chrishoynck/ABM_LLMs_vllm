@@ -1,10 +1,10 @@
 import numpy as np
 try:
     from ..utils import metrics
-    from ..utils.format_config import FC
+    from ..utils.tools.format_config import FC
 except ImportError:
     from utils import metrics
-    from utils.format_config import FC
+    from utils.tools.format_config import FC
 import re
 import json
 

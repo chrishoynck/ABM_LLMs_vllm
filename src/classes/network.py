@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from classes.agent import Agent
-from utils.format_config import FC
+from utils.tools.format_config import FC
 from scipy.spatial.distance import cdist
 from powerlaw import Fit
 
@@ -19,18 +19,35 @@ class _Network:
     The network can be updated by responding to news intensities and adjusting the network accordingly.    
     """
 
-    def __init__(self, num_agents=200, 
-                 directed=False, 
-                 seed=None, 
-                 well_being = None, 
-                 personas = None, 
-                 state="basis"):
+    def __init__(self, num_agents=200,
+                 directed=False,
+                 seed=None,
+                 well_being = None,
+                 personas = None,
+                 state="basis",
+                 phq9_mode="llm",
+                 bert_regressor=None,
+                 bert_encoder=None,
+                 bert_regressor_path=None,
+                 bert_mentalbert=True,
+                 bert_device=None):
         """
         Initialize the network with a specified number of agents, mean, correlation, update fraction, and seed.
 
         Args:
             num_agents (int): The number of agents in the network.
             seed (int): The seed for the random number generator.
+            phq9_mode (str): "llm" (default) routes PHQ-9 scoring through the LLM
+                pipe + tokenizer. "bert" encodes each agent's recent tweets with a
+                MentalBERT/SBERT encoder and feeds the centroid (mean ∥ max ∥ std)
+                through a pretrained MLP regressor instead. Tweet generation is
+                unaffected and still uses the LLM in both modes.
+            bert_regressor: pre-loaded neural_net_BERT (overrides bert_regressor_path).
+            bert_encoder: pre-loaded SentenceTransformer (overrides bert_mentalbert).
+            bert_regressor_path: path to a regressor saved via torch.save(model, ...)
+                by train_BERT_model (e.g. data/test_post/bert_regression/{model}_seed{s}/regressor.pt).
+            bert_mentalbert: if no encoder is passed, controls which SBERT variant is loaded.
+            bert_device: torch device for the BERT components; defaults to CUDA if available.
 
         Attributes:
             iterations (int): The number of iterations the network has been updated.
@@ -55,11 +72,58 @@ class _Network:
         self.well_being = self.rng.permutation(well_being) if well_being is not None else [None]*num_agents
 
         # create agents
-        self.all_agents = [Agent(i, rng=np.random.default_rng(seed + i), persona=personas[i], 
+        self.all_agents = [Agent(i, rng=np.random.default_rng(seed + i), persona=personas[i],
                               well_being=self.well_being[i]) for i in range(int(num_agents))]
         self.connections = set()
         self.cds_info = []
         self.agent_w_highest_deg = self.all_agents[0] # placeholder
+
+        if phq9_mode not in ("llm", "bert"):
+            raise ValueError(f"phq9_mode must be 'llm' or 'bert', got {phq9_mode!r}")
+        self.phq9_mode = phq9_mode
+        self.bert_regressor = None
+        self.bert_encoder = None
+        self.bert_device = None
+        self.bert_mentalbert = bert_mentalbert
+        if phq9_mode == "bert":
+            self._init_bert_components(
+                bert_regressor=bert_regressor,
+                bert_encoder=bert_encoder,
+                bert_regressor_path=bert_regressor_path,
+                bert_mentalbert=bert_mentalbert,
+                bert_device=bert_device,
+            )
+
+    def _init_bert_components(self, bert_regressor, bert_encoder,
+                              bert_regressor_path, bert_mentalbert, bert_device):
+        """Lazily load the BERT regressor + sentence encoder used by phq9_mode='bert'.
+
+        Heavy deps (sentence-transformers, the saved regressor module) are only
+        imported / loaded when the BERT path is actually requested so the LLM
+        path stays free of those imports.
+        """
+        if bert_device is None:
+            bert_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.bert_device = bert_device
+
+        if bert_regressor is None:
+            if bert_regressor_path is None:
+                raise ValueError(
+                    "phq9_mode='bert' requires either bert_regressor or bert_regressor_path"
+                )
+            print(f"[network] loading BERT regressor from {bert_regressor_path}")
+            # neural_net_BERT must be importable to unpickle the saved module.
+            from utils.prompt_optimizer import neural_net_BERT  # noqa: F401
+            bert_regressor = torch.load(
+                bert_regressor_path, map_location=bert_device, weights_only=False,
+            )
+        self.bert_regressor = bert_regressor.to(bert_device).eval()
+
+        if bert_encoder is None:
+            from utils.metrics import generate_sbert_model
+            print(f"[network] loading BERT encoder (mentalbert={bert_mentalbert})")
+            bert_encoder = generate_sbert_model(mentalbert=bert_mentalbert)
+        self.bert_encoder = bert_encoder.to(bert_device)
       
 
     def add_connection(self, agent1, agent2):
@@ -202,17 +266,27 @@ class _Network:
     def _phq9_questionnaire(self, tokenizer, pipe, check_point=20,
                             agents=None, cap_phq9=False, phq9_threshold=0):
         """
-        Have agents complete the PHQ-9 questionnaire via LLM and update their well-being scores.
+        Have agents complete the PHQ-9 questionnaire and update their well-being scores.
+
+        Dispatches to either the LLM-based questionnaire (default) or the BERT+MLP
+        regressor depending on `self.phq9_mode`.
 
         Args:
-            tokenizer: The tokenizer for the LLM.
-            pipe: The LLM pipeline for generating responses.
+            tokenizer: The tokenizer for the LLM (ignored when phq9_mode='bert').
+            pipe: The LLM pipeline for generating responses (ignored when phq9_mode='bert').
             check_point: Number of recent tweets to include as context.
             agents: Subset of agents to test. Defaults to all agents.
             cap_phq9: If True, clamp score changes to ±1 per update.
             phq9_threshold: Minimum absolute score difference required
                             before the change is applied (0 = always apply).
         """
+        if self.phq9_mode == "bert":
+            self._phq9_questionnaire_bert(
+                check_point=check_point, agents=agents,
+                cap_phq9=cap_phq9, phq9_threshold=phq9_threshold,
+            )
+            return
+
         if agents is None:
             agents = self.all_agents
 
@@ -233,6 +307,65 @@ class _Network:
         for agent, answer in zip(agents, out):
             questionnaire_answers = answer.outputs[0].text.strip()
             new_score = agent.parse_phq9_answers(questionnaire_answers)
+            old_score = (agent.well_being.get("phq9_sumscore", 0)
+                         if agent.well_being else 0)
+            diff = new_score - old_score
+
+            if phq9_threshold > 0 and abs(diff) < phq9_threshold:
+                continue
+
+            if cap_phq9:
+                diff = max(-1, min(1, diff))
+                new_score = old_score + diff
+
+            agent.update_well_being(new_score)
+
+    def _phq9_questionnaire_bert(self, check_point=20, agents=None,
+                                 cap_phq9=False, phq9_threshold=0):
+        """BERT+MLP variant of `_phq9_questionnaire`.
+
+        For each agent, take the last `check_point` non-empty tweets, encode them
+        with `self.bert_encoder`, build the (mean ∥ max ∥ std) centroid that the
+        regressor was trained on (see prompt_optimizer.setup_BERT_model), run the
+        MLP, and apply the same threshold + cap update policy as the LLM path.
+
+        Agents with zero usable tweets in the window are skipped — there is no
+        signal to score them from.
+        """
+        if agents is None:
+            agents = self.all_agents
+
+        valid_agents = []
+        blocks = []
+        for agent in agents:
+            recent = [t for t in agent.tweethistory[-check_point:]
+                      if t and t != FC.NO_CONTENT]
+            if not recent:
+                continue
+            valid_agents.append(agent)
+            blocks.append(recent)
+
+        if not valid_agents:
+            return
+
+        centroids = []
+        for block in blocks:
+            embeddings = self.bert_encoder.encode(block, convert_to_tensor=True).to(self.bert_device)
+            mean_v = embeddings.mean(dim=0)
+            max_v = embeddings.max(dim=0)[0]
+            var_emb = embeddings.var(dim=0)
+            if torch.isnan(var_emb).any():
+                var_emb = torch.zeros_like(var_emb)
+            std_v = torch.sqrt(var_emb + 1e-8)
+            centroids.append(torch.cat([mean_v, max_v, std_v], dim=0))
+
+        batch = torch.stack(centroids).to(self.bert_device)
+        with torch.no_grad():
+            preds = self.bert_regressor(batch).squeeze(-1).cpu().numpy()
+
+        for agent, pred in zip(valid_agents, preds):
+            new_score = int(round(float(pred)))
+            new_score = max(0, min(27, new_score))
             old_score = (agent.well_being.get("phq9_sumscore", 0)
                          if agent.well_being else 0)
             diff = new_score - old_score

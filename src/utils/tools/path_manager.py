@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from utils.format_config import FC
+from utils.tools.format_config import FC
 
 class PathManager:
     def __init__(self, args=None, network=None):
@@ -157,8 +157,8 @@ class TestPathManager:
         return path
 
     def get_tweets_path(self):
-        """Path for the tweets-with-PHQ-9 text file (per-seed)."""
-        return self.get_run_directory(is_plot=False) / "tweets_with_phq9.txt"
+        """Path for the per-agent tweets-with-PHQ-9 CSV (per-seed)."""
+        return self.get_run_directory(is_plot=False) / "tweets_with_phq9.csv"
 
     def get_results_csv_path(self):
         """Path to the shared results CSV."""

@@ -4,17 +4,17 @@ import gc
 import os, torch
 import sys, argparse, time
 import numpy as np
+import pandas as pd
 import inspect
 from vllm import LLM, SamplingParams
 import utils.metrics as metrics
-from utils.path_manager import PathManager, TestPathManager
-from utils.format_config import FC
+from utils.tools.path_manager import PathManager, TestPathManager
+from utils.tools.format_config import FC
 from classes.network import RandomNetwork,  SocialDistanceAttachment #, ScaleFreeNetwork,
-import utils.load_personas as lp
+import utils.tools.load_personas as lp
 import utils.visualization as vis
-import utils.reading_in as ri
+import utils.tools.reading_in as ri
 import warnings
-from utils.test_phq9_llms import TestLLMs
 
 
 # Suppress the specific ChainedAssignmentError warning from pandas
@@ -42,7 +42,7 @@ models = [ "Qwen/Qwen3-4B-Instruct-2507",
             "meta-llama/Llama-3.3-70B-Instruct", 
             "Qwen/Qwen3.5-27B" ]
 
-# Short names for --test_llms_model (optional; full HuggingFace IDs also work)
+# Short HF aliases (full HuggingFace IDs also work).
 MODEL_ALIASES = {
     "qwen397": "Qwen/Qwen3.5-397B-A17B", 
     "qwen27": "Qwen/Qwen3.5-27B",
@@ -51,8 +51,7 @@ MODEL_ALIASES = {
     "mistral7": "mistralai/Mistral-7B-Instruct-v0.3",
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
     "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
-    "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b", 
-    "deepseek": "deepseek"
+    "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
 }
 
 DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
@@ -167,17 +166,8 @@ def generate_parser():
     parser.add_argument("--seeds", nargs="+", type=int, default=[42], help="List of seeds to run (e.g., --seeds 42 43 44)")
     parser.add_argument("--directed", action="store_true", help="Whether the network is directed")
 
-    #test args
-    parser.add_argument("--test_llms", action="store_true", help="Test LLMs on PHQ-9 questionnaire")
-    parser.add_argument("--test_llms_model", type=str, default=None, metavar="MODEL", help="With --test_llms: run only this model. Use short alias (qwen4, qwen14, gemma12, llama8, mistral7) or full HuggingFace ID. If omitted, test all models.")
-    parser.add_argument("--interaction", action="store_true", help="Whether to test LLMs on interaction")
+    parser.add_argument("--check_point", type=int, default=10, help="PHQ-9 update cadence")
 
-    parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling parameter for LLM")
-    parser.add_argument("--temp", type=float, default=1.0, help="Temperature sampling parameter for LLM")
-    parser.add_argument("--check_point", type=int, default=10, help="Checkpoint for PHQ-9 questionnaire")
-    
-    # Scale-free specific
-    # parser.add_argument("--m", type=int, default=2, help="Edges per new node (scale-free)")
 
     # Random network specific
     parser.add_argument("--p", type=float, default=0.5, help="Edge probability (random network)")
@@ -215,11 +205,12 @@ def generate_parser():
                             "If provided with an integer, run that many extra rounds."
                         ))
 
-    parser.add_argument("--log", 
+    parser.add_argument("--log",
                         nargs="?",
-                        const=30, 
+                        const=30,
                         type =int,
                         help="Log network state every N iterations (default: 30)")
+
     return parser.parse_args()
 
 
@@ -539,161 +530,6 @@ def main(args, pipe, states):
             })
     return all_networks_results
 
-def _sanitize_model_name(model_id):
-    """Sanitize model ID for use in file paths (e.g. 'org/name-1.0' -> 'org_name-1.0')."""
-    return model_id.replace("/", "_").replace("\\", "_")
-
-
-def test_llms(args, pipe, model_name, tokenizer=None, use_deepseek=False):
-    """Run PHQ-9 test for one model. If tokenizer is None, uses the module-level
-    tokenizer; the remote API path (use_deepseek) needs no tokenizer at all."""
-    if use_deepseek:
-        tok = None
-    else:
-        tok = tokenizer if tokenizer is not None else globals()["tokenizer"]
-    
-  
-    temp = args.temp
-    top_p = args.top_p
-    test_performance = False
-    checkpoint = args.check_point
-    rounds = checkpoint * 28
-    checkpoint_every = checkpoint
-    time_info = True
-
-    well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
-    personas = lp.load_personas_from_file("data/personas_short_10k.csv", args.num_agents, seed=args.seed)
-
-    for i in range(len(well_being)):
-        well_being[i]["phq9_sumscore"] = 0
-
-    if args.interaction: 
-        network = build_network(args, 
-                            well_being=well_being, 
-                            personas=personas, 
-                            depressed_personas=None)
-        agentjes = network.all_agents
-    else:
-        agentjes = None
-    
-    tpm = TestPathManager(model_name, temp, top_p, checkpoint, seed=args.seed, interaction=args.interaction)
-    if args.use_saved_network is not None:
-        
-        tester, mistake_dict = TestLLMs.load_checkpoint(tpm.get_run_directory(is_plot=False) / "checkpoint.json")
-        if args.use_saved_network == -1:
-            print("Not continuing, reading out the data to csv")
-            rounds = tester.iterations
-
-    else:
-        tester = TestLLMs(
-            well_being=well_being,
-            num_agents=args.num_agents,
-            seed=args.seed,
-            personas=personas,
-            deepseek=use_deepseek,
-            agents=agentjes,
-            interaction=args.interaction,
-        )
-        mistake_dict = None
-
-    
-    
-    data_dir = f"data/test{FC.DIR_SUFFIX}/"
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    
-    if use_deepseek:
-        model_name = "deepseek"
-
-    all_bias, bias_per_phq9, mae_per_phq9, total_mae = tester.run_simulation(
-        tokenizer=tok,
-        pipe=pipe,
-        n_rounds=rounds,
-        check_point=checkpoint,
-        temp=temp,
-        top_p=top_p,
-        model_name=model_name,
-        time_info=time_info,
-        mistake_dict=mistake_dict,
-        test_performance=test_performance,
-        checkpoint_every=checkpoint_every,
-    )
-
-    # Build paths via TestPathManager
-    
-    # Export tweets with PHQ-9 to text file
-    tester.export_tweets_with_phq9_txt(
-        file_path=str(tpm.get_tweets_path()),
-        check_point=checkpoint,
-        temp=temp,
-        top_p=top_p,
-        model_name=model_name,
-        interaction=args.interaction,
-    )
-
-    # Per-seed bias & error plots
-    run_plot_dir = str(tpm.get_run_directory(is_plot=True))
-    if test_performance:
-        vis.plot_bias(bias_per_phq9, all_bias, run_plot_dir)
-        vis.plot_phq9_error(mae_per_phq9, total_mae, run_plot_dir)
-
-
-        # Combined plots across all seeds (in parent dir)
-        agg_plot_dir = str(tpm.get_aggregate_directory(is_plot=True))
-        vis.plot_combined_bias_error(
-            csv_path=str(tpm.get_results_csv_path()),
-            model_name=model_name,
-            temp=temp,
-            top_p=top_p,
-            check_point=checkpoint,
-            directory=agg_plot_dir,
-        )
-
-    
-    return total_mae, mae_per_phq9
-
-
-def run_llm_tests(args):
-    """Run PHQ-9 tests for one model (--test_llms_model) or all models; prints summary and exits."""
-    if args.test_llms_model:
-        model_id = MODEL_ALIASES.get(args.test_llms_model.strip().lower(), args.test_llms_model.strip())
-        models_to_run = [model_id]
-        if model_id == "deepseek":
-            use_deepseek = True
-            models_to_run = [MODEL_ALIASES.get("llama8")]
-        else:
-            use_deepseek = False
-        print(f"Testing single model (--test_llms_model): {model_id}")
-    else:
-        models_to_run = models
-    results = {}
-    for model_id in models_to_run:
-        pipe = None
-        tok = None
-        for seed in args.seeds:
-            args.seed = seed
-            print(f"\n{'='*50}\nTesting model: {model_id}\n{'='*50}")
-            # The remote API path (Grok) needs no local model or tokenizer.
-            if not use_deepseek and args.use_saved_network is not None:
-                if args.use_saved_network == -1:
-                    tok = None
-                    pipe = None
-                else:
-                    tok = get_tokenizer(model_id)
-                    pipe = get_llm(model_id=model_id)
-            total_mae, mae_per_phq9 = test_llms(args, pipe, model_id, tokenizer=tok, use_deepseek=use_deepseek)
-            results[(model_id, seed)] = {"total_mae": total_mae, "mae_per_phq9": mae_per_phq9}
-        del pipe
-        gc.collect()
-        torch.cuda.empty_cache()
-    print("\nTest summary (total PHQ-9 MAE per model; lower is better):")
-    for (mid, seed), res in results.items():
-        mae = res['total_mae']
-        print(f"  {mid}: {seed}: {mae:.4f}" if mae is not None else f"  {mid}: {seed}: N/A")
-    if len(models_to_run) > 1: #FIX THAT THIS ONLY HAPPENS IF PERFORMANCE IS TESTED. 
-        vis.plot_model_comparison_by_settings(csv_path=f"data/test{FC.DIR_SUFFIX}/results.csv", directory=f"plots/test{FC.DIR_SUFFIX}", save=args.save)
-    sys.exit(0)
-
 
 if __name__ == "__main__":
 
@@ -705,9 +541,6 @@ if __name__ == "__main__":
         states = ["enforced_ngrams"]
     else:
         states = ["basis"]
-
-    if args.test_llms:
-        run_llm_tests(args)
 
     # Main simulation: load default model once
     pipe = get_llm()

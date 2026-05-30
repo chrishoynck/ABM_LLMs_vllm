@@ -5,13 +5,13 @@ A checkpoint written by ``write_out_tester`` already contains every agent's
 full tweet history and PHQ-9 sum-score series, so the CSV can be built straight
 from the JSON - no LLM/tokenizer load and no TestLLMs reconstruction needed.
 
-The CSV columns mirror TestLLMs.export_tweets_with_phq9_txt:
+The CSV columns mirror TestLLMs.export_tweets_with_phq9:
     agent_id, persona, age, step, phq9, tweet, interaction
 
 Usage
 -----
-    python src/utils/checkpoint_to_csv.py            # default: seeds 75 & 83, no_inter
-    python src/utils/checkpoint_to_csv.py path/to/checkpoint.json [more.json ...]
+    python src/utils/tools/checkpoint_to_csv.py            # default: seeds 75 & 83, no_inter
+    python src/utils/tools/checkpoint_to_csv.py path/to/checkpoint.json [more.json ...]
 """
 
 import csv

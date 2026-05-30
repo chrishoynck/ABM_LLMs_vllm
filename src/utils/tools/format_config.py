@@ -5,17 +5,17 @@ class _FormatConfig:
     """
     Central configuration for tweet vs. post format mode.
 
-    Set the environment variable  ABM_FORMAT=post  to switch the entire
-    simulation from "tweet" terminology to "post" terminology.
-    Default (unset or "tweet") keeps the original tweet behaviour.
+    Default mode is "post" (matches data/prompts_post_minimal.json which asks
+    the model for POST: <content>). Set ABM_FORMAT=tweet to revert to the
+    legacy "tweet" terminology used by older prompt JSONs.
 
     Usage in other modules:
-        from utils.format_config import FC
+        from utils.tools.format_config import FC
         ...
-        if raw == FC.NO_CONTENT:   # "NO_TWEET" or "NO_POST"
+        if raw == FC.NO_CONTENT:   # "NO_POST" or "NO_TWEET"
     """
     def __init__(self):
-        mode = os.environ.get("ABM_FORMAT", "tweet").strip().lower()
+        mode = os.environ.get("ABM_FORMAT", "post").strip().lower()
         if mode not in ("tweet", "post"):
             raise ValueError(
                 f"ABM_FORMAT must be 'tweet' or 'post', got '{mode}'"
@@ -38,9 +38,7 @@ class _FormatConfig:
         self.Label_plural = "Posts" if self.is_post else "Tweets"
 
         # Which prompt JSON to load
-        self.PROMPTS_FILE = (
-            "data/prompts_post.json" if self.is_post else "data/prompts.json"    #Experimenting with Gemini prompts
-        )
+        self.PROMPTS_FILE = "data/prompts_post_minimal.json"
 
         # Suffix appended to data / plot base directories
         self.DIR_SUFFIX = "_post" if self.is_post else ""

@@ -1,4 +1,6 @@
 import os
+import shutil
+import datetime
 import logging
 logging.getLogger("textgrad").setLevel(logging.WARNING)
 
@@ -10,6 +12,7 @@ from textgrad.optimizer.optimizer_prompts import GLOSSARY_TEXT
 from vllm import SamplingParams
 import json
 import numpy as np
+import pandas as pd
 import re
 import csv
 import torch
@@ -18,10 +21,15 @@ import torch.nn as nn
 import copy
 import torch.optim as optim
 from .metrics import *
-from .format_config import FC
-from .visualization import plot_optimizer_trajectory, plot_test_scores_by_phq9
+from .tools.format_config import FC
+from .visualization import (
+    plot_optimizer_trajectory,
+    plot_test_scores_by_phq9,
+    plot_test_mae_and_bias_by_phq9,
+    plot_cv_results,
+)
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from ..classes.agent import Agent
+from classes.agent import Agent
 
 
 QWEN_MODELS    = frozenset({})          # filled below after constants are defined
@@ -47,6 +55,60 @@ def _extract_score_feedback(raw: str) -> str:
     return f"FEEDBACK: {feedback_val}"
 
 
+def _save_resume_state(output_dir: str, *, seed: int, next_step: int,
+                       best_metric: float, best_instruction: str,
+                       current_instruction: str, val_idx=None) -> None:
+    """Persist resumable optimizer state to <output_dir>/state.json.
+
+    Written atomically (tmp + os.replace) so a crash mid-write can't corrupt
+    the file. Called after every training step; the trajectory CSV is also
+    appended each step, so on resume both move forward together.
+    """
+    state = {
+        "seed": int(seed),
+        "next_step": int(next_step),
+        "best_metric": float(best_metric),
+        "best_instruction": best_instruction,
+        "current_instruction": current_instruction,
+    }
+    if val_idx is not None:
+        state["val_idx"] = [int(i) for i in val_idx]
+    path = os.path.join(output_dir, "state.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, path)
+
+
+def _load_resume_state(output_dir: str) -> dict | None:
+    """Load resumable state from <output_dir>/state.json, or None if absent."""
+    path = os.path.join(output_dir, "state.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _archive_existing_run(output_dir: str) -> None:
+    """Rename `output_dir` to `<output_dir>.bak_<timestamp>` if it already
+    holds a training_trajectory.csv, so a fresh run starts with a clean
+    directory. Prevents two concurrent (or re-submitted) jobs from
+    interleaving their output into the same trajectory file.
+    """
+    trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
+    if not os.path.exists(trajectory_path):
+        return
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = f"{output_dir}.bak_{timestamp}"
+    # Guard against multiple jobs hitting this in the same second.
+    suffix = 0
+    while os.path.exists(backup):
+        suffix += 1
+        backup = f"{output_dir}.bak_{timestamp}_{suffix}"
+    shutil.move(output_dir, backup)
+    print(f"[init] archived existing run: {output_dir} -> {backup}")
+
+
 def _teacher_call_kind(content: str) -> str:
     """Classify a teacher engine call by inspecting markers TextGrad embeds in the prompt.
 
@@ -69,18 +131,17 @@ def _teacher_call_kind(content: str) -> str:
 # Custom optimizer system prompt — TextGrad's default includes literal "{improved variable}"
 # placeholders that thinking models (Qwen3.5, Mistral) echo back verbatim.
 _OPTIMIZER_SYSTEM_PROMPT = (
-    "You are part of an optimization system that improves text (i.e., a variable). "
-    "You will receive feedback on a variable and must produce an improved version. "
     "The feedback may be noisy — identify what is important and what is correct. "
     "Pay attention to the role description of the variable and the context in which it is used. "
-    "YOUR JOB IS A SMALL, INCREMENTAL EDIT. Pick the single most important point in the "
-    "feedback and address it by modifying or adding at most one short clause or sentence. "
-    "Keep every other sentence exactly as it was. "
-    "It is fine (and often the right move) for the rewrite to end up slightly longer than the "
-    "input — do not hesitate to add a brief clarifying phrase when that is what the feedback "
-    "calls for. Do not shorten the input unless the feedback explicitly tells you to remove "
-    "something. "
-    "If the feedback is vague, contradictory, or already handled, return the variable unchanged. "
+    "YOUR JOB IS A SMALL, INCREMENTAL EDIT. Address the most important point in the feedback by adding "
+    "or modifying the necessary content — a clause, a sentence, or a MOSTLY a few sentences if that is "
+    "what concrete guidance requires. Keep every other sentence exactly as it was. "
+    "It is often the right move for the rewrite to end up a bit longer than the input "
+    "BUT if instruction is already well over a 100 words, implement only very SMALL refinements"
+    "Do not shorten the input unless the feedback explicitly tells you to remove something"
+    "Prefer SPECIFIC edits over generic ones: anchor additions in a concrete case or example, "
+    "not in abstract restatements of the goal. "
+    "Only return the variable unchanged if the feedback is genuinely unactionable. "
     "IMPORTANT: Write the actual improved text itself between "
     "{new_variable_start_tag} and {new_variable_end_tag} tags. "
     "Do NOT write placeholder words like 'improved variable' between the tags — "
@@ -286,6 +347,7 @@ class _TeacherEngine(tg.engine.EngineLM):
 def _build_engines(model_name: str, tp: int, gpu_memory_utilization: float,
                    max_model_len: int = 32768,
                    student_temperature: float = 0.7, student_max_tokens: int = 512,
+                   enable_prefix_caching: bool = True,
                    **vllm_kwargs):
     """Load a single shared ChatVLLM and wrap it as both student and teacher.
 
@@ -310,7 +372,7 @@ def _build_engines(model_name: str, tp: int, gpu_memory_utilization: float,
         tensor_parallel_size=tp,
         gpu_memory_utilization=gpu_memory_utilization,
         max_model_len=max_model_len,
-        enable_prefix_caching=True,
+        enable_prefix_caching=enable_prefix_caching,
         **vllm_kwargs,
     )
     teacher = _TeacherEngine(engine, model_name)
@@ -474,8 +536,13 @@ def _build_user_message(format_block: str, tweet_block: list, prompts: dict, per
 def _evaluate_instruction(engine, instruction_text: str, format_block: str,
                           blocks: list, answers: list, prompts: dict,
                           personas: list = None,
-                          temperature: float = 0.2, max_tokens: int = 256) -> tuple:
+                          temperature: float = 0.2, max_tokens: int = 256,
+                          want_raw: bool = False) -> tuple:
     """Run the current PHQ-9 instruction on all blocks and return aggregated MAE.
+
+    Signed bias is always tracked per PHQ-9 score (cheap), and on `want_raw=True`
+    the per-sample (true, pred) arrays are returned as well so callers can write
+    a raw-scores CSV without re-running the engine.
 
     Args:
         engine: student _StudentEngine.
@@ -487,9 +554,13 @@ def _evaluate_instruction(engine, instruction_text: str, format_block: str,
         personas: optional personas aligned with `blocks`.
         temperature: student sampling temperature.
         max_tokens: student token budget.
+        want_raw: if True, also return raw {"true": [...], "pred": [...]} arrays.
 
     Returns:
-        (mean_mae, std_mae, per_phq9) where per_phq9 = {true_score: {"avg_mae", "n_samples"}}.
+        (mean_mae, std_mae, per_phq9) by default, or
+        (mean_mae, std_mae, per_phq9, raw) when `want_raw=True`.
+        per_phq9 = {true_score: {"avg_mae", "avg_bias", "std_bias", "n_samples"}}
+                   — avg_bias = mean(pred − true); positive means over-estimation.
     """
     user_msgs = []
     for i, tweet_block in enumerate(blocks):
@@ -500,15 +571,32 @@ def _evaluate_instruction(engine, instruction_text: str, format_block: str,
                                         temperature=temperature, max_tokens=max_tokens)
 
     abs_errors = []
-    per_phq9_errors = defaultdict(list)
+    per_phq9_abs = defaultdict(list)
+    per_phq9_signed = defaultdict(list)
+    raw_true: list[int] = []
+    raw_pred: list[int] = []
     for response, true_answer in zip(responses, answers):
         predicted = Agent.parse_phq9_answers(response)
         ae = abs(predicted - true_answer)
+        se = predicted - true_answer  # pred − true; sign carries the bias direction.
         abs_errors.append(ae)
-        per_phq9_errors[true_answer].append(ae)
+        per_phq9_abs[true_answer].append(ae)
+        per_phq9_signed[true_answer].append(se)
+        raw_true.append(int(true_answer))
+        raw_pred.append(int(predicted))
     arr = np.array(abs_errors) if abs_errors else np.array([0.0])
-    per_phq9 = {k: {"avg_mae": float(np.mean(v)), "n_samples": len(v)}
-                for k, v in per_phq9_errors.items()}
+    per_phq9 = {
+        k: {
+            "avg_mae": float(np.mean(per_phq9_abs[k])),
+            "avg_bias": float(np.mean(per_phq9_signed[k])),
+            "std_bias": float(np.std(per_phq9_signed[k])),
+            "n_samples": len(per_phq9_abs[k]),
+        }
+        for k in per_phq9_abs
+    }
+    if want_raw:
+        raw = {"true": raw_true, "pred": raw_pred}
+        return float(arr.mean()), float(arr.std()), per_phq9, raw
     return float(arr.mean()), float(arr.std()), per_phq9
 
 
@@ -526,12 +614,15 @@ def _make_loss_prompt(true_answer: int, predicted: int,
         Loss prompt text asking the teacher for a single FEEDBACK sentence.
     """
     error = predicted - true_answer
+    # The teacher sees the student's full response in the backward conversation,
+    # so the loss prompt talks about the total PHQ-9 derived from it, not "the
+    # prediction" as if it were a single value.
     if error > 0:
-        direction = f"overestimated by {error}"
+        direction = f"total PHQ-9 overshoots the truth by {error}"
     elif error < 0:
-        direction = f"underestimated by {abs(error)}"
+        direction = f"total PHQ-9 falls short of the truth by {abs(error)}"
     else:
-        direction = "correct"
+        direction = "total PHQ-9 matches the truth exactly"
     persona_note = f"Persona: {persona[:120]}." if persona else ""
     valid_posts = [t for t in (tweet_block or []) if t and t not in {"NO_POST", "NO_TWEET"}]
     sample = valid_posts[:5]
@@ -554,7 +645,7 @@ def _make_loss_prompt(true_answer: int, predicted: int,
         )
     return (
         f"{posts_block}\n\n{persona_note}\n"
-        f"True PHQ-9 = {true_answer}, predicted = {predicted} ({direction}). MAE = {abs(error)}.\n\n"
+        f"True PHQ-9 = {true_answer}, total PHQ-9 from the student's response = {predicted} ({direction}). MAE = {abs(error)}.\n\n"
         f"{guidance}\n\n"
         f"Respond with exactly:\n"
         f"FEEDBACK: <one sentence — for exact or near-correct predictions, describe what the "
@@ -628,6 +719,76 @@ def train_val_test_split(rng, file_paths:list[str],
     print(f"Train: {len(train_idx)},  Val: {len(val_idx)},  Test: {len(test_idx)}")
     return train_data, val_data, test_data
 
+
+def find_overlapping_test_data(
+    seeds: list[int],
+    file_paths: list[str],
+    val_fraction: float = 0.10,
+    test_fraction: float = 0.10,
+):
+    """Return blocks that land in test for every seed in `seeds`.
+
+    Each seed defines its own train/val/test partition via the same logic as
+    `train_val_test_split`. A block is "overlapping test data" iff it falls in
+    test for every seed — equivalently, it is never in train or val for any
+    seed. Useful for evaluating instructions optimised on different seeds on a
+    shared, leakage-free test pool.
+
+    Args:
+        seeds: RNG seeds to intersect. Must match the seeds the runs were trained with.
+        file_paths: same files (and same order) the runs used. Order matters because
+            it determines the underlying block index.
+        val_fraction: validation fraction used by the runs being intersected.
+        test_fraction: test fraction used by the runs being intersected.
+
+    Returns:
+        (blocks, answers, personas, agent_ids) — same tuple shape as `train_val_test_split`'s
+        test_data, restricted to the intersection. Order is ascending block index.
+    """
+    # Load once: train_val_test_split shuffles via a seeded RNG but the underlying
+    # load order is seed-independent, so block index uniquely identifies a sample
+    # across seeds.
+    tweet_blocks_list, true_answers_list, personas_list, agent_ids_list = [], [], [], []
+    for file_path in file_paths:
+        if file_path.endswith(".csv"):
+            csv_path = file_path
+            txt_path = file_path.replace(".csv", ".txt")
+        else:
+            txt_path = file_path
+            csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
+
+        if os.path.isfile(csv_path):
+            tb, ta, pe, ai = parse_tweets_with_phq9_csv(csv_path)
+        else:
+            tb, ta = parse_tweets_with_phq9(txt_path)
+            pe = [None] * len(tb)
+            ai = ["unknown"] * len(tb)
+        tweet_blocks_list.extend(tb)
+        true_answers_list.extend(ta)
+        personas_list.extend(pe)
+        agent_ids_list.extend(ai)
+
+    n = len(tweet_blocks_list)
+    n_test = max(1, int(n * test_fraction))
+
+    common: set[int] | None = None
+    for seed in seeds:
+        rng = np.random.default_rng(seed)
+        perm = rng.permutation(n)
+        test_idx = {int(i) for i in perm[:n_test]}
+        common = test_idx if common is None else common & test_idx
+
+    common_sorted = sorted(common or [])
+    print(f"[overlap] {len(common_sorted)}/{n} blocks are in test across all "
+          f"{len(seeds)} seeds (seeds={list(seeds)}, n_test/seed={n_test})")
+    return (
+        [tweet_blocks_list[i] for i in common_sorted],
+        [true_answers_list[i] for i in common_sorted],
+        [personas_list[i]     for i in common_sorted],
+        [agent_ids_list[i]    for i in common_sorted],
+    )
+
+
 def call_optimizer_phq9(
     file_paths: list[str],
     model_name: str = QWEN_27,
@@ -636,12 +797,13 @@ def call_optimizer_phq9(
     num_steps: int = None,
     val_fraction: float = 0.10,
     test_fraction: float = 0.10,
-    validate_every: int = 2,
+    validate_every: int = 1,
     val_sample_size: int = 10,
     test_sample_size: int = None,
     seed: int = 42,
     max_model_len: int = 32768,
     output_dir: str = None,
+    resume: bool = False,
     **vllm_kwargs,
 ):
     """Optimise the PHQ-9 system instruction via TextGrad with batched gradient accumulation.
@@ -680,6 +842,10 @@ def call_optimizer_phq9(
     student_engine, teacher_engine = _build_engines(
         model_name, tp, 0.90, max_model_len=max_model_len,
         student_temperature=0.2, student_max_tokens=256,
+        # Disabled for the same reason as the tweet optimizer: vLLM v0.17.1 +
+        # TP=2 deadlocks between consecutive student .generate() calls during
+        # validation when KV state is shared across batches.
+        enable_prefix_caching=False,
         **vllm_kwargs,
     )
 
@@ -723,43 +889,76 @@ def call_optimizer_phq9(
     model_short = model_name.split("/")[-1]
     if output_dir is None:
         output_dir = f"data/test_post/optimized_phq9/{model_short}_seed{seed}"
+    if not resume:
+        # Fresh run: move any prior run aside so we never interleave with it.
+        _archive_existing_run(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
     _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
-    with open(trajectory_path, "w", newline="", encoding="utf-8") as _fh:
-        csv.DictWriter(_fh, fieldnames=_traj_fields).writeheader()
 
-    # Fixed validation subset: sample once and reuse so step-to-step comparisons
-    # are paired. A fresh draw each time was masking improvements under sampling noise.
-    n_val = min(val_sample_size, len(val_blocks))
-    val_idx = rng.choice(len(val_blocks), size=n_val, replace=False)
-    fixed_val_blocks   = [val_blocks[i]   for i in val_idx]
-    fixed_val_answers  = [val_answers[i]  for i in val_idx]
-    fixed_val_personas = [val_personas[i] for i in val_idx]
-    print(f"[val] fixed evaluation subset: {n_val} agents (reused every validation)")
+    # Resume support: try to pick up where a previous job died (saved after every
+    # training step in state.json). When resuming we skip the trajectory header
+    # write and the step-0 baseline; both are already on disk.
+    resume_state = _load_resume_state(output_dir) if resume else None
 
-    # Step 0: baseline evaluation before any training.
-    s0_mae, s0_std, _ = _evaluate_instruction(
-        student_engine, instruction.value, format_block,
-        fixed_val_blocks, fixed_val_answers, prompts, fixed_val_personas,
-    )
-    with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
-        csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
-            "model": model_short, "seed": seed, "step": 0,
-            "split": "val", "mean_score": round(s0_mae, 4),
-            "std_score": round(s0_std, 4), "n_samples": n_val,
-        })
-    print(f"[Step 0] Baseline val MAE: {s0_mae:.2f} ± {s0_std:.2f}")
-    best_val_mae = s0_mae
-    best_instruction = instruction.value
-    with open(os.path.join(output_dir, "best_instruction.txt"), "w", encoding="utf-8") as fh:
-        fh.write(best_instruction)
-    with open(os.path.join(output_dir, "best_full_prompt.txt"), "w", encoding="utf-8") as fh:
-        fh.write(best_instruction + "\n\n" + format_block)
+    if resume_state:
+        start_step = int(resume_state["next_step"])
+        best_val_mae = float(resume_state["best_metric"])
+        best_instruction = resume_state["best_instruction"]
+        instruction.value = resume_state["current_instruction"]
+        val_idx = resume_state.get("val_idx")
+        if val_idx is None:
+            # Older state file: fall back to a fresh sample (won't match prior runs).
+            val_idx = list(rng.choice(len(val_blocks),
+                                      size=min(val_sample_size, len(val_blocks)),
+                                      replace=False))
+        n_val = len(val_idx)
+        fixed_val_blocks   = [val_blocks[i]   for i in val_idx]
+        fixed_val_answers  = [val_answers[i]  for i in val_idx]
+        fixed_val_personas = [val_personas[i] for i in val_idx]
+        print(f"[resume] continuing from step {start_step} "
+              f"(best val MAE so far: {best_val_mae:.2f}, {n_val}-agent val set restored)")
+    else:
+        with open(trajectory_path, "w", newline="", encoding="utf-8") as _fh:
+            csv.DictWriter(_fh, fieldnames=_traj_fields).writeheader()
+
+        # Fixed validation subset: sample once and reuse so step-to-step comparisons
+        # are paired. A fresh draw each time was masking improvements under sampling noise.
+        n_val = min(val_sample_size, len(val_blocks))
+        val_idx = rng.choice(len(val_blocks), size=n_val, replace=False)
+        fixed_val_blocks   = [val_blocks[i]   for i in val_idx]
+        fixed_val_answers  = [val_answers[i]  for i in val_idx]
+        fixed_val_personas = [val_personas[i] for i in val_idx]
+        print(f"[val] fixed evaluation subset: {n_val} agents (reused every validation)")
+
+        # Step 0: baseline evaluation before any training.
+        s0_mae, s0_std, _ = _evaluate_instruction(
+            student_engine, instruction.value, format_block,
+            fixed_val_blocks, fixed_val_answers, prompts, fixed_val_personas,
+        )
+        with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
+            csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
+                "model": model_short, "seed": seed, "step": 0,
+                "split": "val", "mean_score": round(s0_mae, 4),
+                "std_score": round(s0_std, 4), "n_samples": n_val,
+            })
+        print(f"[Step 0] Baseline val MAE: {s0_mae:.2f} ± {s0_std:.2f}")
+        best_val_mae = s0_mae
+        best_instruction = instruction.value
+        start_step = 0
+        with open(os.path.join(output_dir, "best_instruction.txt"), "w", encoding="utf-8") as fh:
+            fh.write(best_instruction)
+        with open(os.path.join(output_dir, "best_full_prompt.txt"), "w", encoding="utf-8") as fh:
+            fh.write(best_instruction + "\n\n" + format_block)
+        _save_resume_state(output_dir, seed=seed, next_step=0,
+                           best_metric=best_val_mae,
+                           best_instruction=best_instruction,
+                           current_instruction=instruction.value,
+                           val_idx=val_idx)
 
     # Training loop.
-    for step in range(num_steps):
+    for step in range(start_step, num_steps):
         batch_idx = rng.choice(
             len(train_blocks),
             size=min(batch_size, len(train_blocks)),
@@ -807,7 +1006,11 @@ def call_optimizer_phq9(
             # Run the teacher even when the prediction is exact: positive feedback
             # on what the instruction is doing well is also a useful gradient
             # signal (reinforces the existing behaviour rather than chasing change).
-            prediction.value = f"My assessment of the patient's PHQ-9 total score is {predicted_score}."
+            # Leave prediction.value as the student's RAW output so the teacher's
+            # backward sees what the student actually produced (any format that
+            # parses cleanly is acceptable). Rewriting it to a synthetic summary
+            # made the teacher hallucinate "format violation" gradients — the
+            # parsed score is already passed via the loss prompt below.
 
             loss_fn = tg.TextLoss(_make_loss_prompt(true_answer, predicted_score, tweet_block, persona))
             loss = loss_fn(prediction)
@@ -861,6 +1064,13 @@ def call_optimizer_phq9(
                 instruction.value = best_instruction
                 print("  -> No improvement — instruction reset to best.")
 
+        # Persist resume state after every step (after validation/revert).
+        _save_resume_state(output_dir, seed=seed, next_step=step + 1,
+                           best_metric=best_val_mae,
+                           best_instruction=best_instruction,
+                           current_instruction=instruction.value,
+                           val_idx=val_idx)
+
     # Final test evaluation on the best instruction.
     if test_sample_size and len(test_blocks) > test_sample_size:
         t_idx = rng.choice(len(test_blocks), size=test_sample_size, replace=False)
@@ -869,9 +1079,10 @@ def call_optimizer_phq9(
         eval_personas = [test_personas[i] for i in t_idx]
     else:
         eval_blocks, eval_answers, eval_personas = test_blocks, test_answers, test_personas
-    test_mae, test_std, per_phq9 = _evaluate_instruction(
+    test_mae, test_std, per_phq9, raw = _evaluate_instruction(
         student_engine, best_instruction, format_block,
         eval_blocks, eval_answers, prompts, eval_personas,
+        want_raw=True,
     )
     with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
         csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
@@ -892,25 +1103,41 @@ def call_optimizer_phq9(
         f.write(best_instruction + "\n\n" + format_block)
     print(f"Full re-assembled prompt → {full_path}")
 
+    # Raw per-sample (true, pred) for downstream calibration analysis / re-plotting.
+    raw_csv = os.path.join(output_dir, "test_raw_scores.csv")
+    with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["model", "seed", "true_phq9", "pred_phq9"])
+        writer.writeheader()
+        for t, p in zip(raw["true"], raw["pred"]):
+            writer.writerow({"model": model_short, "seed": seed,
+                             "true_phq9": int(t), "pred_phq9": int(p)})
+    print(f"Raw test scores → {raw_csv}")
+
     csv_path = os.path.join(output_dir, "test_scores_phq9.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["model", "seed", "phq9", "avg_mae", "n_samples"])
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=["model", "seed", "phq9", "avg_mae", "avg_bias", "std_bias", "n_samples"],
+        )
         writer.writeheader()
         for phq9_val, stats in sorted(per_phq9.items()):
-            writer.writerow({"model": model_short, "seed": seed, "phq9": phq9_val,
-                             "avg_mae": round(stats["avg_mae"], 4), "n_samples": stats["n_samples"]})
-    print(f"Per-PHQ-9 MAE → {csv_path}")
+            writer.writerow({
+                "model": model_short, "seed": seed, "phq9": phq9_val,
+                "avg_mae": round(stats["avg_mae"], 4),
+                "avg_bias": round(stats["avg_bias"], 4),
+                "std_bias": round(stats["std_bias"], 4),
+                "n_samples": stats["n_samples"],
+            })
+    print(f"Per-PHQ-9 MAE+bias → {csv_path}")
 
     plot_optimizer_trajectory(
         trajectory_path, output_dir,
         title=f"PHQ-9 optimizer — {model_short} seed={seed}",
         mode="phq9",
     )
-    plot_test_scores_by_phq9(
-        {k: {"avg_mae": v["avg_mae"], "n_samples": v["n_samples"]} for k, v in per_phq9.items()},
-        output_dir,
-        title=f"Test MAE by PHQ-9 — {model_short} seed={seed}",
-        mode="phq9",
+    plot_test_mae_and_bias_by_phq9(
+        per_phq9, output_dir,
+        title=f"Test MAE & bias by PHQ-9 — {model_short} seed={seed}",
     )
 
     try:
@@ -924,6 +1151,150 @@ def call_optimizer_phq9(
 
     return best_instruction
 
+
+def rerun_test_phq9(
+    seed: int,
+    file_paths: list[str],
+    output_dir: str = None,
+    model_name: str = QWEN_27,
+    instruction_filename: str = "optimized_instruction.txt",
+    val_fraction: float = 0.10,
+    test_fraction: float = 0.10,
+    max_model_len: int = 32768,
+    **vllm_kwargs,
+):
+    """Reload a saved instruction and re-run only the PHQ-9 test phase.
+
+    Skips training entirely — useful for upgrading old runs to the new schema
+    (avg_bias, std_bias, test_raw_scores.csv) without re-doing the expensive
+    optimisation loop. The train/val/test split is deterministic given the seed
+    and file_paths, so the test set matches the original run.
+
+    Args:
+        seed: RNG seed used by the original run (drives the split).
+        file_paths: same tweets_with_phq9 files the original run used.
+        output_dir: where to read/write; defaults to the standard
+            `data/test_post/optimized_phq9/<model_short>_seed<seed>` path.
+        model_name: HuggingFace model id for the student engine.
+        instruction_filename: which prompt file to load from `output_dir`. Defaults
+            to `optimized_instruction.txt`, the prompt the original test used.
+        val_fraction, test_fraction: must match the original run.
+        max_model_len: vLLM context budget.
+        **vllm_kwargs: forwarded to ChatVLLM.
+
+    Returns:
+        (test_mae, test_std, per_phq9, raw) from `_evaluate_instruction(want_raw=True)`.
+    """
+    import gc
+
+    rng = np.random.default_rng(seed)
+    model_short = model_name.split("/")[-1]
+
+    if output_dir is None:
+        output_dir = f"data/test_post/optimized_phq9/{model_short}_seed{seed}"
+
+    instr_path = os.path.join(output_dir, instruction_filename)
+    if not os.path.isfile(instr_path):
+        raise FileNotFoundError(f"No {instruction_filename} at {instr_path}")
+    with open(instr_path) as f:
+        best_instruction = f.read().strip()
+    print(f"[rerun-test seed {seed}] loaded {instruction_filename} "
+          f"({len(best_instruction.split())} words) from {instr_path}")
+
+    _train_data, _val_data, test_data = train_val_test_split(
+        rng, file_paths, val_fraction, test_fraction,
+    )
+    test_blocks, test_answers, test_personas, _ = test_data
+
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or len((os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(","))
+    student_engine, teacher_engine = _build_engines(
+        model_name, tp, 0.90, max_model_len=max_model_len,
+        student_temperature=0.2, student_max_tokens=256,
+        **vllm_kwargs,
+    )
+
+    with open(FC.PROMPTS_FILE) as f:
+        prompts = json.load(f)
+    format_block = prompts["phq9"]["System_format"]
+
+    test_mae, test_std, per_phq9, raw = _evaluate_instruction(
+        student_engine, best_instruction, format_block,
+        test_blocks, test_answers, prompts, test_personas,
+        want_raw=True,
+    )
+    print(f"[rerun-test seed {seed}] Test MAE (n={len(test_blocks)}): "
+          f"{test_mae:.2f} ± {test_std:.2f}")
+
+    # Rewrite the trajectory's `test` row in place (drop any previous test rows
+    # so trajectory plots reflect only the new-schema result).
+    trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
+    _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
+    existing_rows = []
+    last_train_step = 0
+    if os.path.isfile(trajectory_path):
+        with open(trajectory_path, newline="") as fh:
+            for row in csv.DictReader(fh):
+                if row.get("split") == "test":
+                    continue
+                existing_rows.append(row)
+                if row.get("split") == "train":
+                    try:
+                        last_train_step = max(last_train_step, int(row["step"]))
+                    except (TypeError, ValueError):
+                        pass
+    with open(trajectory_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_traj_fields)
+        writer.writeheader()
+        for row in existing_rows:
+            writer.writerow({k: row.get(k, "") for k in _traj_fields})
+        writer.writerow({
+            "model": model_short, "seed": seed, "step": last_train_step,
+            "split": "test", "mean_score": round(test_mae, 4),
+            "std_score": round(test_std, 4), "n_samples": len(test_blocks),
+        })
+
+    # Raw per-sample (true, pred) — new schema.
+    raw_csv = os.path.join(output_dir, "test_raw_scores.csv")
+    with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["model", "seed", "true_phq9", "pred_phq9"])
+        writer.writeheader()
+        for t, p in zip(raw["true"], raw["pred"]):
+            writer.writerow({"model": model_short, "seed": seed,
+                             "true_phq9": int(t), "pred_phq9": int(p)})
+    print(f"Raw test scores → {raw_csv}")
+
+    # Per-PHQ-9 with bias — new schema.
+    csv_path = os.path.join(output_dir, "test_scores_phq9.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=["model", "seed", "phq9", "avg_mae", "avg_bias", "std_bias", "n_samples"],
+        )
+        writer.writeheader()
+        for phq9_val, stats in sorted(per_phq9.items()):
+            writer.writerow({
+                "model": model_short, "seed": seed, "phq9": phq9_val,
+                "avg_mae": round(stats["avg_mae"], 4),
+                "avg_bias": round(stats["avg_bias"], 4),
+                "std_bias": round(stats["std_bias"], 4),
+                "n_samples": stats["n_samples"],
+            })
+    print(f"Per-PHQ-9 MAE+bias → {csv_path}")
+
+    plot_test_mae_and_bias_by_phq9(
+        per_phq9, output_dir,
+        title=f"Test MAE & bias by PHQ-9 — {model_short} seed={seed}",
+    )
+
+    try:
+        del student_engine.base.client
+    except Exception:
+        pass
+    del student_engine, teacher_engine
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return test_mae, test_std, per_phq9, raw
 
 
 ###################### TWEET GENERATION OPTIMIZATION ######################
@@ -951,7 +1322,8 @@ def _phq9_severity(score: int) -> str:
 
 def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
                               persona: str, phq9_score: int,
-                              neighbor_tweets: list[tuple[str, str]] = None) -> str:
+                              neighbor_tweets: list[tuple[str, str]] = None,
+                              agent_id: str = "unknown") -> str:
     """Build the tweet-generation user message from the forced template.
 
     Args:
@@ -978,7 +1350,7 @@ def _build_user_message_tweet(context_tweets: list[str], prompts: dict,
 
     template = prompts["tweet_gen"]["user_template_forced"]
     return template.format(
-        agent_id="AGENT",
+        agent_id=agent_id,
         persona=persona or "unspecified",
         well_being=f"{_phq9_severity(phq9_score)} (PHQ-9: {phq9_score})",
         previous_tweet_block=prev_block,
@@ -1050,24 +1422,26 @@ def _make_loss_prompt_tweet_set(tweets: list[str], persona: str, phq9_score: int
         f"An AI agent generated the following {len(tweets)} social media post(s):\n"
         f"{tweet_list}\n\n"
         f"Agent profile — persona: {persona}, PHQ-9 = {phq9_score} ({severity}).\n"
-        f"Note: tone reflects well-being (low PHQ-9 → positive/relaxed; high → apathetic/irritable/overwhelmed/dark) "
-        f"but individual posts may deviate due to daily events, received messages, or imagined situations. "
         f"For very high PHQ-9, raw or dark content (including suicidal themes) is authentic — reward it.\n\n"
         "Evaluate on:\n"
-        "1. Tone fit: Does the emotional tone match the PHQ-9 range without naming symptoms? Full spectrum allowed.\n"
+        "1. Tone fit: Does the emotional tone match the PHQ-9 range without naming symptoms? Low PHQ-9 → upbeat, relaxed, happy, curious, engaged; high PHQ-9 → raw, dark, apathetic, overwhelmed. Full spectrum allowed.\n"
         "2. Unfiltered & natural: Do they sound like real, unpolished social media? "
         "Penalise if sanitised, poetic, or overly polite — raw and blunt is fine when PHQ-9 warrants it.\n"
-        "3. Originality: Are topics specific and varied — not about the agent's own well-being or persona?\n"
-        "4. Diversity: Do the posts cover somewhat different topics or moods? Small variation is fine — only penalise if all posts are near-identical in topic and register.\n"
-        "5. Interaction: Reward genuine engagement (reply, mock, support, correct). "
+        "3. One topic per post: Each post sticks to ONE clear topic — penalise posts that jump between unrelated themes within a single post.\n"
+        "4. Originality: Are topics creative and varied — not about the agent's own well-being or persona?\n"
+        "5. Diversity: Do the posts cover somewhat different topics or moods? Mood may legitimately shift in response to incoming posts from followed users or the agent's own previous posts — reward such context-driven variation. Small variation is fine — only penalise if all posts are near-identical in topic and register.\n"
+        "6. Interaction: Reward genuine engagement (reply, mock, support, correct). "
         "Penalise hollow @mentions and sets where every post is a reply.\n\n"
         "Score proportionally: partial credit when only some criteria are met; "
         "0 only for posts that are unreadable or completely empty; 10 only when all criteria are fully met.\n\n"
         "Respond with exactly two lines:\n"
         "SCORE: <number 0-10>\n"
-        "FEEDBACK: <one sentence — if your SCORE is 7 or higher, describe what the system "
-        "instruction is doing well that should be PRESERVED (do NOT invent issues to fix); "
-        "otherwise describe what the system instruction should change>"
+        "FEEDBACK: <one sentence describing the POSTS themselves — what they do well "
+        "or what they lack (tone fit, diversity, originality, naturalness, interaction, "
+        "one-topic-per-post). If your SCORE is 7 or higher, describe what is working in "
+        "the posts that should be preserved. Otherwise describe what the posts lack or "
+        "get wrong. Do NOT recommend changes to the system instruction — that is handled "
+        "downstream.>"
     )
 
 
@@ -1164,7 +1538,10 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
                                 prompts: dict, blocks: list, answers: list, personas: list,
                                 all_tweets_flat: list, rng, sample_size: int = None,
                                 format_block: str = "", tweets_per_sample: int = 3,
-                                agent_ids: list = None):
+                                agent_ids: list = None,
+                                out_parsed: list | None = None,
+                                out_scores: list | None = None,
+                                verbose: bool = False):
     """Score tweet instruction quality via batched generation + batched teacher rating.
 
     Args:
@@ -1215,10 +1592,17 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
         user_msgs = []
         for i, (tweet_block, phq9, persona) in enumerate(zip(blocks, answers, personas)):
             nb = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
-            msg = _build_user_message_tweet(sample_contexts[i], prompts, persona, phq9, nb)
+            aid = agent_ids[i] if agent_ids else str(i)
+            msg = _build_user_message_tweet(sample_contexts[i], prompts, persona, phq9, nb, agent_id=aid)
             if format_block:
                 msg = msg + "\n\n" + format_block
             user_msgs.append(msg)
+
+        if verbose and j == 0:
+            print(f"\n  --- full prompt [eval, agent 0, tweet 1] ---")
+            print(f"  [SYSTEM]\n{instruction_text}")
+            print(f"\n  [USER]\n{user_msgs[0]}")
+            print(f"  --- end full prompt ---\n")
 
         responses = _batch_student_generate(student_engine, user_msgs, instruction_text)
 
@@ -1237,6 +1621,13 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
     scores = [None] * n
     pending = []   # (sample_idx, phq9, rating_prompt)
 
+    def _verbose_dump(i, score_str):
+        aid = agent_ids[i] if agent_ids else str(i)
+        print(f"\n  [post-set] agent_id={aid}  PHQ-9={answers[i]:2d}  score={score_str}")
+        for j, tw in enumerate(all_parsed[i]):
+            clean = (tw or "").replace("\n", " ").strip() or "<empty>"
+            print(f"    POST {j}: {clean}")
+
     for i, (tweet_block, phq9, persona) in enumerate(zip(blocks, answers, personas)):
         parsed_tweets = all_parsed[i]
         n_samples_by_phq9[phq9] += 1
@@ -1249,6 +1640,8 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
             scores[i] = 0.0
             scores_by_phq9[phq9].append(0.0)
             print(f"  [teacher] score=0.0  (all {tweets_per_sample} tweets empty — PHQ-9={phq9})")
+            if verbose:
+                _verbose_dump(i, "0.0 (all empty)")
         else:
             # Use the exact same rating prompt training uses, so train-time and
             # eval-time scores are directly comparable (same criteria, same
@@ -1278,8 +1671,14 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
             if score is None:
                 n_unparsed += 1
                 print(f"  [teacher] SCORE not parsed — excluding sample {i} from average")
+                if verbose:
+                    _verbose_dump(i, "n/a (unparsed)")
             elif feedback:
                 print(f"  [teacher] score={score:.1f}  {feedback}")
+                if verbose:
+                    _verbose_dump(i, f"{score:.1f}/10")
+            elif verbose:
+                _verbose_dump(i, f"{score:.1f}/10")
             # Only contribute to the average when we actually have a score.
             scores[i] = score  # may be None; global filter at the end drops Nones.
             if score is not None:
@@ -1298,6 +1697,10 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
     }
     mean_score = float(np.mean(final_scores)) if final_scores else 0.0
     std_score  = float(np.std(final_scores))  if final_scores else 0.0
+    if out_parsed is not None:
+        out_parsed.extend(all_parsed)
+    if out_scores is not None:
+        out_scores.extend(scores)
     return mean_score, std_score, per_phq9
 
 
@@ -1318,6 +1721,7 @@ def call_optimizer_tweets(
     max_model_len: int = 16384,
     output_dir: str = None,
     prompts_file: str = None,
+    resume: bool = False,
     **vllm_kwargs,
 ):
     """Optimise the tweet-generation system prompt via TextGrad.
@@ -1351,6 +1755,9 @@ def call_optimizer_tweets(
     if output_dir is None:
         model_short = model_name.split("/")[-1]
         output_dir = f"data/test_post/optimized_tweets/{model_short}_seed{seed}"
+    if not resume:
+        # Fresh run: move any prior run aside so we never interleave with it.
+        _archive_existing_run(output_dir)
 
     train_data, val_data, test_data = train_val_test_split(
         rng, file_paths, val_fraction, test_fraction,
@@ -1370,7 +1777,13 @@ def call_optimizer_tweets(
     ]
 
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or len((os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(","))
-    student_engine, teacher_engine = _build_engines(model_name, tp, 0.90, max_model_len=max_model_len, **vllm_kwargs)
+    # Prefix caching disabled here only: vLLM v0.17.1 + TP=2 deadlocks between
+    # consecutive student .generate() calls during val/test when KV state is
+    # shared across batches. PHQ-9 optimizer is unaffected — leaves it on.
+    student_engine, teacher_engine = _build_engines(model_name, tp, 0.90,
+                                                    max_model_len=max_model_len,
+                                                    enable_prefix_caching=False,
+                                                    **vllm_kwargs)
 
     # Load prompts and split into optimisable instruction vs fixed format/constraints.
     prompts_path = prompts_file or FC.PROMPTS_FILE
@@ -1439,34 +1852,54 @@ def call_optimizer_tweets(
     os.makedirs(output_dir, exist_ok=True)
     trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
     _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
-    with open(trajectory_path, "w", newline="", encoding="utf-8") as _fh:
-        csv.DictWriter(_fh, fieldnames=_traj_fields).writeheader()
 
-    # step=0: evaluate and checkpoint the initial instruction as the first best
-    _s0, _s0_std, _ = _evaluate_tweet_instruction(
-        student_engine, teacher_engine, instruction.value, prompts,
-        val_blocks, val_answers, val_personas,
-        all_tweets_flat, rng, sample_size=val_sample_size,
-        format_block=format_block_tweet, tweets_per_sample=tweets_per_sample,
-        agent_ids=val_agent_ids,
-    )
-    with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
-        csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
-            "model": model_short, "seed": seed, "step": 0,
-            "split": "val", "mean_score": round(_s0, 4),
-            "std_score": round(_s0_std, 4), "n_samples": val_sample_size or len(val_blocks),
-        })
-    print(f"[Step 0] Baseline val score: {_s0:.2f}/10 ± {_s0_std:.2f}")
-    best_val_score = _s0
-    best_instruction = instruction.value
-    with open(os.path.join(output_dir, "best_instruction_tweet.txt"), "w", encoding="utf-8") as fh:
-        fh.write(f"# val score: {_s0:.2f}/10  (step 0)\n\n{best_instruction}")
-    with open(os.path.join(output_dir, "best_full_prompt_tweet.txt"), "w", encoding="utf-8") as fh:
-        fh.write(f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
-                 f"=== FORMAT BLOCK (fixed) ===\n{format_block_tweet}")
+    # Resume support: pick up where a previous job died (state.json saved after
+    # every step). On resume we skip the trajectory header and the step-0
+    # baseline; both are already on disk. The tweet val set is resampled by
+    # `_evaluate_tweet_instruction` internally per call, so we don't save it.
+    resume_state = _load_resume_state(output_dir) if resume else None
+
+    if resume_state:
+        start_step = int(resume_state["next_step"])
+        best_val_score = float(resume_state["best_metric"])
+        best_instruction = resume_state["best_instruction"]
+        instruction.value = resume_state["current_instruction"]
+        print(f"[resume] continuing from step {start_step} "
+              f"(best val score so far: {best_val_score:.2f})")
+    else:
+        with open(trajectory_path, "w", newline="", encoding="utf-8") as _fh:
+            csv.DictWriter(_fh, fieldnames=_traj_fields).writeheader()
+
+        # step=0: evaluate and checkpoint the initial instruction as the first best
+        _s0, _s0_std, _ = _evaluate_tweet_instruction(
+            student_engine, teacher_engine, instruction.value, prompts,
+            val_blocks, val_answers, val_personas,
+            all_tweets_flat, rng, sample_size=val_sample_size,
+            format_block=format_block_tweet, tweets_per_sample=tweets_per_sample,
+            agent_ids=val_agent_ids,
+        )
+        with open(trajectory_path, "a", newline="", encoding="utf-8") as _fh:
+            csv.DictWriter(_fh, fieldnames=_traj_fields).writerow({
+                "model": model_short, "seed": seed, "step": 0,
+                "split": "val", "mean_score": round(_s0, 4),
+                "std_score": round(_s0_std, 4), "n_samples": val_sample_size or len(val_blocks),
+            })
+        print(f"[Step 0] Baseline val score: {_s0:.2f}/10 ± {_s0_std:.2f}")
+        best_val_score = _s0
+        best_instruction = instruction.value
+        start_step = 0
+        with open(os.path.join(output_dir, "best_instruction_tweet.txt"), "w", encoding="utf-8") as fh:
+            fh.write(f"# val score: {_s0:.2f}/10  (step 0)\n\n{best_instruction}")
+        with open(os.path.join(output_dir, "best_full_prompt_tweet.txt"), "w", encoding="utf-8") as fh:
+            fh.write(f"=== SYSTEM PROMPT ===\n{best_instruction}\n\n"
+                     f"=== FORMAT BLOCK (fixed) ===\n{format_block_tweet}")
+        _save_resume_state(output_dir, seed=seed, next_step=0,
+                           best_metric=best_val_score,
+                           best_instruction=best_instruction,
+                           current_instruction=instruction.value)
 
     # Training loop.
-    for step in range(num_steps):
+    for step in range(start_step, num_steps):
         batch_idx = rng.choice(
             len(train_blocks),
             size=min(batch_size, len(train_blocks)),
@@ -1500,7 +1933,7 @@ def call_optimizer_tweets(
             parsed_tweets = []
             for j in range(tweets_per_sample):
                 neighbor_tweets = _sample_neighbor_tweets(all_tweets_flat, rng, tweet_block)
-                user_msg = _build_user_message_tweet(context, prompts, persona, phq9, neighbor_tweets)
+                user_msg = _build_user_message_tweet(context, prompts, persona, phq9, neighbor_tweets, agent_id=str(batch_agent_ids[idx]))
                 user_msg = user_msg + "\n\n" + format_block_tweet
                 question = tg.Variable(
                     user_msg,
@@ -1509,6 +1942,15 @@ def call_optimizer_tweets(
                 )
                 pred = model(question)
                 pred.value = Agent.strip_model_thinking(pred.value)
+                # Only the first prediction stays in the backward graph; the rest
+                # still contribute their text to `combined.value` (so the teacher
+                # rates the full set) but don't trigger their own backward LLM
+                # call. All `tweets_per_sample` student calls share the same
+                # `instruction`, so the gradient through one is informative about
+                # the shared instruction. Cuts backward calls from
+                # `tweets_per_sample` → 1 per sample.
+                if j > 0:
+                    pred.requires_grad = False
                 predictions.append(pred)
                 raw_tweets.append(pred.value)
                 parsed = parse_tweet_answers(pred.value)
@@ -1614,6 +2056,12 @@ def call_optimizer_tweets(
                 instruction.value = best_instruction
                 print("  -> No improvement — instruction reset to best.")
 
+        # Persist resume state after every step (after validation/revert).
+        _save_resume_state(output_dir, seed=seed, next_step=step + 1,
+                           best_metric=best_val_score,
+                           best_instruction=best_instruction,
+                           current_instruction=instruction.value)
+
     # Final test evaluation on the best instruction.
     test_score, test_std, per_phq9 = _evaluate_tweet_instruction(
         student_engine, teacher_engine, best_instruction, prompts,
@@ -1693,6 +2141,248 @@ def call_optimizer_tweets(
     return best_instruction
 
 
+def rerun_test_tweets(
+    instruction_file: str,
+    persona_phq9_file: str,
+    num_agents: int = 7,
+    sample_seed: int | None = None,
+    neighbor_pool_roots: list[str] | None = None,
+    model_name: str = QWEN_27,
+    seed: int = 42,
+    tweets_per_sample: int = 3,
+    max_chars: int = 240,
+    max_model_len: int = 16384,
+    **vllm_kwargs,
+):
+    """Score a saved tweet instruction by running the train-time eval pipeline.
+
+    Mirrors the final test phase of :func:`call_optimizer_tweets`, but on a
+    fresh persona-PHQ-9 sample (no historical context — agents post cold):
+
+      1. Sample ``num_agents`` (persona, phq9) pairs from ``persona_phq9_file``
+         using ``sample_seed`` — same RNG seed reproduces the same agents.
+      2. Build a neighbour pool from the Qwen3.5-27B test_post tree (same
+         pool :mod:`generate_posts_opt_h` uses) so neighbour context matches
+         generation-time conditions. ``seed`` drives the neighbour-sampling RNG.
+      3. Each agent gets ``tweets_per_sample`` fresh posts generated by the
+         student with the loaded instruction.
+      4. The teacher rates each agent's set; per-PHQ-9 stats + mean/std are
+         written to ``<iter_dir>/eval_test.json``.
+
+    ``sample_seed`` defaults to the ``N`` in the prompt-file's ``iter_<N>/``
+    parent dir — so by default ``iter_7/prompt.txt`` is evaluated on the same
+    seven agents ``iter_7/posts.csv`` was generated with.
+
+    Four files are written next to the instruction, mirroring the CSV schema
+    the PHQ-9 mode already uses (so plotting / aggregation helpers transfer):
+
+      * ``test_raw_scores.csv`` — one row per agent: model, seed, sample_seed,
+        agent_id, phq9, score (the per-agent teacher rating).
+      * ``test_scores_phq9.csv`` — one row per PHQ-9 bucket: model, seed,
+        sample_seed, phq9, avg_score, n_samples, n_empty.
+      * ``test_posts.csv`` — one row per generated tweet: agent_id, persona,
+        phq9, agent_score, tweet_idx, tweet.
+      * ``eval_meta.txt`` — plain-text reproducibility log (file paths, seeds,
+        pool sizes, sampled row indices, final mean/std).
+    """
+    import gc
+    import re as _re
+
+    instr_path = os.path.abspath(instruction_file)
+    if not os.path.isfile(instr_path):
+        raise FileNotFoundError(f"instruction file not found: {instr_path}")
+    iter_dir = os.path.dirname(instr_path)
+
+    if sample_seed is None:
+        parent = os.path.basename(iter_dir)
+        m = _re.match(r"^iter_(\d+)$", parent)
+        if not m:
+            raise ValueError(
+                f"--sample-seed not given and prompt-file's parent dir "
+                f"{parent!r} doesn't match 'iter_<N>'; pass --sample-seed."
+            )
+        sample_seed = int(m.group(1))
+        print(f"[tweet-rerun] sample_seed defaulted to {sample_seed} (from {parent}/)")
+
+    if not neighbor_pool_roots:
+        neighbor_pool_roots = [
+            "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_inter",
+            "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter",
+        ]
+
+    # --- instruction ---
+    with open(instr_path) as f:
+        text = f.read()
+    lines = text.splitlines()
+    while lines and lines[0].lstrip().startswith("# "):
+        lines.pop(0)
+    instruction = "\n".join(lines).strip()
+    print(f"[tweet-rerun] instruction: {instr_path} "
+          f"({len(instruction.split())} words)")
+
+    # --- sample (persona, phq9) pairs with sample_seed (reproducible) ---
+    df_pp = pd.read_csv(persona_phq9_file)
+    if len(df_pp) < num_agents:
+        raise ValueError(
+            f"--persona-phq9-file has {len(df_pp)} rows but --num-agents={num_agents}"
+        )
+    sub_rng = np.random.default_rng(sample_seed)
+    sample_idx = sorted(sub_rng.choice(len(df_pp), size=num_agents, replace=False))
+    personas = df_pp["persona"].iloc[sample_idx].tolist()
+    answers = df_pp["phq9"].iloc[sample_idx].astype(int).tolist()
+    agent_ids = [str(i) for i in sample_idx]
+    blocks = [[] for _ in range(num_agents)]   # cold-start: no historical posts
+    print(f"[tweet-rerun] sampled {num_agents} agents from {persona_phq9_file} "
+          f"(sample_seed={sample_seed})")
+
+    # --- prompts JSON + fixed format block (CONSTRAINTS half of system_forced) ---
+    with open(FC.PROMPTS_FILE) as f:
+        prompts = json.load(f)
+    raw = prompts["tweet_gen"]["system_forced"].replace("{max_chars}", str(max_chars))
+    rules_marker = "### RULES ###"
+    constraints_marker = "### CONSTRAINTS ###"
+    if rules_marker in raw and constraints_marker in raw:
+        fixed_intro, rest = raw.split(rules_marker, 1)
+        _, fixed_tail = rest.split(constraints_marker, 1)
+        format_block = fixed_intro.rstrip() + "\n\n" + constraints_marker + fixed_tail
+    elif constraints_marker in raw:
+        _, fixed_tail = raw.split(constraints_marker, 1)
+        format_block = constraints_marker + fixed_tail
+    else:
+        format_block = ""
+
+    # --- neighbour pool (Qwen3.5-27B test_post tree; seeded sampling below) ---
+    all_tweets_flat: list[tuple[str, str]] = []
+    for root in neighbor_pool_roots:
+        for nb_path in sorted(glob.glob(os.path.join(root, "seed_*", "tweets_with_phq9.csv"))):
+            nb_blocks, _, _, nb_agent_ids = parse_tweets_with_phq9_csv(nb_path)
+            for block, aid in zip(nb_blocks, nb_agent_ids):
+                for t in block:
+                    if t and t not in ("NO_POST", "NO_TWEET"):
+                        all_tweets_flat.append((t, aid))
+    print(f"[tweet-rerun] neighbour pool: {len(all_tweets_flat)} posts from "
+          f"{len(neighbor_pool_roots)} root(s)")
+
+    # --- engines + eval ---
+    rng = np.random.default_rng(seed)
+    llm_seed = vllm_kwargs.get("seed")
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or len(
+        (os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(",")
+    )
+    student_engine, teacher_engine = _build_engines(
+        model_name, tp, 0.90,
+        max_model_len=max_model_len,
+        enable_prefix_caching=False,
+        **vllm_kwargs,
+    )
+
+    out_parsed: list[list[str]] = []
+    out_scores: list[float | None] = []
+    mean_score, std_score, per_phq9 = _evaluate_tweet_instruction(
+        student_engine, teacher_engine, instruction, prompts,
+        blocks, answers, personas,
+        all_tweets_flat, rng,
+        format_block=format_block,
+        tweets_per_sample=tweets_per_sample,
+        agent_ids=agent_ids,
+        out_parsed=out_parsed,
+        out_scores=out_scores,
+        verbose=True,
+    )
+
+    print(f"\n[tweet-rerun] Test quality score: {mean_score:.2f}/10 ± {std_score:.2f}  "
+          f"(n={num_agents})")
+    print("[tweet-rerun] Per-PHQ-9 scores:")
+    for phq9_val, stats in sorted(per_phq9.items()):
+        print(f"  PHQ-9={phq9_val:2d}  avg={stats['avg_score']:.2f}  "
+              f"n={stats['n_samples']}  empty={stats['n_empty']}")
+
+    model_short = model_name.split("/")[-1]
+
+    # Per-agent raw scores — same schema family as PHQ-9 mode's test_raw_scores.csv.
+    raw_csv = os.path.join(iter_dir, "test_raw_scores.csv")
+    with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[
+            "model", "seed", "sample_seed", "agent_id", "phq9", "score",
+        ])
+        writer.writeheader()
+        for i in range(num_agents):
+            s = out_scores[i] if i < len(out_scores) else None
+            writer.writerow({
+                "model": model_short, "seed": seed, "sample_seed": sample_seed,
+                "agent_id": agent_ids[i], "phq9": int(answers[i]),
+                "score": "" if s is None else round(s, 4),
+            })
+    print(f"[tweet-rerun] wrote {raw_csv}")
+
+    # Per-PHQ-9 aggregate — same schema family as PHQ-9 mode's test_scores_phq9.csv.
+    per_phq9_csv = os.path.join(iter_dir, "test_scores_phq9.csv")
+    with open(per_phq9_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[
+            "model", "seed", "sample_seed", "phq9",
+            "avg_score", "n_samples", "n_empty",
+        ])
+        writer.writeheader()
+        for phq9_val, stats in sorted(per_phq9.items()):
+            writer.writerow({
+                "model": model_short, "seed": seed, "sample_seed": sample_seed,
+                "phq9": int(phq9_val),
+                "avg_score": round(stats["avg_score"], 4),
+                "n_samples": stats["n_samples"],
+                "n_empty": stats["n_empty"],
+            })
+    print(f"[tweet-rerun] wrote {per_phq9_csv}")
+
+    # Generated tweets — one row per post, with the per-agent teacher score.
+    posts_csv = os.path.join(iter_dir, "test_posts.csv")
+    with open(posts_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["agent_id", "persona", "phq9", "agent_score",
+                         "tweet_idx", "tweet"])
+        for i, tweets in enumerate(out_parsed):
+            score = out_scores[i] if i < len(out_scores) else None
+            score_str = "" if score is None else f"{score:.2f}"
+            for j, tw in enumerate(tweets):
+                clean = (tw or "").replace("\n", " ").replace("\r", " ").strip()
+                writer.writerow([agent_ids[i], personas[i], answers[i],
+                                 score_str, j, clean])
+    print(f"[tweet-rerun] wrote {posts_csv}")
+
+    # Reproducibility log — paths, seeds, pool sizes, sampled indices, summary.
+    meta_path = os.path.join(iter_dir, "eval_meta.txt")
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        fh.write(
+            f"timestamp:           {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+            f"model:               {model_name}\n"
+            f"seed:                {seed}\n"
+            f"sample_seed:         {sample_seed}\n"
+            f"llm_seed:            {llm_seed if llm_seed is not None else '<vllm default>'}\n"
+            f"num_agents:          {num_agents}\n"
+            f"tweets_per_sample:   {tweets_per_sample}\n"
+            f"instruction_file:    {os.path.relpath(instr_path)}\n"
+            f"persona_phq9_file:   {os.path.relpath(persona_phq9_file)}\n"
+            f"neighbor_pool_size:  {len(all_tweets_flat)}\n"
+            f"neighbor_pool_roots:\n"
+        )
+        for r in neighbor_pool_roots:
+            fh.write(f"  - {r}\n")
+        fh.write(
+            f"sampled_row_idx:     {[int(i) for i in sample_idx]}\n"
+            f"\n"
+            f"mean_score:          {mean_score:.4f}\n"
+            f"std_score:           {std_score:.4f}\n"
+        )
+    print(f"[tweet-rerun] wrote {meta_path}")
+
+    try:
+        del student_engine.base.client
+    except Exception:
+        pass
+    del student_engine, teacher_engine
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return mean_score, std_score, per_phq9
 
 
 # =============================== BERT Model ===============================
@@ -1728,13 +2418,21 @@ def create_dataset(file_path: str):
     print(f"Training blocks: {len(training_blocks)}")
     return tweet_blocks, true_answers
 
-def split_embeddings_and_labels(rng, embeddings, labels, train_frac=0.8, val_frac=0.1):
+def split_embeddings_and_labels(rng, embeddings, labels, agent_ids=None,
+                                train_frac=0.8, val_frac=0.1):
     """Split embeddings + labels into train/val/test tensors (remainder is test).
+
+    Group-aware: when `agent_ids` is provided, the partition is computed over the
+    set of unique agents and every block from a given agent lands in the same
+    fold. This prevents the leakage where the same agent's writing-style fingerprint
+    appears in both train and val (which masked val MAE as ~= train MAE).
 
     Args:
         rng: numpy Generator for the permutation.
         embeddings: per-block centroid tensor.
         labels: ground-truth PHQ-9 scores (converted to float tensor if needed).
+        agent_ids: optional list of group keys (one per block). When None, falls
+            back to the legacy block-level split.
         train_frac: fraction for training.
         val_frac: fraction for validation (test gets `1 - train_frac - val_frac`).
 
@@ -1742,14 +2440,33 @@ def split_embeddings_and_labels(rng, embeddings, labels, train_frac=0.8, val_fra
         (train_embs, val_embs, test_embs, train_labels, val_labels, test_labels).
     """
     n = len(embeddings)
-    perm = rng.permutation(n)
 
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
+    if agent_ids is None:
+        perm = rng.permutation(n)
+        n_train = int(n * train_frac)
+        n_val = int(n * val_frac)
+        train_idx = perm[:n_train]
+        val_idx = perm[n_train : n_train + n_val]
+        test_idx = perm[n_train + n_val :]
+    else:
+        if len(agent_ids) != n:
+            raise ValueError(f"agent_ids length ({len(agent_ids)}) != embeddings length ({n})")
+        unique_agents = sorted(set(agent_ids))
+        agent_perm = rng.permutation(len(unique_agents))
+        n_agents = len(unique_agents)
+        n_train_a = int(n_agents * train_frac)
+        n_val_a = int(n_agents * val_frac)
+        train_agents = {unique_agents[i] for i in agent_perm[:n_train_a]}
+        val_agents   = {unique_agents[i] for i in agent_perm[n_train_a : n_train_a + n_val_a]}
+        test_agents  = {unique_agents[i] for i in agent_perm[n_train_a + n_val_a :]}
 
-    train_idx = perm[:n_train]
-    val_idx = perm[n_train : n_train + n_val]
-    test_idx = perm[n_train + n_val :]
+        train_idx = np.array([i for i, a in enumerate(agent_ids) if a in train_agents], dtype=np.int64)
+        val_idx   = np.array([i for i, a in enumerate(agent_ids) if a in val_agents],   dtype=np.int64)
+        test_idx  = np.array([i for i, a in enumerate(agent_ids) if a in test_agents],  dtype=np.int64)
+        print(f"[split] {n_agents} unique agents → "
+              f"train={len(train_agents)}/{len(train_idx)} blocks, "
+              f"val={len(val_agents)}/{len(val_idx)} blocks, "
+              f"test={len(test_agents)}/{len(test_idx)} blocks")
 
     train_embs = embeddings[train_idx]
     val_embs = embeddings[val_idx]
@@ -1757,7 +2474,7 @@ def split_embeddings_and_labels(rng, embeddings, labels, train_frac=0.8, val_fra
 
     if not torch.is_tensor(labels):
         labels = torch.tensor(labels, dtype=torch.float32)
-    
+
     train_labels = labels[train_idx]
     val_labels = labels[val_idx]
     test_labels = labels[test_idx]
@@ -1796,30 +2513,228 @@ def setup_BERT_model(tweet_blocks, model, device):
     centroids = torch.stack(centroids).to(device)
     return centroids
 
-def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool = False, split_seed=42):
-    """Load cached embeddings, split 80/10/10, train the regressor, and save model + metrics.
+def _kfold_cv_pass(pool_embs, pool_labels, mental_bert: bool, device,
+                   k: int, epochs: int, batch_size: int, weight_decay: float,
+                   seed: int, save_dir: str, model_short: str,
+                   pool_agent_ids: list[str] | None = None):
+    """Run k-fold CV on `pool` and write cv_results.csv + cv_results.png.
 
-    Args:
-        embeddings_path: path to a `.pt` containing either {embeddings, labels} or pre-split arrays.
-        base_model_name: model id used to construct the save directory.
-        device: torch device.
-        mental_bert: True if embeddings came from MentalBERT (controls regressor input size).
-        split_seed: RNG seed for the train/val/test split.
+    Group-aware: when `pool_agent_ids` is provided, folds are over agents (every
+    block of a given agent stays in the same fold). Otherwise falls back to
+    block-level folds (legacy — leaks agents across folds).
+
+    Fold assignment is deterministic from `seed`. Torch is re-seeded to `seed`
+    once per fold so weight init is identical across folds — fold variance
+    therefore reflects data-partition effects only, not init noise.
 
     Returns:
-        (best_model, best_val_loss, test_loss).
+        (mean_val_mae, std_val_mae, mean_best_epoch).
+    """
+    n = len(pool_embs)
+    if n < k:
+        raise ValueError(f"Cannot run {k}-fold CV with only {n} pool samples")
+    rng = np.random.default_rng(seed)
+
+    if pool_agent_ids is not None:
+        unique_agents = sorted(set(pool_agent_ids))
+        if len(unique_agents) < k:
+            raise ValueError(f"Cannot run {k}-fold CV with only {len(unique_agents)} unique agents")
+        agent_perm = rng.permutation(len(unique_agents))
+        fold_size_a = len(unique_agents) // k
+        agent_to_block_idx: dict[str, list[int]] = defaultdict(list)
+        for i, a in enumerate(pool_agent_ids):
+            agent_to_block_idx[a].append(i)
+        print(f"\n--- {k}-fold group-CV on {len(unique_agents)} agents "
+              f"({n} blocks, epochs/fold={epochs}) ---")
+    else:
+        perm = rng.permutation(n)
+        fold_size = n // k
+        print(f"\n--- {k}-fold CV on {n}-sample pool (epochs/fold={epochs}) ---")
+
+    cv_records = []
+    for fold_idx in range(k):
+        if pool_agent_ids is not None:
+            val_start = fold_idx * fold_size_a
+            val_end = (fold_idx + 1) * fold_size_a if fold_idx < k - 1 else len(unique_agents)
+            val_agents = {unique_agents[agent_perm[i]] for i in range(val_start, val_end)}
+            val_indices = np.array(
+                [i for a in val_agents for i in agent_to_block_idx[a]], dtype=np.int64
+            )
+            train_indices = np.array(
+                [i for a, idxs in agent_to_block_idx.items() if a not in val_agents for i in idxs],
+                dtype=np.int64,
+            )
+        else:
+            val_start = fold_idx * fold_size
+            val_end = (fold_idx + 1) * fold_size if fold_idx < k - 1 else n
+            val_indices = perm[val_start:val_end]
+            train_indices = np.concatenate([perm[:val_start], perm[val_end:]])
+
+        fold_train_embs = pool_embs[train_indices].to(device)
+        fold_train_labels = pool_labels[train_indices].to(device)
+        fold_val_embs = pool_embs[val_indices].to(device)
+        fold_val_labels = pool_labels[val_indices].to(device)
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        fold_model = neural_net_BERT(mentalbert=mental_bert).to(device)
+
+        fold_model, fold_best_val_mae, fold_history = train_bert(
+            fold_model, fold_train_embs, fold_train_labels,
+            fold_val_embs, fold_val_labels, device,
+            epochs=epochs, batch_size=batch_size, weight_decay=weight_decay,
+        )
+        best_epoch = min(fold_history, key=lambda h: h["val_mae"])["epoch"]
+
+        print(f"  Fold {fold_idx+1}/{k}: n_train={len(train_indices)} n_val={len(val_indices)}  "
+              f"best val MAE={fold_best_val_mae:.3f} @ epoch {best_epoch}")
+
+        cv_records.append({
+            "model": model_short,
+            "seed": seed,
+            "fold": fold_idx + 1,
+            "n_train": int(len(train_indices)),
+            "n_val": int(len(val_indices)),
+            "best_val_mae": float(fold_best_val_mae),
+            "best_epoch": int(best_epoch),
+        })
+
+    cv_csv = os.path.join(save_dir, "cv_results.csv")
+    fieldnames = ["model", "seed", "fold", "n_train", "n_val", "best_val_mae", "best_epoch"]
+    with open(cv_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in cv_records:
+            writer.writerow({key: r[key] for key in fieldnames})
+
+    val_maes = np.array([r["best_val_mae"] for r in cv_records])
+    best_epochs = np.array([r["best_epoch"] for r in cv_records])
+    mean_val_mae = float(val_maes.mean())
+    std_val_mae = float(val_maes.std())
+    mean_best_epoch = int(round(float(best_epochs.mean())))
+
+    print(f"\n[CV summary] {k}-fold val MAE: {mean_val_mae:.3f} ± {std_val_mae:.3f}  "
+          f"(avg best epoch: {mean_best_epoch})")
+    print(f"CV results → {cv_csv}")
+
+    plot_cv_results(
+        cv_records, mean_val_mae, std_val_mae, save_dir,
+        title=f"{k}-fold CV — {model_short} seed={seed}",
+    )
+
+    return mean_val_mae, std_val_mae, mean_best_epoch
+
+
+def run_bert_cv_diagnostic(embeddings_path, base_model_name, device, mental_bert: bool = False,
+                           seed: int = 42, cv_folds: int = 5,
+                           batch_size: int = 8, weight_decay: float = 1e-4,
+                           epochs: int = 30):
+    """One-shot partition-variance diagnostic: 80/20 pool/test split + k-fold CV on the pool.
+
+    Test set is held out (not used) — this entry point only characterizes how
+    much the validation MAE varies across data partitions. Use the regular
+    `--mode bert` training afterwards for the actual production model(s).
+
+    Outputs land in `data/test_post/bert_regression/cv_diagnostic_seed{seed}/`:
+        ├── cv_results.csv
+        └── cv_results.png
     """
     with open(embeddings_path, "rb") as f:
         data = torch.load(f)
-    
-    rng = np.random.default_rng(split_seed)
+    if "embeddings" not in data or "labels" not in data:
+        raise ValueError("CV diagnostic requires the {embeddings, labels} cache format")
+
+    all_embs = data["embeddings"]
+    all_labels = data["labels"]
+    all_agent_ids = data.get("agent_ids")
+    if all_agent_ids is None:
+        raise RuntimeError(
+            f"Embeddings cache at {embeddings_path} predates the agent-level split. "
+            "Re-run with --create-new-embeddings to rebuild the cache with agent_ids."
+        )
+    if not torch.is_tensor(all_labels):
+        all_labels = torch.tensor(all_labels, dtype=torch.float32)
+
+    rng = np.random.default_rng(seed)
+    # Hold out 20% of AGENTS for test (unused here); pool is the remaining 80%.
+    unique_agents = sorted(set(all_agent_ids))
+    agent_perm = rng.permutation(len(unique_agents))
+    n_test_a = max(1, int(len(unique_agents) * 0.20))
+    test_agents = {unique_agents[i] for i in agent_perm[:n_test_a]}
+    pool_indices = np.array(
+        [i for i, a in enumerate(all_agent_ids) if a not in test_agents], dtype=np.int64
+    )
+    pool_embs = all_embs[pool_indices]
+    pool_labels = all_labels[pool_indices]
+    pool_agent_ids = [all_agent_ids[i] for i in pool_indices]
+
+    model_short = base_model_name.split("/")[-1]
+    save_dir = os.path.join("data", "test_post", "bert_regression",
+                            f"cv_diagnostic_seed{seed}")
+    os.makedirs(save_dir, exist_ok=True)
+
+    print(f"CV diagnostic: pool={len(pool_indices)} blocks from "
+          f"{len(unique_agents) - n_test_a} agents (test={n_test_a} agents held out, unused)")
+    return _kfold_cv_pass(
+        pool_embs, pool_labels, mental_bert, device,
+        k=cv_folds, epochs=epochs, batch_size=batch_size, weight_decay=weight_decay,
+        seed=seed, save_dir=save_dir, model_short=model_short,
+        pool_agent_ids=pool_agent_ids,
+    )
+
+
+def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool = False,
+                     seed: int = 42, batch_size: int = 8, weight_decay: float = 1e-4):
+    """Load cached embeddings, do an 80/10/10 split, train the regressor, write metrics + plots.
+
+    The output layout mirrors `call_optimizer_phq9`:
+        data/test_post/bert_regression/{model_short}_seed{seed}/
+            ├── regressor.pt
+            ├── training_trajectory.csv   (model, seed, step, split, mean_score, std_score, n_samples)
+            ├── test_scores_phq9.csv      (model, seed, phq9, avg_mae, avg_bias, std_bias, n_samples)
+            ├── test_raw_scores.csv       (model, seed, true_phq9, pred_phq9)
+            ├── performance.json
+            ├── trajectory.png
+            └── test_scores_by_phq9.png
+
+    Seed semantics:
+        A single `seed` drives both the numpy split RNG (so each seed sees a
+        different 80/10/10 partition) and the torch RNG used for weight init +
+        dropout. Variance across `--seeds` therefore reflects combined
+        partition + init noise — the standard "how stable is this experiment
+        if I rerun it" reading. Run `--mode bert-cv` once for a partition-only
+        variance diagnostic (k-fold CV).
+
+    Args:
+        embeddings_path: path to a `.pt` containing {embeddings, labels}.
+        base_model_name: model id used to construct the save directory.
+        device: torch device.
+        mental_bert: True if embeddings came from MentalBERT (controls regressor input size).
+        seed: RNG seed driving both data partition and model init.
+        batch_size: minibatch size for the inner `train_bert` loop.
+        weight_decay: AdamW weight-decay coefficient.
+
+    Returns:
+        (best_model, best_val_mae, test_mae).
+    """
+    with open(embeddings_path, "rb") as f:
+        data = torch.load(f)
+
+    rng = np.random.default_rng(seed)
 
     if "embeddings" in data and "labels" in data:
-        # Single-array format: split after loading.
         all_embs = data["embeddings"]
         all_labels = data["labels"]
+        agent_ids = data.get("agent_ids")
+        if agent_ids is None:
+            raise RuntimeError(
+                f"Embeddings cache at {embeddings_path} predates the agent-level split. "
+                "Re-run with --create-new-embeddings to rebuild the cache with agent_ids; "
+                "block-level splits leak the same agent across train/val/test."
+            )
         train_embs, val_embs, test_embs, train_labels, val_labels, test_labels = split_embeddings_and_labels(
-            rng, all_embs, all_labels, train_frac=0.8, val_frac=0.1
+            rng, all_embs, all_labels, agent_ids=agent_ids, train_frac=0.8, val_frac=0.1
         )
     else:
         # Legacy pre-split format.
@@ -1834,34 +2749,116 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     val_embs    = val_embs.to(device);    val_labels    = val_labels.to(device)
     test_embs   = test_embs.to(device);   test_labels   = test_labels.to(device)
 
-    print(f"Training blocks: {len(train_embs)}, val: {len(val_embs)}, test: {len(test_embs)}")
+    n_train, n_val = len(train_embs), len(val_embs)
+    print(f"Training blocks: {n_train}, val: {n_val}, test: {len(test_embs)}")
 
-    nn_model = neural_net_BERT(mentalbert=mental_bert).to(device)
-    nn_model, best_loss, epoch_history = train_bert(nn_model, train_embs, train_labels, val_embs, val_labels, device)
-    print("Testing model....")
-    test_loss = evaluate_bert(nn_model, test_embs, test_labels, device, mae=True)
-    print(f"Test Loss: {test_loss}\n\n")
-
-    
-    save_dir = os.path.join("data", "test", base_model_name, "sbertmodel")
+    model_short = base_model_name.split("/")[-1]
+    save_dir = os.path.join("data", "test_post", "bert_regression", f"{model_short}_seed{seed}")
     os.makedirs(save_dir, exist_ok=True)
+
+    trajectory_path = os.path.join(save_dir, "training_trajectory.csv")
+    traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
+    with open(trajectory_path, "w", newline="", encoding="utf-8") as fh:
+        csv.DictWriter(fh, fieldnames=traj_fields).writeheader()
+
+    def _write_row(step: int, split: str, mean_score: float, std_score: float, n_samples: int):
+        with open(trajectory_path, "a", newline="", encoding="utf-8") as fh:
+            csv.DictWriter(fh, fieldnames=traj_fields).writerow({
+                "model": model_short, "seed": seed, "step": step, "split": split,
+                "mean_score": round(float(mean_score), 4),
+                "std_score": round(float(std_score), 4),
+                "n_samples": int(n_samples),
+            })
+
+    # Reseed torch right before building the regressor so weight init (Kaiming)
+    # and dropout are reproducible per seed and vary across seeds.
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    nn_model = neural_net_BERT(mentalbert=mental_bert).to(device)
+
+    # Step-0 baseline: untrained network on train + val (matches PHQ-9 baseline row at step=0).
+    s0_train_mae, s0_train_std = _bert_eval_summary(nn_model, train_embs, train_labels, device)
+    s0_val_mae,   s0_val_std   = _bert_eval_summary(nn_model, val_embs,   val_labels,   device)
+    _write_row(0, "train", s0_train_mae, s0_train_std, n_train)
+    _write_row(0, "val",   s0_val_mae,   s0_val_std,   n_val)
+    print(f"[Step 0] Baseline  train MAE: {s0_train_mae:.2f} ± {s0_train_std:.2f}  "
+          f"val MAE: {s0_val_mae:.2f} ± {s0_val_std:.2f}")
+
+    nn_model, best_val_mae, history = train_bert(
+        nn_model, train_embs, train_labels, val_embs, val_labels, device,
+        batch_size=batch_size, weight_decay=weight_decay,
+    )
+    for entry in history:
+        _write_row(entry["epoch"], "train", entry["train_mae"], entry["train_std"], n_train)
+        _write_row(entry["epoch"], "val",   entry["val_mae"],   entry["val_std"],   n_val)
+
+    print("Testing best model....")
+    test_mae, test_std, per_phq9, raw = _bert_eval_summary(
+        nn_model, test_embs, test_labels, device, want_per_phq9=True,
+    )
+    n_test = len(test_embs)
+    last_step = history[-1]["epoch"] if history else 0
+    _write_row(last_step, "test", test_mae, test_std, n_test)
+    print(f"Test MAE (n={n_test}): {test_mae:.2f} ± {test_std:.2f}")
+
     save_path = os.path.join(save_dir, "regressor.pt")
     torch.save(nn_model, save_path)
-    print(f"Sbert regression saved to {save_path}")
+    print(f"Regressor saved to {save_path}")
+
+    # Raw per-sample (true, pred) — kept for downstream analysis (calibration plots,
+    # confusion matrices, error distributions, etc.) without re-running the regressor.
+    raw_csv = os.path.join(save_dir, "test_raw_scores.csv")
+    with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["model", "seed", "true_phq9", "pred_phq9"])
+        writer.writeheader()
+        for t, p in zip(raw["true"], raw["pred"]):
+            writer.writerow({"model": model_short, "seed": seed,
+                             "true_phq9": round(float(t), 4),
+                             "pred_phq9": round(float(p), 4)})
+    print(f"Raw test scores → {raw_csv}")
+
+    per_phq9_csv = os.path.join(save_dir, "test_scores_phq9.csv")
+    with open(per_phq9_csv, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=["model", "seed", "phq9", "avg_mae", "avg_bias", "std_bias", "n_samples"],
+        )
+        writer.writeheader()
+        for phq9_val, stats in sorted(per_phq9.items()):
+            writer.writerow({
+                "model": model_short, "seed": seed, "phq9": phq9_val,
+                "avg_mae": round(stats["avg_mae"], 4),
+                "avg_bias": round(stats["avg_bias"], 4),
+                "std_bias": round(stats["std_bias"], 4),
+                "n_samples": stats["n_samples"],
+            })
+    print(f"Per-PHQ-9 MAE+bias → {per_phq9_csv}")
 
     metrics_path = os.path.join(save_dir, "performance.json")
-    with open(metrics_path, "w") as f:
-        json.dump(
-            {
-                "best_val_loss": float(best_loss),
-                "test_loss": float(test_loss),
-                "epochs": epoch_history,  # list of {epoch, train_loss, val_loss}
-            },
-            f,
-            indent=2,
-        )
+    with open(metrics_path, "w") as fh:
+        json.dump({
+            "model": model_short,
+            "seed": seed,
+            "mental_bert": bool(mental_bert),
+            "n_train": n_train, "n_val": n_val, "n_test": n_test,
+            "best_val_mae": float(best_val_mae),
+            "test_mae": float(test_mae),
+            "test_std": float(test_std),
+            "epochs": history,
+        }, fh, indent=2)
 
-    return nn_model, best_loss, test_loss
+    plot_optimizer_trajectory(
+        trajectory_path, save_dir,
+        title=f"BERT regressor — {model_short} seed={seed}",
+        mode="phq9",
+    )
+    plot_test_mae_and_bias_by_phq9(
+        per_phq9, save_dir,
+        title=f"Test MAE & bias by PHQ-9 — {model_short} seed={seed} (BERT)",
+    )
+
+    return nn_model, best_val_mae, test_mae
 
 
 class neural_net_BERT(nn.Module):
@@ -1903,64 +2900,89 @@ def train_bert(model,
                 epochs=30,
                 batch_size=8,
                 learning_rate=0.0001,
-                patience=5):
-    """Train the MLP regressor with Huber loss and ReduceLROnPlateau.
+                weight_decay: float = 1e-4):
+    """Train the MLP regressor (Huber gradient, MAE tracking, AdamW).
+
+    Per-epoch MAE/std are recorded for both train and val (when provided) on the
+    *full* split so the resulting history is directly comparable to the PHQ-9
+    optimizer's trajectory CSV (which also reports MAE).
+
+    Pass `val_data=None` (and `val_labels=None`) for "full training" runs that
+    use the entire pool with no holdout val. In that mode there's no best-model
+    selection and the final-epoch model is returned; val_mae/val_std rows in
+    `history` are NaN.
 
     Args:
         model: regressor (already on device).
         train_data: train embeddings.
         train_labels: train PHQ-9 scores.
-        val_data: val embeddings.
-        val_labels: val PHQ-9 scores.
+        val_data: val embeddings, or None to disable val tracking.
+        val_labels: val PHQ-9 scores, or None.
         device: torch device.
         epochs: max training epochs.
         batch_size: minibatch size.
-        learning_rate: initial Adam learning rate.
-        patience: currently unused (scheduler manages LR drops internally).
+        learning_rate: initial AdamW learning rate.
+        weight_decay: AdamW weight-decay coefficient (L2 regularization).
 
     Returns:
-        (best_model, best_val_loss, epoch_history) where history holds per-epoch train/val losses.
+        (best_model, best_val_mae, history) where history is a list of dicts
+        with keys {"epoch", "train_mae", "train_std", "val_mae", "val_std"}.
+        When val is provided, best model is selected on val MAE; otherwise
+        best_val_mae is NaN and best_model is the final-epoch model.
     """
-    model.train()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.6, patience=3)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    has_val = val_data is not None
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.6, patience=2) if has_val else None
 
-    criterion = nn.HuberLoss(delta=1.0)
+    criterion = nn.HuberLoss(delta=6.0)
     train_data = torch.as_tensor(train_data, dtype=torch.float32).to(device)
     train_labels = torch.as_tensor(train_labels, dtype=torch.float32).to(device)
 
-    best_loss = float('inf')
-    epoch_history = {"epoch": [], "train_loss": [], "val_loss": []}
+    best_val_mae = float('inf')
+    best_model_state = copy.deepcopy(model)
+    history: list[dict] = []
+    n_train = len(train_data)
     for epoch in range(epochs):
-        train_loss = 0
-        for i in range(0, len(train_data), batch_size):
-            inputs = train_data[i:i+batch_size]
-            labels = train_labels[i:i+batch_size]     
+        model.train()
+        # Reshuffle each epoch so batch composition varies — reproducible via the
+        # torch seed set before train_bert is called.
+        perm = torch.randperm(n_train, device=device)
+        for i in range(0, n_train, batch_size):
+            idx = perm[i:i+batch_size]
+            inputs = train_data[idx]
+            labels = train_labels[idx]
 
             optimizer.zero_grad()
-            outputs = model(inputs).squeeze(-1) # squeeze the last dimension to get the score
+            outputs = model(inputs).squeeze(-1)
             loss = criterion(outputs, labels)
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            train_loss += loss.item()*inputs.size(0)
 
-        train_loss /= len(train_data)
-        val_loss = evaluate_bert(model, val_data, val_labels, device)
-        scheduler.step(val_loss)
-    
+        train_mae, train_std = _bert_eval_summary(model, train_data, train_labels, device)
+        if has_val:
+            val_mae, val_std = _bert_eval_summary(model, val_data, val_labels, device)
+            scheduler.step(val_mae)
+            if val_mae < best_val_mae:
+                best_val_mae = val_mae
+                best_model_state = copy.deepcopy(model)
+            print(f"Epoch {epoch+1}/{epochs}, Train MAE: {train_mae:.3f}  Val MAE: {val_mae:.3f}")
+        else:
+            val_mae, val_std = float('nan'), float('nan')
+            print(f"Epoch {epoch+1}/{epochs}, Train MAE: {train_mae:.3f}  (no val — full-training mode)")
 
-        epoch_history["epoch"].append(epoch+1)
-        epoch_history["train_loss"].append(train_loss)
-        epoch_history["val_loss"].append(val_loss)
-        print(f"Epoch {epoch+1}/{epochs}, Training Loss: {train_loss} Validation Loss: {val_loss}\n\n")
-  
-        if val_loss < best_loss:
-            best_loss = val_loss
-            best_model_state = copy.deepcopy(model)
-    
-    return best_model_state, best_loss, epoch_history
+        history.append({
+            "epoch": epoch + 1,
+            "train_mae": train_mae, "train_std": train_std,
+            "val_mae": val_mae, "val_std": val_std,
+        })
+
+    if not has_val:
+        best_model_state = copy.deepcopy(model)
+        best_val_mae = float('nan')
+
+    return best_model_state, best_val_mae, history
 
 def evaluate_bert(model, test_data, test_labels, device, mae=False):
     """Run the regressor on `test_data` and return aggregated loss.
@@ -1989,6 +3011,63 @@ def evaluate_bert(model, test_data, test_labels, device, mae=False):
         loss = criterion(outputs, test_labels)
     return loss.item()
 
+
+def _bert_eval_summary(model, data, labels, device, want_per_phq9: bool = False):
+    """MAE/std (and optional per-PHQ-9 stats + raw scores) of a BERT regressor on `data`.
+
+    Mirrors the PHQ-9 optimizer's `_evaluate_instruction` return shape and extends
+    it with signed-bias tracking so we can plot persistent over-/under-estimation
+    patterns per PHQ-9 category.
+
+    Args:
+        model: trained regressor (will be set to eval mode).
+        data: input embeddings.
+        labels: ground-truth PHQ-9 scores.
+        device: torch device.
+        want_per_phq9: if True also return per-PHQ-9 stats and raw (true, pred) arrays.
+
+    Returns:
+        (mae, std) or (mae, std, per_phq9, raw) where:
+            per_phq9 = {true_score: {"avg_mae", "avg_bias", "std_bias", "n_samples"}}
+                       — avg_bias is mean(pred − true); positive means over-estimation.
+            raw      = {"true": [...], "pred": [...]} per-sample arrays.
+    """
+    model.eval()
+    data_t = torch.as_tensor(data, dtype=torch.float32).to(device)
+    labels_t = torch.as_tensor(labels, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        preds = model(data_t).squeeze(-1)
+    abs_err = (preds - labels_t).abs().cpu().numpy()
+    signed_err = (preds - labels_t).cpu().numpy()  # pred − true; sign carries the bias.
+    if abs_err.size == 0:
+        mae, std = 0.0, 0.0
+    else:
+        mae = float(abs_err.mean())
+        std = float(abs_err.std())
+    if not want_per_phq9:
+        return mae, std
+
+    per_phq9_abs = defaultdict(list)
+    per_phq9_signed = defaultdict(list)
+    labels_np = labels_t.cpu().numpy()
+    preds_np = preds.cpu().numpy()
+    for lab, a_err, s_err in zip(labels_np, abs_err, signed_err):
+        k = int(round(float(lab)))
+        per_phq9_abs[k].append(float(a_err))
+        per_phq9_signed[k].append(float(s_err))
+    per_phq9 = {
+        k: {
+            "avg_mae": float(np.mean(per_phq9_abs[k])),
+            "avg_bias": float(np.mean(per_phq9_signed[k])),
+            "std_bias": float(np.std(per_phq9_signed[k])),
+            "n_samples": len(per_phq9_abs[k]),
+        }
+        for k in per_phq9_abs
+    }
+    raw = {"true": labels_np.tolist(), "pred": preds_np.tolist()}
+    return mae, std, per_phq9, raw
+
+
 def save_embeddings_for_file(file_path, base_model_name: str, device, mentalbert: bool = False, out_dir=None):
     """Parse tweets_with_phq9 files, encode blocks with SBERT/MentalBERT, and cache embeddings + labels.
 
@@ -2003,15 +3082,20 @@ def save_embeddings_for_file(file_path, base_model_name: str, device, mentalbert
         out_dir: optional override for the save directory.
     """
     paths = [file_path] if isinstance(file_path, str) else list(file_path)
-    tweet_blocks, true_answers = [], []
+    tweet_blocks, true_answers, group_ids = [], [], []
     for fp in paths:
         if fp.endswith(".csv"):
-            blocks, answers, _, _ = parse_tweets_with_phq9_csv(fp)
+            blocks, answers, _, aids = parse_tweets_with_phq9_csv(fp)
+            # Disambiguate identical agent_id strings across different simulation files.
+            group_ids.extend([f"{fp}::{aid}" for aid in aids])
         else:
             blocks, answers = parse_tweets_with_phq9(fp)
+            # No agent info in .txt — each block is its own group (degenerate = old block-level split).
+            group_ids.extend([f"{fp}::block_{i}" for i in range(len(blocks))])
         tweet_blocks.extend(blocks)
         true_answers.extend(answers)
-    print(f"Loaded {len(tweet_blocks)} blocks from {len(paths)} file(s)")
+    print(f"Loaded {len(tweet_blocks)} blocks from {len(paths)} file(s) "
+          f"({len(set(group_ids))} unique agent groups)")
 
     sbert_model = generate_sbert_model(mentalbert=mentalbert).to(device)
 
@@ -2029,8 +3113,8 @@ def save_embeddings_for_file(file_path, base_model_name: str, device, mentalbert
     os.makedirs(out_dir, exist_ok=True)
 
     torch_path = os.path.join(out_dir, "embeddings_and_labels.pt")
-    torch.save({"embeddings": all_embs, "labels": all_labels}, torch_path)
-    print(f"Saved embeddings + labels to {torch_path} (n={len(all_embs)}); split will be done at train time.")
+    torch.save({"embeddings": all_embs, "labels": all_labels, "agent_ids": group_ids}, torch_path)
+    print(f"Saved embeddings + labels + agent_ids to {torch_path} (n={len(all_embs)}); split will be done at train time.")
     
 
 def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.csv") -> list[str]:
@@ -2056,10 +3140,55 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--val-sample-size", type=int, default=8)
     parser.add_argument("--test-sample-size", type=int, default=50)
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from <output_dir>/state.json if present "
+                             "(skips step-0 baseline; trajectory CSV is appended). "
+                             "If state.json is missing, falls back to a fresh run.")
     parser.add_argument("--model", type=str, default=QWEN_27,
                         help="HuggingFace model id (e.g. Qwen/Qwen3.5-27B)")
-    parser.add_argument("--mode", type=str, default="tweets", choices=["tweets", "phq9", "bert"],
-                        help="Which optimizer to run: tweets, phq9, or bert")
+    parser.add_argument("--mode", type=str, default="tweets",
+                        choices=["tweets", "phq9", "phq9-rerun-test",
+                                 "tweets-rerun-test", "bert", "bert-cv"],
+                        help="Which entry point to run: tweets, phq9, phq9-rerun-test "
+                             "(re-test saved best instruction without retraining), "
+                             "tweets-rerun-test (score a saved tweet instruction by "
+                             "sampling fresh agent-PHQ-9 pairs; see --instruction-file "
+                             "+ --persona-phq9-file), bert, or bert-cv "
+                             "(one-shot partition-variance diagnostic for the BERT regressor).")
+    parser.add_argument("--instruction-filename", type=str, default="optimized_instruction.txt",
+                        help="(--mode phq9-rerun-test only) which prompt file under the seed "
+                             "directory to test. Default: optimized_instruction.txt — the prompt "
+                             "the original test run used. For seed-26-style mixed states pass "
+                             "optimized_instruction.txt explicitly rather than best_instruction.txt.")
+    parser.add_argument("--instruction-file", type=str, default=None,
+                        help="(--mode tweets-rerun-test only) full path to the instruction "
+                             "txt to evaluate (e.g. data/prompt_optimization_h/<run>/iter_N/prompt.txt).")
+    parser.add_argument("--persona-phq9-file", type=str, default=None,
+                        help="(--mode tweets-rerun-test only) (persona, phq9) CSV — fresh "
+                             "agent-PHQ-9 pairs are sampled from here with --sample-seed.")
+    parser.add_argument("--num-agents", type=int, default=7,
+                        help="(--mode tweets-rerun-test only) agents drawn from the persona-phq9 file.")
+    parser.add_argument("--sample-seed", type=int, default=None,
+                        help="(--mode tweets-rerun-test only) RNG seed for agent sampling. "
+                             "Defaults to N parsed from the prompt-file's iter_<N>/ parent dir, "
+                             "so iter_7/prompt.txt evaluates on the same agents iter_7/posts.csv "
+                             "was generated against.")
+    parser.add_argument("--neighbor-pool-root", type=str, nargs="+", default=None,
+                        help="(--mode tweets-rerun-test only) base dirs containing "
+                             "seed_*/tweets_with_phq9.csv for neighbour sampling. Defaults "
+                             "to both inter+no_inter under data/test_post/Qwen_Qwen3.5-27B/.")
+    parser.add_argument("--tweets-per-sample", type=int, default=3,
+                        help="(--mode tweets-rerun-test only) tweets generated per agent.")
+    parser.add_argument("--llm-seed", type=int, default=None,
+                        help="(--mode tweets-rerun-test only) seed passed to vLLM's LLM(...) "
+                             "at engine construction. Different values = different student / "
+                             "teacher sampling sequences. Leave unset for vLLM's default.")
+    parser.add_argument("--cv-folds", type=int, default=5,
+                        help="(--mode bert-cv only) k for k-fold CV. Default: 5. "
+                             "Ignored in all other modes.")
+    parser.add_argument("--weight-decay", type=float, default=1e-4,
+                        help="(--mode bert / bert-cv only) AdamW weight-decay "
+                             "coefficient for the regressor. Default: 1e-4.")
     args = parser.parse_args()
 
     create_new_embeddings = False
@@ -2089,6 +3218,17 @@ if __name__ == "__main__":
                 val_sample_size=args.val_sample_size,
                 test_sample_size=args.test_sample_size,
                 seed=seed,
+                resume=args.resume,
+            )
+    elif run_mode == "phq9-rerun-test":
+        for seed in args.seeds:
+            print(f"\n{'='*60}\nRe-running PHQ-9 test for seed={seed} "
+                  f"(loading {args.instruction_filename})\n{'='*60}")
+            rerun_test_phq9(
+                seed=seed,
+                file_paths=file_paths,
+                model_name=model_name,
+                instruction_filename=args.instruction_filename,
             )
     elif run_mode == "tweets":
         for seed in args.seeds:
@@ -2103,13 +3243,63 @@ if __name__ == "__main__":
                 val_sample_size=args.val_sample_size,
                 test_sample_size=args.test_sample_size,
                 prompts_file="data/prompts_post_minimal.json",
+                resume=args.resume,
+            )
+    elif run_mode == "tweets-rerun-test":
+        if not args.instruction_file:
+            raise SystemExit("--mode tweets-rerun-test requires --instruction-file")
+        if not args.persona_phq9_file:
+            raise SystemExit("--mode tweets-rerun-test requires --persona-phq9-file")
+        vllm_extra = {"seed": args.llm_seed} if args.llm_seed is not None else {}
+        for seed in args.seeds:
+            print(f"\n{'='*60}\nRe-running tweet eval for {args.instruction_file} "
+                  f"(seed={seed})\n{'='*60}")
+            rerun_test_tweets(
+                instruction_file=args.instruction_file,
+                persona_phq9_file=args.persona_phq9_file,
+                num_agents=args.num_agents,
+                sample_seed=args.sample_seed,
+                neighbor_pool_roots=args.neighbor_pool_root,
+                model_name=model_name,
+                seed=seed,
+                tweets_per_sample=args.tweets_per_sample,
+                **vllm_extra,
             )
     else:
+        # bert / bert-cv: shared device + embeddings-cache setup.
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {device}")
-        if create_new_embeddings:
-            save_embeddings_for_file(file_paths, base_model_name, device, mentalbert=mental_bert)
 
         dir_name = "mentalbert_embeddings" if mental_bert else "sbert_embeddings"
         embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
-        train_BERT_model(embeddings_path, base_model_name, device, mental_bert=mental_bert, split_seed=args.seeds[0])
+        need_rebuild = create_new_embeddings or not os.path.isfile(embeddings_path)
+        if not need_rebuild:
+            # Old caches lack `agent_ids` — rebuild so the agent-level split has the group keys it needs.
+            _cached = torch.load(embeddings_path, map_location="cpu")
+            if "agent_ids" not in _cached:
+                print(f"[bert] cache at {embeddings_path} lacks agent_ids — forcing rebuild for agent-level split")
+                need_rebuild = True
+            del _cached
+        if need_rebuild:
+            print(f"[bert] (re)building embeddings cache at {embeddings_path}")
+            save_embeddings_for_file(file_paths, base_model_name, device, mentalbert=mental_bert)
+
+        if run_mode == "bert-cv":
+            seed = args.seeds[0]
+            print(f"\n{'='*60}\nRunning BERT CV diagnostic with seed={seed} "
+                  f"cv_folds={args.cv_folds} batch_size={args.batch_size} "
+                  f"weight_decay={args.weight_decay}\n{'='*60}")
+            run_bert_cv_diagnostic(embeddings_path, base_model_name, device,
+                                   mental_bert=mental_bert,
+                                   seed=seed, cv_folds=args.cv_folds,
+                                   batch_size=args.batch_size,
+                                   weight_decay=args.weight_decay)
+        else:
+            for seed in args.seeds:
+                print(f"\n{'='*60}\nRunning BERT regressor with seed={seed} "
+                      f"batch_size={args.batch_size} weight_decay={args.weight_decay}\n{'='*60}")
+                train_BERT_model(embeddings_path, base_model_name, device,
+                                 mental_bert=mental_bert,
+                                 seed=seed,
+                                 batch_size=args.batch_size,
+                                 weight_decay=args.weight_decay)

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from . import metrics
-from .format_config import FC
+from .tools.format_config import FC
 import pandas as pd
 
 def print_network(network, path="", filename="default.png", save=False):
@@ -1818,6 +1818,143 @@ def plot_test_scores_by_phq9(per_phq9: dict, output_dir: str, title: str, mode: 
     plt.close(fig)
 
 
+def plot_test_mae_and_bias_by_phq9(per_phq9: dict, output_dir: str, title: str):
+    """Side-by-side bars: MAE per PHQ-9 category (left) and signed bias (right).
+
+    per_phq9 keys are integer PHQ-9 values; values must contain
+    ``avg_mae``, ``avg_bias``, ``std_bias``, and ``n_samples``.
+
+    The bias panel uses ``mean(pred − true)`` so positive bars mean the model
+    over-estimates the true score for that severity bracket, negative bars mean
+    under-estimation. Error bars on both panels show the (weighted) std of
+    per-PHQ-9 averages within the category — same convention as
+    ``plot_test_scores_by_phq9``.
+    """
+    categories = [
+        ("Minimal\n(0–4)",       range(0,  5),  "#91CF60"),
+        ("Mild\n(5–9)",          range(5, 10),  "#FEE090"),
+        ("Moderate\n(10–14)",    range(10, 15), "#FC8D59"),
+        ("Mod. severe\n(15–19)", range(15, 20), "#D73027"),
+        ("Severe\n(20–27)",      range(20, 28), "#8B0000"),
+    ]
+
+    labels, mae_means, mae_stds = [], [], []
+    bias_means, bias_stds, totals, colors = [], [], [], []
+    for label, phq_range, color in categories:
+        maes, biases, ns = [], [], []
+        for k in phq_range:
+            if k in per_phq9:
+                maes.append(per_phq9[k].get("avg_mae", 0.0))
+                biases.append(per_phq9[k].get("avg_bias", 0.0))
+                ns.append(per_phq9[k].get("n_samples", 1))
+        if not maes:
+            continue
+        ns_arr = np.array(ns, dtype=float)
+        mae_arr = np.array(maes)
+        bias_arr = np.array(biases)
+        wmae = float(np.average(mae_arr, weights=ns_arr))
+        wmae_std = float(np.sqrt(np.average((mae_arr - wmae) ** 2, weights=ns_arr)))
+        wbias = float(np.average(bias_arr, weights=ns_arr))
+        wbias_std = float(np.sqrt(np.average((bias_arr - wbias) ** 2, weights=ns_arr)))
+        labels.append(label)
+        mae_means.append(wmae)
+        mae_stds.append(wmae_std)
+        bias_means.append(wbias)
+        bias_stds.append(wbias_std)
+        totals.append(int(ns_arr.sum()))
+        colors.append(color)
+
+    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
+    x = np.arange(len(labels))
+
+    bars_mae = ax_mae.bar(x, mae_means, color=colors, edgecolor="white", linewidth=0.8,
+                          yerr=mae_stds, capsize=5,
+                          error_kw={"elinewidth": 1.5, "ecolor": "black"})
+    for bar, n in zip(bars_mae, totals):
+        ax_mae.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() * 0.5,
+                    f"n={n}", ha="center", va="center", fontsize=9, color="black")
+    ax_mae.set_xticks(x)
+    ax_mae.set_xticklabels(labels, fontsize=10)
+    ax_mae.set_xlabel("Depression severity")
+    ax_mae.set_ylabel("MAE  (↓ better)")
+    ax_mae.set_title("MAE by category")
+    ax_mae.grid(True, axis="y", alpha=0.25)
+    ax_mae.set_axisbelow(True)
+
+    bars_bias = ax_bias.bar(x, bias_means, color=colors, edgecolor="white", linewidth=0.8,
+                            yerr=bias_stds, capsize=5,
+                            error_kw={"elinewidth": 1.5, "ecolor": "black"})
+    ax_bias.axhline(0, color="black", linewidth=1.0, alpha=0.8)
+    if bias_means:
+        bias_span = max(abs(min(bias_means + [0])), abs(max(bias_means + [0])), 1e-6)
+        offset = 0.05 * bias_span
+        for bar, n in zip(bars_bias, totals):
+            h = bar.get_height()
+            if h >= 0:
+                ax_bias.text(bar.get_x() + bar.get_width() / 2, h + offset,
+                             f"n={n}", ha="center", va="bottom", fontsize=8)
+            else:
+                ax_bias.text(bar.get_x() + bar.get_width() / 2, h - offset,
+                             f"n={n}", ha="center", va="top", fontsize=8)
+    ax_bias.set_xticks(x)
+    ax_bias.set_xticklabels(labels, fontsize=10)
+    ax_bias.set_xlabel("Depression severity")
+    ax_bias.set_ylabel("Bias = mean(pred − true)\n(+ over-estimate / − under-estimate)")
+    ax_bias.set_title("Signed bias by category")
+    ax_bias.grid(True, axis="y", alpha=0.25)
+    ax_bias.set_axisbelow(True)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    out = os.path.join(output_dir, "test_scores_by_phq9.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Test MAE+bias plot → {out}")
+    return out
+
+
+def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
+                    output_dir: str, title: str):
+    """Bar plot of best per-fold val MAE with a horizontal mean line and ±1 std band.
+
+    Used as a pre-flight diagnostic before final BERT training: small bars and a
+    narrow std band mean the model is stable across data partitions; tall bars
+    or a wide band mean a single 80/10/10 split's reported MAE is partly a
+    function of which 10% it happened to draw.
+    """
+    folds = [r["fold"] for r in cv_records]
+    val_maes = [r["best_val_mae"] for r in cv_records]
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    bars = ax.bar(folds, val_maes, color="#4292C6", edgecolor="white", linewidth=0.8)
+    ax.axhspan(mean_val_mae - std_val_mae, mean_val_mae + std_val_mae,
+               color="black", alpha=0.10, label=f"±1 std ({std_val_mae:.3f})")
+    ax.axhline(mean_val_mae, color="black", linewidth=1.5, linestyle="--",
+               label=f"Mean = {mean_val_mae:.3f}")
+
+    for bar, mae in zip(bars, val_maes):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01 * max(val_maes),
+                f"{mae:.3f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(folds)
+    ax.set_xticklabels([f"Fold {f}" for f in folds])
+    ax.set_xlabel("Cross-validation fold")
+    ax.set_ylabel("Best val MAE  (↓ better)")
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.legend(loc="best")
+
+    out = os.path.join(output_dir, "cv_results.png")
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"CV plot → {out}")
+    return out
+
+
 _PROMPT_TYPE_META = {
     "post_gen": {
         "base_dir": "data/test_post/optimized_tweets",
@@ -1825,7 +1962,7 @@ _PROMPT_TYPE_META = {
     },
     "phq9": {
         "base_dir": "data/test_post/optimized_phq9",
-        "filename": "best_instruction_phq9.txt",
+        "filename": "best_instruction.txt",
     },
 }
 
@@ -1875,92 +2012,141 @@ def load_test_scores(model_name: str, seeds: list,
     return scores
 
 
-def plot_prompt_sensitivity(robustness: dict, model_name: str,
-                             prompt_type: str = "post_gen") -> None:
-    """Side-by-side prompt sensitivity figure saved to
-    ``<base_dir>/<model_name>/prompt_sensitivity_<prompt_type>.png``.
+def load_minimal_score(model_name: str, seeds: list,
+                       prompt_type: str = "post_gen") -> float:
+    """Average the first val-split mean_score across seeds.
 
-    prompt_type: ``"post_gen"`` for post-generation prompt,
-                 ``"phq9"`` for PHQ-9 assessment prompt.
+    Step 0 of training_trajectory.csv is the un-optimised ("minimal") prompt's
+    validation score, so the mean across seeds estimates the minimal prompt's
+    performance on the same metric as `load_test_scores`.
+    """
+    import csv
 
-    Left panel : N×N pairwise cosine similarity heatmap across optimised prompts.
-    Right panel: cosine distance from baseline vs. test score per run (omitted if
-                 robustness['baseline_distances'] is None).
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    base_dir = _PROMPT_TYPE_META[prompt_type]["base_dir"]
+    firsts = []
+    for seed in seeds:
+        path = os.path.join(base_dir, f"{model_name}_seed{seed}", "training_trajectory.csv")
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["split"] == "val":
+                    firsts.append(float(row["mean_score"]))
+                    break
+            else:
+                raise ValueError(f"No val split found in {path}")
+    return sum(firsts) / len(firsts)
+
+
+def _draw_prompt_sim_heatmap(ax, robustness: dict, title: str) -> None:
+    """Draw a cosine-similarity heatmap (one panel) onto `ax`.
+
+    Cell colour = cosine similarity. Cell annotation = mean test score of the two
+    runs at that cell (the diagonal shows that run's own score). The baseline
+    ("minimal") row/column is rendered without annotations since it has no test
+    score.
     """
     import seaborn as sns
 
+    sim = np.array(robustness["sim_matrix"])
+    labels = robustness["labels"]
+    has_baseline = bool(robustness.get("has_baseline"))
+    test_scores = list(robustness["test_scores"])
+    n_runs = len(test_scores)              # excludes baseline
+    n_total = sim.shape[0]                 # includes baseline if present
+    vmin = float(np.min(sim[sim < 1.0])) if (sim < 1.0).any() else 0.0
+    vmin = max(0.0, vmin - 0.02)
+
+    annot = np.empty(sim.shape, dtype=object)
+    for i in range(n_total):
+        for j in range(n_total):
+            i_is_base = has_baseline and i == n_runs
+            j_is_base = has_baseline and j == n_runs
+            if i_is_base or j_is_base:
+                annot[i, j] = ""               # baseline has no test score
+            else:
+                annot[i, j] = f"{(test_scores[i] + test_scores[j]) / 2.0:.2f}"
+
+    sns.heatmap(
+        sim,
+        ax=ax,
+        xticklabels=labels,
+        yticklabels=labels,
+        vmin=vmin,
+        vmax=1.0,
+        annot=annot,
+        fmt="",
+        cmap="Blues",
+        linewidths=0.4,
+        linecolor="white",
+        cbar_kws={"label": "cosine similarity", "shrink": 0.8},
+    )
+    ax.set_title(title, fontsize=11)
+    ax.tick_params(axis="x", rotation=45)
+    ax.tick_params(axis="y", rotation=0)
+
+
+def plot_prompt_sensitivity(robustness: dict, model_name: str,
+                             prompt_type: str = "post_gen") -> None:
+    """Single-panel prompt sensitivity heatmap saved to
+    ``<base_dir>/<model_name>_sensitivity/prompt_sensitivity_<prompt_type>.png``.
+
+    Cells are coloured by pairwise cosine similarity; when ``robustness`` includes a
+    baseline prompt it is rendered as the last row/col labelled "minimal".
+    """
     if prompt_type not in _PROMPT_TYPE_META:
         raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
 
     type_label = "Post-Generation Prompt" if prompt_type == "post_gen" else "PHQ-9 Assessment Prompt"
-    suptitle = f"{model_name} – Prompt Sensitivity Analysis\n({type_label})"
-
-    sim = np.array(robustness["sim_matrix"])
-    labels = robustness["labels"]
-    has_baseline = robustness.get("baseline_distances") is not None
-    ncols = 2 if has_baseline else 1
-    n = len(labels)
-
-    heatmap_w = max(4.5, n * 0.9)
-    scatter_w = 5.0
-    fig_w = heatmap_w + scatter_w if has_baseline else heatmap_w
-    fig_h = max(4.0, n * 0.85)
-
-    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, fig_h),
-                              gridspec_kw={"width_ratios": [heatmap_w, scatter_w]} if has_baseline else None)
-    if ncols == 1:
-        axes = [axes]
-
-    # --- left: performance-coloured similarity heatmap ---
-    # Cell colour = mean test score of the two runs; annotation = cosine similarity.
-    test_scores_arr = np.array(robustness["test_scores"])
-    score_matrix = (test_scores_arr[:, None] + test_scores_arr[None, :]) / 2.0
-    score_range = score_matrix.max() - score_matrix.min()
-    vmin = score_matrix.min() - 0.05 * score_range
-    vmax = score_matrix.max() + 0.05 * score_range
-
-    # Build string annotation matrix: "score\n(sim)"
-    annot_matrix = np.empty((n, n), dtype=object)
-    for i in range(n):
-        for j in range(n):
-            annot_matrix[i, j] = f"{score_matrix[i, j]:.1f}\n({sim[i, j]:.2f})"
-
-    ax_heat = axes[0]
-    sns.heatmap(
-        score_matrix,
-        ax=ax_heat,
-        xticklabels=labels,
-        yticklabels=labels,
-        vmin=vmin,
-        vmax=vmax,
-        annot=annot_matrix,
-        fmt="",
-        cmap="RdYlGn",
-        linewidths=0.4,
-        linecolor="white",
-        cbar_kws={"label": "mean test score", "shrink": 0.8},
-    )
-    ax_heat.set_title("Pairwise prompt similarity\n(colour = mean test score, annotation = cosim)", fontsize=10)
-    ax_heat.tick_params(axis="x", rotation=45)
-    ax_heat.tick_params(axis="y", rotation=0)
-
-    # --- right: distance from baseline vs. test score ---
-    if has_baseline:
-        ax_sc = axes[1]
-        distances = robustness["baseline_distances"]
-        scores = robustness["test_scores"]
-        ax_sc.scatter(distances, scores, color="#4C72B0", s=70, zorder=3)
-        for d, s, lbl in zip(distances, scores, labels):
-            ax_sc.annotate(lbl, (d, s), textcoords="offset points", xytext=(6, 3), fontsize=8)
-        ax_sc.set_xlabel("Cosine distance from baseline prompt\n(↑ more different from initial)", fontsize=9)
-        ax_sc.set_ylabel("Test score", fontsize=9)
-        ax_sc.set_title("Prompt deviation vs. performance", fontsize=10)
-        ax_sc.grid(True, alpha=0.25)
-
-    fig.suptitle(suptitle, fontsize=12, fontweight="bold", y=1.03)
+    n = len(robustness["labels"])
+    fig_size = max(4.5, n * 0.9)
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+    _draw_prompt_sim_heatmap(ax, robustness, title=f"Pairwise prompt similarity\n({type_label})")
+    fig.suptitle(f"{model_name} – Prompt Sensitivity", fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
     output_dir = os.path.join(_PROMPT_TYPE_META[prompt_type]["base_dir"], f"{model_name}_sensitivity")
     os.makedirs(output_dir, exist_ok=True)
     out = os.path.join(output_dir, f"prompt_sensitivity_{prompt_type}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dict,
+                                  model_name: str, output_dir: str = None) -> str:
+    """Render PHQ-9 and post-generation cosim heatmaps side by side in one figure.
+
+    Args:
+        robustness_phq9: robustness dict for the PHQ-9 assessment prompt.
+        robustness_post_gen: robustness dict for the post-generation prompt.
+        model_name: short model id used in the title and default output path.
+        output_dir: where to save the PNG; defaults to
+            ``data/test_post/optimized_phq9/<model_name>_sensitivity``.
+
+    Returns the saved file path.
+    """
+    n_left = len(robustness_phq9["labels"])
+    n_right = len(robustness_post_gen["labels"])
+    cell = 0.85
+    panel_w = lambda n: max(5.0, n * cell)
+    fig_w = panel_w(n_left) + panel_w(n_right)
+    fig_h = max(5.0, max(n_left, n_right) * cell + 1.0)
+
+    fig, (ax_phq9, ax_post) = plt.subplots(
+        1, 2, figsize=(fig_w, fig_h),
+        gridspec_kw={"width_ratios": [panel_w(n_left), panel_w(n_right)]},
+    )
+    _draw_prompt_sim_heatmap(ax_phq9, robustness_phq9, title="PHQ-9 assessment prompt")
+    _draw_prompt_sim_heatmap(ax_post, robustness_post_gen, title="Post-generation prompt")
+
+    fig.suptitle(f"{model_name} – Prompt sensitivity (pairwise cosine similarity)",
+                 fontsize=13, fontweight="bold", y=1.02)
+    fig.tight_layout()
+
+    if output_dir is None:
+        output_dir = os.path.join(_PROMPT_TYPE_META["phq9"]["base_dir"], f"{model_name}_sensitivity")
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(output_dir, "prompt_sensitivity_pair.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Pair sensitivity plot → {out}")
+    return out

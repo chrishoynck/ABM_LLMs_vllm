@@ -6,7 +6,7 @@ import networkx as nx
 from sentence_transformers import models
 from sentence_transformers import SentenceTransformer as sbert
 import umap
-from .format_config import FC
+from .tools.format_config import FC
 
 def print_histories(network, file_dir, file_name, save=False):
     """
@@ -1050,39 +1050,58 @@ def all_agent__tweet_cd(network, window_size, shift=1):
 
 def compute_prompt_robustness(prompts: list[str], test_scores: list[float],
                                baseline_prompt: str = None,
+                               seeds: list = None,
+                               labels: list = None,
                                model_name: str = "all-MiniLM-L6-v2") -> dict:
-    """Compute pairwise cosine similarity and distance-from-baseline for optimised prompts.
+    """Compute the pairwise cosine-similarity matrix across optimised prompts.
+
+    When `baseline_prompt` is provided, it is appended as the final row/column of the
+    matrix and labelled "minimal", so the heatmap visualises how each optimised prompt
+    relates to its starting point in addition to its peers.
 
     Args:
         prompts:         Optimised prompt strings (one per seed/run).
         test_scores:     Corresponding test scores (same order as prompts).
-        baseline_prompt: Un-optimised starting prompt; if given, computes cosine
-                         distance from baseline for each optimised prompt.
+        baseline_prompt: Un-optimised starting prompt; appended to the matrix when given.
+        seeds:           Optional seeds aligned with `prompts`; used to build the default
+                         "seed N" labels if `labels` is not provided.
+        labels:          Optional explicit labels aligned with `prompts`. When given,
+                         override the seeds-derived defaults. "minimal" is still appended
+                         automatically for the baseline.
         model_name:      SBERT model for embedding.
 
     Returns dict with keys:
-        'sim_matrix'         – (N, N) pairwise cosine similarity
-        'labels'             – ["run 1", "run 2", ...]
-        'test_scores'        – echo of input
-        'baseline_distances' – cosine distances from baseline, or None
+        'sim_matrix'  – (N, N) or (N+1, N+1) pairwise cosine similarity
+        'labels'      – run labels (and "minimal" appended when baseline is included)
+        'test_scores' – echo of input (no entry added for baseline)
+        'has_baseline' – True if baseline_prompt was included in the matrix
     """
+    all_prompts = list(prompts)
+    if baseline_prompt is not None:
+        all_prompts.append(baseline_prompt)
+
     model = generate_sbert_model(model_name=model_name)
-    embeddings = model.encode(prompts, convert_to_numpy=True, show_progress_bar=False)
+    embeddings = model.encode(all_prompts, convert_to_numpy=True, show_progress_bar=False)
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     normed = embeddings / np.maximum(norms, 1e-10)
     sim_matrix = (normed @ normed.T).astype(float)
 
-    baseline_distances = None
+    if labels is not None:
+        if len(labels) != len(prompts):
+            raise ValueError(f"labels length {len(labels)} != prompts length {len(prompts)}")
+        resolved_labels = list(labels)
+    elif seeds is not None and len(seeds) == len(prompts):
+        resolved_labels = [f"seed {s}" for s in seeds]
+    else:
+        resolved_labels = [f"run {i+1}" for i in range(len(prompts))]
     if baseline_prompt is not None:
-        base_emb = model.encode([baseline_prompt], convert_to_numpy=True, show_progress_bar=False)
-        base_norm = base_emb / np.maximum(np.linalg.norm(base_emb, keepdims=True), 1e-10)
-        baseline_distances = [float(1.0 - float(base_norm @ normed[i])) for i in range(len(prompts))]
+        resolved_labels.append("minimal")
 
     return {
         "sim_matrix": sim_matrix,
-        "labels": [f"run {i+1}" for i in range(len(prompts))],
+        "labels": resolved_labels,
         "test_scores": list(test_scores),
-        "baseline_distances": baseline_distances,
+        "has_baseline": baseline_prompt is not None,
     }
 
 

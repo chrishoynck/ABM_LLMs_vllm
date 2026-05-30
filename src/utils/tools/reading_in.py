@@ -1,6 +1,6 @@
 import json
 from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
-from utils.path_manager import PathManager, TestPathManager
+from utils.tools.path_manager import PathManager, TestPathManager
 import ast, torch, os, random
 import numpy as np
 
@@ -360,7 +360,7 @@ def load_tester_checkpoint(file_path: str):
     mistake_dict – accumulated error dict  {phq9_score: [errors]}
     """
     # Lazy import avoids circular imports at module level
-    from utils.test_phq9_llms import TestLLMs
+    from utils.create_data.test_phq9_llms import TestLLMs
     from classes.agent import Agent
 
     props = read_in_tester(file_path)
