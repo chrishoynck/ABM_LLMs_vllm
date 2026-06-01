@@ -42,6 +42,7 @@ __all__ = [
     "get_tokenizer",
     "get_llm",
     "load_persona_phq9",
+    "load_persona_phq9_stratified",
     "load_well_being_zeros",
     "build_aligned_context",
     "gather_neighbor_pool",
@@ -157,6 +158,71 @@ def load_persona_phq9(path: str, n_rows: int | None = None,
         personas = df["persona"].head(n_rows).tolist()
         phq9 = df["phq9"].head(n_rows).astype(int).tolist()
     return personas, phq9, sample_idx
+
+
+def load_persona_phq9_stratified(path: str, n_rows: int, sample_seed: int,
+                                 reference_seed: int = 0,
+                                 ) -> tuple[list, list[int], list[int]]:
+    """Sample personas in a PHQ-9-balanced way that yields the SAME per-slot
+    PHQ-9 vector across different ``sample_seed`` values.
+
+    Mechanism: a fixed "reference" draw (via ``reference_seed``) determines the
+    PHQ-9 score that occupies each slot ``i`` for all subsequent calls; each
+    actual call then draws a fresh persona whose ``phq9`` matches that target,
+    using ``sample_seed`` to vary *which* persona is picked.
+
+    Effect: slot 0 always has the same PHQ-9 score (and thus the same severity
+    band) across runs that vary only ``sample_seed`` — only the persona text
+    differs. This lets the agent-axis SA do neighbour-style paired (slot,
+    round) comparisons with PHQ-9 and neighbour input held constant, isolating
+    the effect of swapping the persona.
+
+    Returns ``(personas, phq9_assignments, sample_idx)`` aligned by slot.
+    Raises if any reference PHQ-9 score has fewer than ``n_rows`` candidates
+    (since we need at least one per slot, and ideally distinct ones per call).
+    """
+    df = pd.read_csv(path)
+    if len(df) < n_rows:
+        raise ValueError(
+            f"--persona-phq9-file has {len(df)} rows but {n_rows} requested."
+        )
+
+    # Reference draw → fixed per-slot PHQ-9 target vector.
+    ref_rng = np.random.default_rng(reference_seed)
+    ref_idx = sorted(ref_rng.choice(len(df), size=n_rows, replace=False))
+    target_phq9 = df["phq9"].iloc[ref_idx].astype(int).tolist()
+
+    # Group the persona pool by PHQ-9 score for fast lookup.
+    by_phq9: dict[int, list[int]] = {}
+    for i, score in enumerate(df["phq9"].astype(int).tolist()):
+        by_phq9.setdefault(int(score), []).append(i)
+
+    # For each slot, pick one persona whose PHQ-9 matches the target.
+    # Use a per-call RNG so different sample_seed values pick different
+    # personas; track per-score usage to avoid the same row at different slots
+    # within one call.
+    call_rng = np.random.default_rng(sample_seed)
+    used: set[int] = set()
+    chosen_idx: list[int] = []
+    for slot_target in target_phq9:
+        candidates = [i for i in by_phq9.get(slot_target, []) if i not in used]
+        if not candidates:
+            # Fall back to the full candidate set (allows reuse) if exhausted —
+            # rare unless n_rows is large relative to per-score pool.
+            candidates = list(by_phq9.get(slot_target, []))
+            if not candidates:
+                raise ValueError(
+                    f"no personas with PHQ-9={slot_target} in {path}; cannot "
+                    f"satisfy stratified draw for slot."
+                )
+        pick = int(call_rng.choice(candidates))
+        used.add(pick)
+        chosen_idx.append(pick)
+
+    personas = df["persona"].iloc[chosen_idx].tolist()
+    phq9 = df["phq9"].iloc[chosen_idx].astype(int).tolist()
+    assert phq9 == target_phq9, "stratification invariant violated"
+    return personas, phq9, chosen_idx
 
 
 def load_well_being_zeros(num_agents: int, seed: int) -> list:

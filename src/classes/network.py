@@ -76,6 +76,12 @@ class _Network:
                               well_being=self.well_being[i]) for i in range(int(num_agents))]
         self.connections = set()
         self.cds_info = []
+        # When True, also record the legacy on-the-fly CDS tuples in cds_info
+        # each round. Default False — the per-agent neighbor_history (written in
+        # Agent.commit) is the primary source, and cds_info is re-derivable from
+        # it via metrics.cds_info_from_neighbor_history. Read-in may flip this on
+        # to pursue a checkpoint that had dynamic CDS enabled.
+        self.cds_dynamic = False
         self.agent_w_highest_deg = self.all_agents[0] # placeholder
 
         if phq9_mode not in ("llm", "bert"):
@@ -447,8 +453,9 @@ class _Network:
         distorted_fracs = []
         num_active_agents = 0
         for agent in self.all_agents:
-            distorted = agent.commit(n_grams=n_grams)
-            self.cds_info.append((agent.frac_distorted_neigh, agent.activation_state, distorted))
+            distorted = agent.commit(n_grams=n_grams, round_idx=self.iterations)
+            if self.cds_dynamic:
+                self.cds_info.append((agent.frac_distorted_neigh, agent.activation_state, distorted))
             if agent.activation_state:
                 num_active_agents += 1
 

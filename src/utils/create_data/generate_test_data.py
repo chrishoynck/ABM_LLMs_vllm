@@ -58,6 +58,7 @@ from utils.create_data.tools import (
     get_llm,
     get_tokenizer,
     load_persona_phq9,
+    load_persona_phq9_stratified,
     load_well_being_zeros,
     resolve_model_id,
     sanitize_model_name,
@@ -98,7 +99,80 @@ def _parse_args():
                         help="Sub-RNG seed for per-(agent, round) neighbour reproducibility.")
     parser.add_argument("--thinking", action="store_true",
                         help="Enable chat-template <think> blocks during generation.")
+    parser.add_argument("--first-n", action="store_true",
+                        help="Take the first --num_agents rows of --persona-phq9-file "
+                             "in CSV order (deterministic). Default behavior randomises "
+                             "via sample_seed=variant_idx parsed from the filename.")
+    parser.add_argument("--agent-seed", type=int, default=None,
+                        help="Override the agent-sampling seed (otherwise parsed from the "
+                             "filename integer). Used for sensitivity analysis.")
+    parser.add_argument("--nondeterministic", action="store_true",
+                        help="Disable LLM engine + per-call sampling seeds — generations "
+                             "vary across reruns. Pair with --agent-seed for replicate-based "
+                             "variance estimation.")
+    parser.add_argument("--output-csv", type=str, default=None,
+                        help="Full path to the posts CSV output. Overrides the default "
+                             "<sweep_root>/SA_prompt/<instr_id>_<model>.csv layout.")
+    parser.add_argument("--stratify-phq9", action="store_true",
+                        help="Stratified persona sampling: the PHQ-9 vector at the slot "
+                             "level is fixed by --stratify-ref-seed, and --agent-seed only "
+                             "picks which persona fills each slot. Enables paired (slot, "
+                             "round) cross-setting comparisons for the agent axis with "
+                             "PHQ-9 held constant per slot.")
+    parser.add_argument("--stratify-ref-seed", type=int, default=0,
+                        help="Reference seed that fixes the per-slot target PHQ-9 vector "
+                             "when --stratify-phq9 is set. Must be the SAME value across "
+                             "all runs in the same SA sweep.")
+    parser.add_argument("--phq9-band-range", type=int, nargs=2, default=None,
+                        metavar=("LO", "HI"),
+                        help="Force every persona's PHQ-9 to a value cycled uniformly "
+                             "across [LO, HI] inclusive (slot i → LO + i mod (HI-LO+1)). "
+                             "For PHQ-9 conditioning: fix agent + neighbour seeds and run "
+                             "once per band (e.g. 0 4 / 5 9 / 10 14 / 15 19 / 20 27) so "
+                             "every persona visits every band exactly once across settings "
+                             "AND every band-setting has a distribution over its scores.")
+    parser.add_argument("--chunk-size", type=int, default=0,
+                        help="If >0, generate in chunks of this many personas, appending each "
+                             "chunk's blocks to --output-csv as it finishes (live-watchable, "
+                             "crash-resumable: a re-run skips agent_ids already in the file). "
+                             "Requires --output-csv. Default 0 = single-shot write at the end.")
     return parser.parse_args()
+
+
+def _existing_agent_ids(path: str) -> set[int]:
+    """Agent IDs already written to `path` (empty if the file does not exist)."""
+    ids: set[int] = set()
+    if os.path.isfile(path):
+        with open(path, newline="", encoding="utf-8") as fh:
+            for row in _csv.DictReader(fh):
+                try:
+                    ids.add(int(row["agent_id"]))
+                except (TypeError, ValueError, KeyError):
+                    pass
+    return ids
+
+
+def _append_blocks(path: str, agents, global_ids, interaction: bool = False) -> None:
+    """Append each agent's (step, phq9, tweet) rows to `path` under its GLOBAL id.
+
+    Mirrors TestLLMs.export_tweets_with_phq9 row-for-row, but appends (so chunks
+    accumulate) and stamps agent_id from `global_ids` so ids stay unique across
+    chunks. Writes the header only when the file is new.
+    """
+    write_header = not os.path.isfile(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "a", newline="", encoding="utf-8") as fh:
+        writer = _csv.writer(fh)
+        if write_header:
+            writer.writerow(["agent_id", "persona", "age", "step", "phq9", "tweet", "interaction"])
+        for agent, gid in zip(agents, global_ids):
+            phq_series = list(agent.all_phq9_sumscores)
+            tweets = list(agent.tweethistory)
+            for idx, value in enumerate(phq_series):
+                tweet = tweets[idx] if idx < len(tweets) else ""
+                tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
+                writer.writerow([gid, agent.persona, getattr(agent, "age", None),
+                                 idx, value, tweet, interaction])
 
 
 def _resolve_instruction_paths(args) -> tuple[list[str], str]:
@@ -193,43 +267,121 @@ def main():
     model_id = resolve_model_id(args.model)
     safe_model = sanitize_model_name(model_id)
     tok = get_tokenizer(model_id)
-    pipe = get_llm(model_id, seed=SEED)
+    pipe = get_llm(model_id, seed=None if args.nondeterministic else SEED)
+
+    if args.output_csv and len(instr_paths) > 1:
+        sys.exit("--output-csv is only valid with --instruction-file (single instruction); "
+                 "got --instruction-dir with multiple matches.")
 
     score_rows: list[dict] = []
     try:
         for sorted_idx, instr_path in enumerate(instr_paths):
             instr_id, variant_idx = _instr_identity(instr_path, sweep_root, sorted_idx)
-            personas, phq9_assignments, _ = load_persona_phq9(
-                args.persona_phq9_file, n_rows=args.num_agents,
-                sample_seed=variant_idx,
-            )
+            if args.agent_seed is not None:
+                sample_seed = args.agent_seed
+            elif args.first_n:
+                sample_seed = None
+            else:
+                sample_seed = variant_idx
+            if args.stratify_phq9:
+                if sample_seed is None:
+                    sys.exit("--stratify-phq9 requires --agent-seed (or a filename "
+                             "integer); cannot stratify with --first-n.")
+                personas, phq9_assignments, _ = load_persona_phq9_stratified(
+                    args.persona_phq9_file, n_rows=args.num_agents,
+                    sample_seed=sample_seed,
+                    reference_seed=args.stratify_ref_seed,
+                )
+            else:
+                personas, phq9_assignments, _ = load_persona_phq9(
+                    args.persona_phq9_file, n_rows=args.num_agents,
+                    sample_seed=sample_seed,
+                )
+
+            if args.phq9_band_range is not None:
+                lo, hi = args.phq9_band_range
+                if hi < lo:
+                    sys.exit(f"--phq9-band-range: HI ({hi}) < LO ({lo})")
+                width = hi - lo + 1
+                phq9_assignments = [lo + (i % width) for i in range(len(phq9_assignments))]
+                from collections import Counter
+                ct = Counter(phq9_assignments)
+                print(f"[sa] --phq9-band-range [{lo},{hi}]: PHQ-9 spread = "
+                      f"{dict(sorted(ct.items()))}")
 
             instruction, fmt_block, prompts_json = build_aligned_context(instr_path)
-            out_csv = os.path.join(sa_dir, f"{instr_id}_{safe_model}.csv")
-            print(f"[sa] variant={instr_id} idx={variant_idx} -> {out_csv}")
+            if args.output_csv:
+                out_csv = args.output_csv
+                os.makedirs(os.path.dirname(os.path.abspath(out_csv)) or ".", exist_ok=True)
+            else:
+                out_csv = os.path.join(sa_dir, f"{instr_id}_{safe_model}.csv")
+            print(f"[sa] variant={instr_id} agent_seed={sample_seed} "
+                  f"neighbor_seed={args.neighbor_seed} "
+                  f"nondet={args.nondeterministic} -> {out_csv}")
 
-            tester = TestLLMs(
-                well_being=well_being, num_agents=args.num_agents, seed=args.seed,
-                personas=personas, agents=None, interaction=False,
-                tweet_instruction=instruction, tweet_format_block=fmt_block,
-                prompts=prompts_json, thinking=args.thinking,
-                phq9_assignments=phq9_assignments,
-                neighbor_pool=neighbor_pool,
-                num_neighbors=args.num_neighbors,
-                neighbor_seed=args.neighbor_seed,
-            )
-            tester.run_simulation(
-                tokenizer=tok, pipe=pipe,
-                n_rounds=args.check_point, check_point=args.check_point,
-                temp=args.temp, top_p=args.top_p, model_name=model_id,
-                time_info=False, mistake_dict=None,
-                test_performance=False, checkpoint_every=0,
-            )
-            tester.export_tweets_with_phq9(
-                file_path=out_csv, check_point=args.check_point,
-                temp=args.temp, top_p=args.top_p,
-                model_name=model_id, interaction=False,
-            )
+            def _build_and_run(personas_slice, phq9_slice, wb_slice, global_ids):
+                """Construct a TestLLMs over a persona slice, renumber to GLOBAL ids,
+                generate, and return the agents (in slice order)."""
+                t = TestLLMs(
+                    well_being=wb_slice, num_agents=len(personas_slice), seed=args.seed,
+                    personas=personas_slice, agents=None, interaction=False,
+                    tweet_instruction=instruction, tweet_format_block=fmt_block,
+                    prompts=prompts_json, thinking=args.thinking,
+                    phq9_assignments=phq9_slice,
+                    neighbor_pool=neighbor_pool,
+                    num_neighbors=args.num_neighbors,
+                    neighbor_seed=args.neighbor_seed,
+                    nondeterministic_sampling=args.nondeterministic,
+                )
+                # phq9_assignments keeps persona order (no permutation), so all_agents[i]
+                # corresponds to personas_slice[i]; renumber ID -> global so neighbour
+                # seeding (SeedSequence[..,int(agent.ID),..]) and output ids match a
+                # single-shot run exactly. TestLLMs keys phq9_sequences/phq9_indices by
+                # the ORIGINAL (local) ID, so remap those dict keys in lockstep — else
+                # the PHQ-9 update step hits KeyError on chunks past the first.
+                old_ids = [ag.ID for ag in t.all_agents]
+                t.phq9_sequences = {gid: t.phq9_sequences[old] for old, gid in zip(old_ids, global_ids)}
+                t.phq9_indices = {gid: t.phq9_indices[old] for old, gid in zip(old_ids, global_ids)}
+                for ag, gid in zip(t.all_agents, global_ids):
+                    ag.ID = gid
+                t.run_simulation(
+                    tokenizer=tok, pipe=pipe,
+                    n_rounds=args.check_point, check_point=args.check_point,
+                    temp=args.temp, top_p=args.top_p, model_name=model_id,
+                    time_info=False, mistake_dict=None,
+                    test_performance=False, checkpoint_every=0,
+                )
+                return t.all_agents
+
+            if args.chunk_size and args.chunk_size > 0:
+                if not args.output_csv:
+                    sys.exit("--chunk-size requires --output-csv.")
+                done_ids = _existing_agent_ids(out_csv)
+                if done_ids:
+                    print(f"[sa] resume: {len(done_ids)} agent_id(s) already in {out_csv}; "
+                          f"generating only the rest.")
+                n_total = len(personas)
+                for start in range(0, n_total, args.chunk_size):
+                    end = min(start + args.chunk_size, n_total)
+                    ids = [i for i in range(start, end) if i not in done_ids]
+                    if not ids:
+                        print(f"[sa] chunk {start}:{end} already complete; skipping.")
+                        continue
+                    p_slice = [personas[i] for i in ids]
+                    q_slice = [phq9_assignments[i] for i in ids]
+                    wb_slice = [well_being[i % len(well_being)] for i in ids]
+                    print(f"[sa] chunk {start}:{end} → generating {len(ids)} block(s)")
+                    agents = _build_and_run(p_slice, q_slice, wb_slice, ids)
+                    _append_blocks(out_csv, agents, ids, interaction=False)
+                    print(f"[sa] chunk {start}:{end} appended → {out_csv}")
+            else:
+                # Single-shot: overwrite any existing file (original "w" semantics).
+                if os.path.isfile(out_csv):
+                    os.remove(out_csv)
+                agents = _build_and_run(personas, phq9_assignments, well_being,
+                                        list(range(len(personas))))
+                _append_blocks(out_csv, agents, list(range(len(personas))),
+                               interaction=False)
             score_rows.append({
                 "variant_id": instr_id, "model": model_id,
                 "csv": os.path.relpath(out_csv, sa_dir),

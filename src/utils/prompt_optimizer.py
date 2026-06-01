@@ -1161,6 +1161,7 @@ def rerun_test_phq9(
     val_fraction: float = 0.10,
     test_fraction: float = 0.10,
     max_model_len: int = 32768,
+    posts_file: str | None = None,
     **vllm_kwargs,
 ):
     """Reload a saved instruction and re-run only the PHQ-9 test phase.
@@ -1172,7 +1173,8 @@ def rerun_test_phq9(
 
     Args:
         seed: RNG seed used by the original run (drives the split).
-        file_paths: same tweets_with_phq9 files the original run used.
+        file_paths: same tweets_with_phq9 files the original run used. Ignored
+            when ``posts_file`` is set.
         output_dir: where to read/write; defaults to the standard
             `data/test_post/optimized_phq9/<model_short>_seed<seed>` path.
         model_name: HuggingFace model id for the student engine.
@@ -1180,6 +1182,12 @@ def rerun_test_phq9(
             to `optimized_instruction.txt`, the prompt the original test used.
         val_fraction, test_fraction: must match the original run.
         max_model_len: vLLM context budget.
+        posts_file: optional override — when set, the entire CSV is used as the
+            test set (no split), so multiple optimization seeds can be evaluated
+            on a single shared, freshly-generated held-out set. Each seed's
+            output dir still gets its own per-seed result CSVs, but the
+            ``trajectory.csv`` test row is NOT overwritten (the original
+            in-distribution test number is preserved).
         **vllm_kwargs: forwarded to ChatVLLM.
 
     Returns:
@@ -1201,10 +1209,17 @@ def rerun_test_phq9(
     print(f"[rerun-test seed {seed}] loaded {instruction_filename} "
           f"({len(best_instruction.split())} words) from {instr_path}")
 
-    _train_data, _val_data, test_data = train_val_test_split(
-        rng, file_paths, val_fraction, test_fraction,
-    )
-    test_blocks, test_answers, test_personas, _ = test_data
+    if posts_file is not None:
+        if not os.path.isfile(posts_file):
+            raise FileNotFoundError(f"posts file not found: {posts_file}")
+        test_blocks, test_answers, test_personas, _aids = parse_tweets_with_phq9_csv(posts_file)
+        print(f"[rerun-test seed {seed}] using custom posts_file: "
+              f"{posts_file} ({len(test_blocks)} blocks; no split)")
+    else:
+        _train_data, _val_data, test_data = train_val_test_split(
+            rng, file_paths, val_fraction, test_fraction,
+        )
+        test_blocks, test_answers, test_personas, _aids = test_data
 
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or len((os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(","))
     student_engine, teacher_engine = _build_engines(
@@ -1225,36 +1240,58 @@ def rerun_test_phq9(
     print(f"[rerun-test seed {seed}] Test MAE (n={len(test_blocks)}): "
           f"{test_mae:.2f} ± {test_std:.2f}")
 
-    # Rewrite the trajectory's `test` row in place (drop any previous test rows
-    # so trajectory plots reflect only the new-schema result).
-    trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
-    _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
-    existing_rows = []
-    last_train_step = 0
-    if os.path.isfile(trajectory_path):
-        with open(trajectory_path, newline="") as fh:
-            for row in csv.DictReader(fh):
-                if row.get("split") == "test":
-                    continue
-                existing_rows.append(row)
-                if row.get("split") == "train":
-                    try:
-                        last_train_step = max(last_train_step, int(row["step"]))
-                    except (TypeError, ValueError):
-                        pass
-    with open(trajectory_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=_traj_fields)
-        writer.writeheader()
-        for row in existing_rows:
-            writer.writerow({k: row.get(k, "") for k in _traj_fields})
-        writer.writerow({
-            "model": model_short, "seed": seed, "step": last_train_step,
-            "split": "test", "mean_score": round(test_mae, 4),
-            "std_score": round(test_std, 4), "n_samples": len(test_blocks),
-        })
+    # Output paths: when posts_file is set, redirect to a subdir so the
+    # original in-distribution test files / trajectory row are preserved.
+    if posts_file is not None:
+        posts_stem = os.path.splitext(os.path.basename(posts_file))[0]
+        write_dir = os.path.join(output_dir, f"eval_on_{posts_stem}")
+        os.makedirs(write_dir, exist_ok=True)
+        # Stamp source for reproducibility (small text file).
+        with open(os.path.join(write_dir, "eval_meta.txt"), "w", encoding="utf-8") as fh:
+            fh.write(
+                f"timestamp:        {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+                f"model:            {model_name}\n"
+                f"opt_seed:         {seed}\n"
+                f"instruction:      {os.path.relpath(instr_path)}\n"
+                f"posts_file:       {os.path.relpath(posts_file)}\n"
+                f"n_blocks:         {len(test_blocks)}\n"
+                f"\n"
+                f"test_mae:         {test_mae:.4f}\n"
+                f"test_std:         {test_std:.4f}\n"
+            )
+    else:
+        write_dir = output_dir
+
+        # Rewrite the trajectory's `test` row in place (drop any previous test rows
+        # so trajectory plots reflect only the new-schema result).
+        trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
+        _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
+        existing_rows = []
+        last_train_step = 0
+        if os.path.isfile(trajectory_path):
+            with open(trajectory_path, newline="") as fh:
+                for row in csv.DictReader(fh):
+                    if row.get("split") == "test":
+                        continue
+                    existing_rows.append(row)
+                    if row.get("split") == "train":
+                        try:
+                            last_train_step = max(last_train_step, int(row["step"]))
+                        except (TypeError, ValueError):
+                            pass
+        with open(trajectory_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=_traj_fields)
+            writer.writeheader()
+            for row in existing_rows:
+                writer.writerow({k: row.get(k, "") for k in _traj_fields})
+            writer.writerow({
+                "model": model_short, "seed": seed, "step": last_train_step,
+                "split": "test", "mean_score": round(test_mae, 4),
+                "std_score": round(test_std, 4), "n_samples": len(test_blocks),
+            })
 
     # Raw per-sample (true, pred) — new schema.
-    raw_csv = os.path.join(output_dir, "test_raw_scores.csv")
+    raw_csv = os.path.join(write_dir, "test_raw_scores.csv")
     with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["model", "seed", "true_phq9", "pred_phq9"])
         writer.writeheader()
@@ -1264,7 +1301,7 @@ def rerun_test_phq9(
     print(f"Raw test scores → {raw_csv}")
 
     # Per-PHQ-9 with bias — new schema.
-    csv_path = os.path.join(output_dir, "test_scores_phq9.csv")
+    csv_path = os.path.join(write_dir, "test_scores_phq9.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh,
@@ -1282,7 +1319,7 @@ def rerun_test_phq9(
     print(f"Per-PHQ-9 MAE+bias → {csv_path}")
 
     plot_test_mae_and_bias_by_phq9(
-        per_phq9, output_dir,
+        per_phq9, write_dir,
         title=f"Test MAE & bias by PHQ-9 — {model_short} seed={seed}",
     )
 
@@ -2685,11 +2722,17 @@ def run_bert_cv_diagnostic(embeddings_path, base_model_name, device, mental_bert
 
 
 def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool = False,
-                     seed: int = 42, batch_size: int = 8, weight_decay: float = 1e-4):
+                     seed: int = 42, batch_size: int = 8, weight_decay: float = 1e-4,
+                     learning_rate: float = 1e-4, epochs: int = 30,
+                     init_from: str | None = None, out_dir: str | None = None):
     """Load cached embeddings, do an 80/10/10 split, train the regressor, write metrics + plots.
 
+    Set `init_from` to a saved `regressor.pt` to CONTINUE training that model
+    (fine-tuning) instead of Kaiming-initialising a fresh one — pair with a low
+    `learning_rate` and an `out_dir` so the source regressor is left untouched.
+
     The output layout mirrors `call_optimizer_phq9`:
-        data/test_post/bert_regression/{model_short}_seed{seed}/
+        {out_dir or data/test_post/bert_regression}/{model_short}_seed{seed}/
             ├── regressor.pt
             ├── training_trajectory.csv   (model, seed, step, split, mean_score, std_score, n_samples)
             ├── test_scores_phq9.csv      (model, seed, phq9, avg_mae, avg_bias, std_bias, n_samples)
@@ -2714,6 +2757,13 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
         seed: RNG seed driving both data partition and model init.
         batch_size: minibatch size for the inner `train_bert` loop.
         weight_decay: AdamW weight-decay coefficient.
+        learning_rate: initial AdamW LR (use a small value, e.g. 2e-5, when fine-tuning).
+        epochs: max training epochs.
+        init_from: optional path to a saved regressor.pt to continue training from
+            (fine-tuning); when None a fresh Kaiming-initialised model is trained.
+        out_dir: optional base dir for the per-seed output folder; defaults to
+            data/test_post/bert_regression. Set this when fine-tuning so the
+            source regressor isn't overwritten.
 
     Returns:
         (best_model, best_val_mae, test_mae).
@@ -2753,7 +2803,8 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     print(f"Training blocks: {n_train}, val: {n_val}, test: {len(test_embs)}")
 
     model_short = base_model_name.split("/")[-1]
-    save_dir = os.path.join("data", "test_post", "bert_regression", f"{model_short}_seed{seed}")
+    base_out = out_dir or os.path.join("data", "test_post", "bert_regression")
+    save_dir = os.path.join(base_out, f"{model_short}_seed{seed}")
     os.makedirs(save_dir, exist_ok=True)
 
     trajectory_path = os.path.join(save_dir, "training_trajectory.csv")
@@ -2775,7 +2826,11 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    nn_model = neural_net_BERT(mentalbert=mental_bert).to(device)
+    if init_from:
+        print(f"[fine-tune] continuing from {init_from}")
+        nn_model = torch.load(init_from, map_location=device, weights_only=False).to(device)
+    else:
+        nn_model = neural_net_BERT(mentalbert=mental_bert).to(device)
 
     # Step-0 baseline: untrained network on train + val (matches PHQ-9 baseline row at step=0).
     s0_train_mae, s0_train_std = _bert_eval_summary(nn_model, train_embs, train_labels, device)
@@ -2788,6 +2843,7 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     nn_model, best_val_mae, history = train_bert(
         nn_model, train_embs, train_labels, val_embs, val_labels, device,
         batch_size=batch_size, weight_decay=weight_decay,
+        learning_rate=learning_rate, epochs=epochs,
     )
     for entry in history:
         _write_row(entry["epoch"], "train", entry["train_mae"], entry["train_std"], n_train)
@@ -3117,6 +3173,80 @@ def save_embeddings_for_file(file_path, base_model_name: str, device, mentalbert
     print(f"Saved embeddings + labels + agent_ids to {torch_path} (n={len(all_embs)}); split will be done at train time.")
     
 
+def eval_bert_regressors_on_csv(
+    csv_path: str,
+    seeds: list[int],
+    model_name: str = QWEN_27,
+    out_dir: str | None = None,
+    regressor_dir: str = "data/test_post/bert_regression",
+    mentalbert: bool = True,
+    device: str | None = None,
+) -> list[dict]:
+    """Evaluate one or more trained BERT regressors on a single tweets_with_phq9 CSV.
+
+    For each seed, loads
+    `{regressor_dir}/{model_short}_seed{seed}/regressor.pt` and scores it on
+    `csv_path` via `eval_bert_on_csv.evaluate` (per-seed predictions + a
+    per-PHQ-9 summary land in `out_dir/seed{seed}.csv`), then writes an
+    across-seed `aggregate.csv` (per-seed MAE/bias plus MEAN/STD rows).
+
+    Args:
+        csv_path: tweets_with_phq9 CSV to score (e.g. an SA_prompt dataset).
+        seeds: regressor seeds to evaluate; missing ones are skipped with a warning.
+        model_name: HuggingFace id; its short tail names the regressor subdir.
+        out_dir: output dir. Default: `<csv_dir>/bert_eval/`.
+        regressor_dir: root holding the `{model_short}_seed{seed}/` regressors.
+        mentalbert: must match how the regressor was trained (768-dim MentalBERT).
+        device: torch device string; None auto-selects cuda/cpu.
+
+    Returns:
+        Per-seed list of {"seed", "mae", "bias", "n"} dicts.
+    """
+    from .eval_bert_on_csv import evaluate  # local import avoids an import cycle
+
+    model_short = model_name.split("/")[-1]
+    if out_dir is None:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "bert_eval")
+    os.makedirs(out_dir, exist_ok=True)
+
+    results: list[dict] = []
+    for seed in seeds:
+        reg_path = os.path.join(regressor_dir, f"{model_short}_seed{seed}", "regressor.pt")
+        if not os.path.isfile(reg_path):
+            print(f"[bert-eval] WARN: no regressor for seed {seed} ({reg_path}) — skipping")
+            continue
+        print(f"\n{'='*60}\n[bert-eval] seed {seed}\n{'='*60}")
+        out_csv = os.path.join(out_dir, f"seed{seed}.csv")
+        res = evaluate(reg_path, csv_path, out_csv, mentalbert=mentalbert, device=device)
+        results.append({"seed": seed, "mae": res["mae"], "bias": res["bias"], "n": res["n"]})
+
+    if not results:
+        raise RuntimeError(f"No regressors evaluated (looked under {regressor_dir} "
+                           f"for {model_short} seeds {seeds}).")
+
+    maes = [r["mae"] for r in results]
+    biases = [r["bias"] for r in results]
+    mean_mae, std_mae = float(np.mean(maes)), float(np.std(maes))
+    mean_bias, std_bias = float(np.mean(biases)), float(np.std(biases))
+
+    agg_path = os.path.join(out_dir, "aggregate.csv")
+    with open(agg_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["seed", "n", "mae", "bias"])
+        writer.writeheader()
+        for r in results:
+            writer.writerow({"seed": r["seed"], "n": r["n"],
+                             "mae": round(r["mae"], 4), "bias": round(r["bias"], 4)})
+        writer.writerow({"seed": "MEAN", "n": "", "mae": round(mean_mae, 4),
+                         "bias": round(mean_bias, 4)})
+        writer.writerow({"seed": "STD", "n": "", "mae": round(std_mae, 4),
+                         "bias": round(std_bias, 4)})
+
+    print(f"\n[bert-eval] across {len(results)} seed(s): "
+          f"MAE={mean_mae:.3f} ± {std_mae:.3f}  bias={mean_bias:+.3f} ± {std_bias:.3f}")
+    print(f"[bert-eval] aggregate → {agg_path}")
+    return results
+
+
 def _generate_file_path(base_dir: str, target_filename: str = "tweets_with_phq9.csv") -> list[str]:
     """Return sorted paths matching `{base_dir}/seed_*/{target_filename}`.
 
@@ -3148,13 +3278,15 @@ if __name__ == "__main__":
                         help="HuggingFace model id (e.g. Qwen/Qwen3.5-27B)")
     parser.add_argument("--mode", type=str, default="tweets",
                         choices=["tweets", "phq9", "phq9-rerun-test",
-                                 "tweets-rerun-test", "bert", "bert-cv"],
+                                 "tweets-rerun-test", "bert", "bert-cv", "bert-eval"],
                         help="Which entry point to run: tweets, phq9, phq9-rerun-test "
                              "(re-test saved best instruction without retraining), "
                              "tweets-rerun-test (score a saved tweet instruction by "
                              "sampling fresh agent-PHQ-9 pairs; see --instruction-file "
-                             "+ --persona-phq9-file), bert, or bert-cv "
-                             "(one-shot partition-variance diagnostic for the BERT regressor).")
+                             "+ --persona-phq9-file), bert, bert-cv "
+                             "(one-shot partition-variance diagnostic for the BERT regressor), "
+                             "or bert-eval (score trained regressor(s) on a single "
+                             "tweets_with_phq9 CSV; see --posts-file + --seeds).")
     parser.add_argument("--instruction-filename", type=str, default="optimized_instruction.txt",
                         help="(--mode phq9-rerun-test only) which prompt file under the seed "
                              "directory to test. Default: optimized_instruction.txt — the prompt "
@@ -3163,6 +3295,13 @@ if __name__ == "__main__":
     parser.add_argument("--instruction-file", type=str, default=None,
                         help="(--mode tweets-rerun-test only) full path to the instruction "
                              "txt to evaluate (e.g. data/prompt_optimization_h/<run>/iter_N/prompt.txt).")
+    parser.add_argument("--posts-file", type=str, default=None,
+                        help="(--mode phq9-rerun-test only) override: use this entire "
+                             "tweets_with_phq9 CSV as the test set, skipping the "
+                             "train/val/test split. Results land in a sibling "
+                             "<seed_dir>/eval_on_<posts_stem>/ subdir; the original "
+                             "in-distribution test files and trajectory.csv test row are "
+                             "preserved untouched.")
     parser.add_argument("--persona-phq9-file", type=str, default=None,
                         help="(--mode tweets-rerun-test only) (persona, phq9) CSV — fresh "
                              "agent-PHQ-9 pairs are sampled from here with --sample-seed.")
@@ -3189,6 +3328,27 @@ if __name__ == "__main__":
     parser.add_argument("--weight-decay", type=float, default=1e-4,
                         help="(--mode bert / bert-cv only) AdamW weight-decay "
                              "coefficient for the regressor. Default: 1e-4.")
+    parser.add_argument("--regressor-dir", type=str, default="data/test_post/bert_regression",
+                        help="(--mode bert-eval only) root holding {model_short}_seed{seed}/"
+                             "regressor.pt. Default: data/test_post/bert_regression.")
+    parser.add_argument("--bert-eval-out-dir", type=str, default=None,
+                        help="(--mode bert-eval only) output dir for per-seed + aggregate "
+                             "CSVs. Default: <posts-file dir>/bert_eval/.")
+    parser.add_argument("--init-from-dir", type=str, default=None,
+                        help="(--mode bert only) base dir holding source "
+                             "{model_short}_seed{seed}/regressor.pt to CONTINUE training "
+                             "(fine-tune). Requires --posts-file (the CSV to adapt to). "
+                             "Pair with a low --learning-rate and --bert-out-dir so the "
+                             "source regressors are not overwritten.")
+    parser.add_argument("--bert-out-dir", type=str, default=None,
+                        help="(--mode bert only) base dir for fine-tuned regressor output. "
+                             "Default: data/test_post/bert_regression (overwrites!). When "
+                             "fine-tuning, set this to a fresh dir.")
+    parser.add_argument("--learning-rate", type=float, default=1e-4,
+                        help="(--mode bert only) initial AdamW LR. Use ~2e-5 when "
+                             "fine-tuning (--init-from-dir) to preserve prior knowledge.")
+    parser.add_argument("--epochs", type=int, default=30,
+                        help="(--mode bert only) max training epochs.")
     args = parser.parse_args()
 
     create_new_embeddings = False
@@ -3229,6 +3389,7 @@ if __name__ == "__main__":
                 file_paths=file_paths,
                 model_name=model_name,
                 instruction_filename=args.instruction_filename,
+                posts_file=args.posts_file,
             )
     elif run_mode == "tweets":
         for seed in args.seeds:
@@ -3265,13 +3426,39 @@ if __name__ == "__main__":
                 tweets_per_sample=args.tweets_per_sample,
                 **vllm_extra,
             )
+    elif run_mode == "bert-eval":
+        if not args.posts_file:
+            raise SystemExit("--mode bert-eval requires --posts-file (the tweets_with_phq9 CSV to score)")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using device: {device}")
+        eval_bert_regressors_on_csv(
+            csv_path=args.posts_file,
+            seeds=args.seeds,
+            model_name=model_name,
+            out_dir=args.bert_eval_out_dir,
+            regressor_dir=args.regressor_dir,
+            mentalbert=mental_bert,
+            device=device,
+        )
     else:
         # bert / bert-cv: shared device + embeddings-cache setup.
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {device}")
 
+        model_short = base_model_name.split("/")[-1]
+        finetuning = run_mode == "bert" and args.init_from_dir is not None
         dir_name = "mentalbert_embeddings" if mental_bert else "sbert_embeddings"
-        embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
+        if finetuning:
+            # Fine-tune: encode the single prompt-block CSV into its own cache so the
+            # big inter/no_inter tree cache is never clobbered.
+            if not args.posts_file:
+                raise SystemExit("--init-from-dir (fine-tune) requires --posts-file (the CSV to adapt to)")
+            file_paths = [args.posts_file]
+            csv_stem = os.path.splitext(os.path.basename(args.posts_file))[0]
+            emb_dir = os.path.join("data", "test", base_model_name, dir_name, f"finetune_{csv_stem}")
+            embeddings_path = os.path.join(emb_dir, "embeddings_and_labels.pt")
+        else:
+            embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
         need_rebuild = create_new_embeddings or not os.path.isfile(embeddings_path)
         if not need_rebuild:
             # Old caches lack `agent_ids` — rebuild so the agent-level split has the group keys it needs.
@@ -3282,7 +3469,9 @@ if __name__ == "__main__":
             del _cached
         if need_rebuild:
             print(f"[bert] (re)building embeddings cache at {embeddings_path}")
-            save_embeddings_for_file(file_paths, base_model_name, device, mentalbert=mental_bert)
+            save_embeddings_for_file(file_paths, base_model_name, device,
+                                     mentalbert=mental_bert,
+                                     out_dir=os.path.dirname(embeddings_path))
 
         if run_mode == "bert-cv":
             seed = args.seeds[0]
@@ -3295,11 +3484,34 @@ if __name__ == "__main__":
                                    batch_size=args.batch_size,
                                    weight_decay=args.weight_decay)
         else:
+            base_out_ft = args.bert_out_dir or os.path.join("data", "test_post", "bert_regression")
             for seed in args.seeds:
-                print(f"\n{'='*60}\nRunning BERT regressor with seed={seed} "
-                      f"batch_size={args.batch_size} weight_decay={args.weight_decay}\n{'='*60}")
+                init_from = None
+                if finetuning:
+                    # Resumable fine-tune: skip a seed whose regressor.pt already exists.
+                    # train_BERT_model writes regressor.pt only after training + test
+                    # finish, so a crashed seed never has one and is always retrained
+                    # (its stale training_trajectory.csv is reopened in "w" mode).
+                    done = os.path.join(base_out_ft, f"{model_short}_seed{seed}", "regressor.pt")
+                    if os.path.isfile(done):
+                        print(f"[fine-tune] seed {seed} already trained ({done}) — skipping")
+                        continue
+                    init_from = os.path.join(args.init_from_dir,
+                                             f"{model_short}_seed{seed}", "regressor.pt")
+                    if not os.path.isfile(init_from):
+                        print(f"[fine-tune] WARN: no source regressor for seed {seed} "
+                              f"({init_from}) — skipping")
+                        continue
+                tag = "Fine-tuning" if finetuning else "Running"
+                print(f"\n{'='*60}\n{tag} BERT regressor with seed={seed} "
+                      f"batch_size={args.batch_size} weight_decay={args.weight_decay} "
+                      f"lr={args.learning_rate} epochs={args.epochs}\n{'='*60}")
                 train_BERT_model(embeddings_path, base_model_name, device,
                                  mental_bert=mental_bert,
                                  seed=seed,
                                  batch_size=args.batch_size,
-                                 weight_decay=args.weight_decay)
+                                 weight_decay=args.weight_decay,
+                                 learning_rate=args.learning_rate,
+                                 epochs=args.epochs,
+                                 init_from=init_from,
+                                 out_dir=args.bert_out_dir)

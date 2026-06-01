@@ -182,6 +182,74 @@ def analyze_distorted_language(network, ngrams_file: str, ngrams = None, n: int 
         highest_frac = max(highest_frac, results[agent.ID]["frac_distorted_first"])
     return results, highest_frac
 
+
+# =========================CDS parsing from neighbor_history=========================
+
+def neighbor_cds_records(agent, ngrams):
+    """Re-derive CDS / neighbour-PHQ-9 stats per round from ``agent.neighbor_history``.
+
+    Each ``neighbor_history`` entry stores the agent's own committed tweet/PHQ-9
+    plus the full tweets/IDs/PHQ-9 of every activated neighbour that round (see
+    ``Agent.commit``). This recomputes, per round, the CDS signals that used to
+    live only as the on-the-fly ``frac_distorted_neigh`` / ``network.cds_info``:
+
+        - ``frac_neigh_cds``  : fraction of activated neighbours whose tweet
+          contains a distorted-language n-gram (== the old frac_distorted_neigh).
+        - ``distorted``       : whether the agent's own tweet contains CDS — the
+          per-(agent, round) event behind "probability of sending CDS".
+        - ``mean_neigh_phq9`` : mean PHQ-9 of activated neighbours, for studying
+          the influence of neighbour well-being on the agent's language use.
+
+    Recomputing from the raw saved tweets (rather than trusting a stored flag)
+    lets you swap in a different CDS detector / n-gram set after the fact.
+
+    Args:
+        agent: an Agent with a populated ``neighbor_history``.
+        ngrams (set): distorted-language n-grams, e.g. from ``load_ngrams_tsv``.
+
+    Returns:
+        list[dict]: one dict per round, in chronological order.
+    """
+    out = []
+    for rec in agent.neighbor_history:
+        neighs = rec.get("neighbors", [])
+        n_neigh = len(neighs)
+        n_cds = sum(1 for nb in neighs if contains_ngram(nb.get("tweet") or "", ngrams))
+        phq9s = [nb["phq9"] for nb in neighs if nb.get("phq9") is not None]
+        out.append({
+            "round": rec.get("round"),
+            "phq9": rec.get("phq9"),
+            "activated": bool(rec.get("activated", False)),
+            "distorted": bool(rec.get("distorted", False)),
+            "tweet": rec.get("tweet"),
+            "frac_neigh_cds": (n_cds / n_neigh) if n_neigh else 0.0,
+            "n_neighbors": n_neigh,
+            "mean_neigh_phq9": (float(np.mean(phq9s)) if phq9s else None),
+        })
+    return out
+
+
+def cds_info_from_neighbor_history(network, ngrams):
+    """Reproduce ``network.cds_info`` from per-agent ``neighbor_history``.
+
+    Returns a list of ``(frac_neigh_cds, activated, distorted)`` tuples in the
+    same round-major / ``all_agents`` order that
+    ``_Network._apply_outputs_and_update_state`` appends to ``network.cds_info``
+    — so it can be diffed against the live ``cds_info`` as a correctness check,
+    or fed directly to ``visualization.distorted_info``.
+    """
+    if not network.all_agents:
+        return []
+    n_rounds = min(len(a.neighbor_history) for a in network.all_agents)
+    parsed = {a.ID: neighbor_cds_records(a, ngrams) for a in network.all_agents}
+    out = []
+    for r in range(n_rounds):
+        for agent in network.all_agents:
+            rec = parsed[agent.ID][r]
+            out.append((rec["frac_neigh_cds"], rec["activated"], rec["distorted"]))
+    return out
+
+
 #=========================SBERT functions=========================
 
 def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False):

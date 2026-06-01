@@ -1,5 +1,8 @@
 import seaborn as sns
 import os
+import argparse
+import glob
+import re
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -252,8 +255,11 @@ def distorted_info(cds_info, path="", filename="default.png", save=False):
     '''
     This function bins fractions of distorted neighbors, and plots the probability corresponding to that to tweet.
     Args:
-        cds_info(List(Tuple)): List of tuples with cds_frac 
+        cds_info(List(Tuple)): List of tuples with cds_frac
     '''
+    if cds_info is None or len(cds_info) == 0:
+        print("[distorted_info] no CDS info available, skipping plot")
+        return
     cds_info = np.array(cds_info)
     cds_frac = cds_info[:, 0]
     tweeted = cds_info[:, 1]
@@ -2150,3 +2156,243 @@ def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dic
     plt.close(fig)
     print(f"Pair sensitivity plot → {out}")
     return out
+
+
+# =========================================================================== #
+# Estimator comparison bar plots (MAE + signed bias, with error bars).
+#
+# Two figures, each a MAE panel + a bias panel side-by-side. Error bars are the
+# SD of the per-sample errors (|error| for MAE, signed error for bias), computed
+# per seed and averaged over seeds — the within-run spread, not seed-to-seed
+# variability. Everything is recomputed from the per-sample test_raw_scores.csv /
+# seed<seed>.csv files (columns true_phq9, pred_phq9), so bars/error-bars/table
+# share one source of truth.
+#
+#   Figure 1: BERT non-FT (human-opt) | fine-tuned (human-opt) | non-FT (synthetic)
+#   Figure 2: BERT vs post-assessment prompt, each on {synthetic, human-opt} test
+#
+# Run via the shell wrapper run_eval_comparison.sh, or directly:
+#   PYTHONPATH=src python -m utils.visualization --out-dir data/test_post/method_comparison
+# =========================================================================== #
+_EVAL_MODEL_SHORT = "Qwen3.5-27B"
+# Match the prompt-sensitivity (SA) palette used elsewhere in the thesis
+# (sa_analyze._COLOUR_BY_NAME): Agent=blue, Joint=orange, Neighbour=dark-red.
+_EVAL_C_SYNTH = "#2e7ebc"   # synthetic (in-distribution) test  (SA "Agent" blue)
+_EVAL_C_HUMAN = "#d96907"   # human-optimized-prompt test       (SA "Joint" orange)
+_EVAL_C_FT = "#8d2c03"      # fine-tuned bar in figure 1         (SA "Neighbour" dark-red)
+
+
+def _eval_per_seed_stats(raw_csv: str) -> dict:
+    """MAE, bias and the SD of the per-sample errors for one seed's raw scores."""
+    df = pd.read_csv(raw_csv)
+    err = df["pred_phq9"].astype(float) - df["true_phq9"].astype(float)
+    return {
+        "mae": float(err.abs().mean()),
+        "mae_sd": float(err.abs().std(ddof=1)),     # spread of |error|
+        "bias": float(err.mean()),
+        "bias_sd": float(err.std(ddof=1)),          # spread of signed error
+        "n": int(len(df)),
+    }
+
+
+def _eval_aggregate(raw_csvs: list, label: str) -> dict:
+    """Bar height = mean over seeds of the per-seed mean. Two error flavours:
+        *_err_sample : mean over seeds of the per-seed per-sample SD (within-run spread)
+        *_err_seed   : SD across the per-seed means (between-seed variability)
+    """
+    if not raw_csvs:
+        raise SystemExit(f"[{label}] no raw-score CSVs found — check the paths/seeds.")
+    rows = [_eval_per_seed_stats(p) for p in raw_csvs]
+    mean = lambda k: float(np.mean([r[k] for r in rows]))
+    sd_across = lambda k: float(np.std([r[k] for r in rows], ddof=1)) if len(rows) > 1 else 0.0
+    return {
+        "label": label,
+        "mae": mean("mae"), "bias": mean("bias"),
+        "mae_err_sample": mean("mae_sd"), "bias_err_sample": mean("bias_sd"),
+        "mae_err_seed": sd_across("mae"), "bias_err_seed": sd_across("bias"),
+        "n_seeds": len(rows), "n_per_seed": int(np.mean([r["n"] for r in rows])),
+    }
+
+
+def _eval_seed_csvs(eval_dir: str, seeds: list) -> list:
+    """Per-sample seed<seed>.csv files in an eval dir (skip *_summary / aggregate)."""
+    out = []
+    for p in sorted(glob.glob(os.path.join(eval_dir, "seed*.csv"))):
+        m = re.fullmatch(r"seed(\d+)\.csv", os.path.basename(p))
+        if m and int(m.group(1)) in seeds:
+            out.append(p)
+    return out
+
+
+def _eval_perseed_dir_csvs(base: str, seeds: list, rel: str) -> list:
+    """<base>/<MODEL_SHORT>_seed<seed>/<rel> for each existing seed."""
+    out = []
+    for s in seeds:
+        p = os.path.join(base, f"{_EVAL_MODEL_SHORT}_seed{s}", rel)
+        if os.path.isfile(p):
+            out.append(p)
+    return out
+
+
+def collect_eval_comparison(bert_dir: str, bert_ft_dir: str, prompt_dir: str,
+                            prompt_eval_subdir: str, bert_seeds: list, prompt_seeds: list) -> dict:
+    """Resolve every bar's raw-score files and aggregate them into a stats dict."""
+    eval_baseline = os.path.join(bert_dir, "eval_baseline")
+    eval_finetuned = os.path.join(bert_ft_dir, "eval_finetuned")
+    return {
+        "bert_nonft_human": _eval_aggregate(
+            _eval_seed_csvs(eval_baseline, bert_seeds), "BERT non-FT / human-opt"),
+        "bert_ft_human": _eval_aggregate(
+            _eval_seed_csvs(eval_finetuned, bert_seeds), "BERT fine-tuned / human-opt"),
+        "bert_nonft_synth": _eval_aggregate(
+            _eval_perseed_dir_csvs(bert_dir, bert_seeds, "test_raw_scores.csv"), "BERT non-FT / synthetic"),
+        "prompt_synth": _eval_aggregate(
+            _eval_perseed_dir_csvs(prompt_dir, prompt_seeds, "test_raw_scores.csv"), "Prompt / synthetic"),
+        "prompt_human": _eval_aggregate(
+            _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
+                                   os.path.join(prompt_eval_subdir, "test_raw_scores.csv")), "Prompt / human-opt"),
+    }
+
+
+def _eval_annotate(ax, x, height, err, pad, fmt="{:.2f}", fontsize=8):
+    """Value label just outside the error bar (handles negative bars for bias)."""
+    up = height >= 0
+    y = height + (err + pad) * (1 if up else -1)
+    ax.annotate(fmt.format(height), (x, y), ha="center",
+                va="bottom" if up else "top", fontsize=fontsize)
+
+
+def _eval_set_ylim(ax, heights, errs, top_headroom=0.22, bot_headroom=0.16, floor_zero=False):
+    """Autoscale ignores text labels — expand limits so value/Δ annotations fit.
+    floor_zero pins the bottom at 0 (for MAE, which is non-negative).
+    Returns (ytop, range) for placing gap labels within the new headroom.
+    """
+    lo = min(0.0, min(h - e for h, e in zip(heights, errs)))
+    hi = max(0.0, max(h + e for h, e in zip(heights, errs)))
+    rng = (hi - lo) or 1.0
+    bottom = 0.0 if floor_zero else lo - bot_headroom * rng
+    ax.set_ylim(bottom, hi + top_headroom * rng)
+    return hi, rng
+
+
+def _eval_style(ax, ylabel, caption):
+    """Bias-zero line, y-grid, and the panel caption placed UNDERNEATH (as the
+    x-label, below the category ticks) — e.g. "(a) Mean absolute error"."""
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.set_xlabel(caption, fontsize=10, labelpad=8)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.tick_params(labelsize=8)
+
+
+def plot_eval_finetune(stats: dict, out_path: str, err_mode: str = "sample"):
+    """Figure 1 — BERT regressor: fine-tuning recovers the distribution shift.
+    err_mode: "sample" (SD of per-sample errors) or "seed" (between-seed SD)."""
+    order = ["bert_nonft_human", "bert_ft_human", "bert_nonft_synth"]
+    xlabels = ["Non-finetuned\n(human-opt)",
+               "Fine-tuned\n(human-opt)",
+               "Non-finetuned\n(synthetic)"]
+    colours = [_EVAL_C_HUMAN, _EVAL_C_FT, _EVAL_C_SYNTH]
+    x = np.arange(len(order))
+    sfx = "seed" if err_mode == "seed" else "sample"
+
+    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(6, 2.8))
+    for ax, key, ekey, ylab, cap in [
+        (ax_mae, "mae", f"mae_err_{sfx}", "MAE", "(a)"),
+        (ax_bias, "bias", f"bias_err_{sfx}", "Bias", "(b)"),
+    ]:
+        h = [stats[k][key] for k in order]
+        e = [stats[k][ekey] for k in order]
+        ax.bar(x, h, yerr=e, color=colours, edgecolor="black", linewidth=0.6,
+               capsize=4, error_kw=dict(elinewidth=1.0))
+        _, rng = _eval_set_ylim(ax, h, e, floor_zero=(key == "mae"))
+        for xi, hi, ei in zip(x, h, e):
+            _eval_annotate(ax, xi, hi, ei, pad=0.03 * rng, fontsize=7)
+        ax.set_xticks(x)
+        ax.set_xticklabels(xlabels, fontsize=7.5)
+        _eval_style(ax, ylab, cap)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+
+
+def plot_eval_bert_vs_prompt(stats: dict, out_path: str, err_mode: str = "seed"):
+    """Figure 2 — robustness to distribution shift: BERT vs the post-assessment prompt.
+    err_mode: "seed" (between-seed SD) or "sample" (SD of per-sample errors)."""
+    from matplotlib.patches import Patch
+
+    methods = [("BERT+MLP", "bert_nonft_synth", "bert_nonft_human"),
+               ("PHQ-9 prompt", "prompt_synth", "prompt_human")]
+    x = np.arange(len(methods))
+    w = 0.38
+    sfx = "seed" if err_mode == "seed" else "sample"
+
+    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(6, 2.8))
+    for ax, key, ekey, ylab, cap in [
+        (ax_mae, "mae", f"mae_err_{sfx}", "MAE", "(a)"),
+        (ax_bias, "bias", f"bias_err_{sfx}", "Bias", "(b)"),
+    ]:
+        bars = [(-w / 2, 1, _EVAL_C_SYNTH), (+w / 2, 2, _EVAL_C_HUMAN)]
+        all_h = [stats[m[sub]][key] for _, sub, _ in bars for m in methods]
+        all_e = [stats[m[sub]][ekey] for _, sub, _ in bars for m in methods]
+        _, rng = _eval_set_ylim(ax, all_h, all_e, top_headroom=0.15, floor_zero=(key == "mae"))
+        for off, sub, colour in bars:
+            h = [stats[m[sub]][key] for m in methods]
+            e = [stats[m[sub]][ekey] for m in methods]
+            ax.bar(x + off, h, w, yerr=e, color=colour, edgecolor="black",
+                   linewidth=0.6, capsize=4, error_kw=dict(elinewidth=1.0))
+            for xi, hi, ei in zip(x + off, h, e):
+                _eval_annotate(ax, xi, hi, ei, pad=0.025 * rng, fontsize=7)
+        ax.set_xticks(x)
+        ax.set_xticklabels([m[0] for m in methods], fontsize=7.5)
+        _eval_style(ax, ylab, cap)
+
+    legend = [Patch(facecolor=_EVAL_C_SYNTH, edgecolor="black", label="synthetic"),
+              Patch(facecolor=_EVAL_C_HUMAN, edgecolor="black", label="human-opt")]
+    ax_mae.legend(handles=legend, loc="upper left", fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+
+
+def _print_eval_table(stats: dict):
+    print(f"\n{'bar':<28}{'MAE':>8}{'±smpl':>8}{'±seed':>8}"
+          f"{'bias':>9}{'±smpl':>8}{'±seed':>8}{'seeds':>7}{'n/seed':>8}")
+    for v in stats.values():
+        print(f"{v['label']:<28}{v['mae']:>8.3f}{v['mae_err_sample']:>8.3f}{v['mae_err_seed']:>8.3f}"
+              f"{v['bias']:>9.3f}{v['bias_err_sample']:>8.3f}{v['bias_err_seed']:>8.3f}"
+              f"{v['n_seeds']:>7d}{v['n_per_seed']:>8d}")
+
+
+def run_eval_comparison(argv=None):
+    """CLI entry: build the two estimator-comparison figures + print the table."""
+    p = argparse.ArgumentParser(description="MAE/bias comparison bar plots (BERT vs prompt).")
+    p.add_argument("--bert-dir", default="data/test_post/bert_regression",
+                   help="Holds {MODEL}_seed*/ (synthetic test) and eval_baseline/ (human-opt test).")
+    p.add_argument("--bert-ft-dir", default="data/test_post/bert_regression_finetuned",
+                   help="Holds eval_finetuned/ (fine-tuned regressor on the human-opt test set).")
+    p.add_argument("--prompt-dir", default="data/test_post/optimized_phq9",
+                   help="Holds {MODEL}_seed*/ (synthetic test) and the eval-on-prompt subdir (human-opt).")
+    p.add_argument("--prompt-eval-subdir", default="eval_on_prompt_Qwen_Qwen3.5-27B",
+                   help="Subdir under each prompt seed dir holding the human-opt-test raw scores.")
+    p.add_argument("--bert-seeds", type=int, nargs="+", default=[34, 35, 36, 37, 38])
+    p.add_argument("--prompt-seeds", type=int, nargs="+", default=[23, 24, 25, 32, 33])
+    p.add_argument("--out-dir", default="data/test_post/method_comparison")
+    args = p.parse_args(argv)
+
+    stats = collect_eval_comparison(args.bert_dir, args.bert_ft_dir, args.prompt_dir,
+                                    args.prompt_eval_subdir, args.bert_seeds, args.prompt_seeds)
+    _print_eval_table(stats)
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    plot_eval_finetune(stats, os.path.join(args.out_dir, "fig1_bert_finetune.png"))
+    plot_eval_bert_vs_prompt(stats, os.path.join(args.out_dir, "fig2_bert_vs_prompt_robustness.png"))
+    print(f"\n[done] figures under {args.out_dir}/")
+
+
+if __name__ == "__main__":
+    run_eval_comparison()

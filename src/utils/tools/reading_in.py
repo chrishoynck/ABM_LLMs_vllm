@@ -83,7 +83,8 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
             "history": agent.tweethistory,
             "active_hist": agent.active_tweethistory,
             "distorted": agent.distorted_tweets,
-            "frac_neigh": agent.frac_distorted_neigh
+            "frac_neigh": agent.frac_distorted_neigh,
+            "neighbor_history": agent.neighbor_history,
         })
     
     for conn in network.connections:
@@ -100,6 +101,7 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         "Distorted Frac": [float(x) for x in distorted_fracs],
         "Dist Step Frac": [float(x) for x in dist_per_step],
         "CDS Info": network.cds_info,
+        "Dynamic CDS": getattr(network, 'cds_dynamic', False),
         "Agent_w_Highest_Deg": network.agent_w_highest_deg.ID,
         "directed": network.directed,
         "sample_phq9": getattr(network, 'sample_phq9', None),
@@ -147,7 +149,8 @@ def generate_network(args, pipe):
 
     This fully reconstructs:
     - topology (connections)
-    - per-agent state (persona, activation_state, tweet histories, frac_distorted_neigh)
+    - per-agent state (persona, activation_state, tweet histories, frac_distorted_neigh,
+      neighbor_history)
     - iterations counter
 
     Args:
@@ -214,6 +217,10 @@ def generate_network(args, pipe):
     network.phq9_threshold = props.get("phq9_threshold", 0)
 
     network.cds_info = props["CDS Info"]
+    # Pursue the checkpoint's dynamic-CDS choice. Pre-flag checkpoints have no
+    # "Dynamic CDS" key but always populated cds_info, so a non-empty cds_info
+    # implies it was on; otherwise default to off (neighbor_history only).
+    network.cds_dynamic = props.get("Dynamic CDS", len(network.cds_info) > 0)
     network.degree_distribution = {}
 
     # set randomness: 
@@ -235,6 +242,7 @@ def generate_network(args, pipe):
         ag.active_tweethistory = list(agent_data.get("active_hist", []))
         ag.distorted_tweets = list(agent_data.get("distorted", []))
         ag.frac_distorted_neigh = agent_data.get("frac_neigh", 0.0)
+        ag.neighbor_history = list(agent_data.get("neighbor_history", []))
         ag.agent_connections = set()  # will be populated below
 
         # rebuild degree distribution when adding connections

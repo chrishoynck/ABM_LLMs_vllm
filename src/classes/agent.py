@@ -50,6 +50,15 @@ class Agent:
         self.distorted_tweets = []
         self.active_tweethistory = []
         self.frac_distorted_neigh = 0
+        # Per-round neighbour context for CDS parsing + neighbour-PHQ-9 research.
+        # One entry per committed round (index-aligned with tweethistory /
+        # all_phq9_sumscores) holding this agent's own committed tweet + PHQ-9 and
+        # the full tweets/IDs/PHQ-9 of every activated neighbour seen that round.
+        # CDS stats (fraction of neighbours with CDS, own distortion probability)
+        # are derived post-hoc from this via metrics.neighbor_cds_records — the
+        # live frac_distorted_neigh / network.cds_info path is left untouched.
+        self.neighbor_history = []
+        self._pending_neighbor_context = None
         self._tweets_since_phq9_update = 0  # counter for efficient same-score tweet lookup
 
     @staticmethod
@@ -69,7 +78,25 @@ class Agent:
             return "moderately severe"
         else:
             return "severe"
-    
+
+    @staticmethod
+    def _finite_num(val):
+        """Return a JSON-safe number for storage (NaN/inf -> None).
+
+        PHQ-9 scores can arrive as numpy scalars or carry NaNs from the source
+        well-being data; this normalises them to plain Python int/float/None so
+        neighbor_history serialises cleanly.
+        """
+        if val is None:
+            return None
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            return val
+        if not np.isfinite(f):
+            return None
+        return int(f) if f.is_integer() else f
+
     _REASONING_LINE_RE = re.compile(
         r'^\s*('
         r'\d+\.\s+\*\*'                  # "7.  **Final Polish:**"
@@ -343,13 +370,27 @@ class Agent:
         activated_neighbors = self.respond()
         distorted_neigh = 0
 
-        # gather neighbor tweets
+        # gather neighbor tweets (+ full per-neighbour context for CDS parsing
+        # and neighbour-PHQ-9 research). The context spans *all* activated
+        # neighbours — the same denominator as frac_distorted_neigh — so the CDS
+        # stats can be re-derived exactly from neighbor_history afterwards.
+        neighbor_context = []
         for n in activated_neighbors:
+            n_phq9 = n.well_being.get("phq9_sumscore") if n.well_being else None
+            neighbor_context.append({
+                "id": int(n.ID),
+                "tweet": n.last_tweet or FC.NO_CONTENT,
+                "phq9": self._finite_num(n_phq9),
+            })
             if n.activation_state and n.last_tweet:
                 neighbor_msgs.append((n.ID, n.last_tweet))
                 if len(n.distorted_tweets) > 0 and n.distorted_tweets[-1]:
                     distorted_neigh +=1
-        
+
+        # stashed for commit(), which assembles the full per-round record once
+        # the agent's own tweet/activation/distortion are known.
+        self._pending_neighbor_context = neighbor_context
+
         if len(activated_neighbors) > 0:
             self.frac_distorted_neigh = distorted_neigh/len(activated_neighbors)
         else:
@@ -393,11 +434,17 @@ class Agent:
         
         print(f"Agent {self.ID}, POST/TWEET: {self._next_last_tweet}, phq-9: {self.well_being.get('phq9_sumscore') if self.well_being else 'None'}")
     # Finalize the activation state for this step
-    def commit(self, n_grams, update_score=False) -> bool:
+    def commit(self, n_grams, update_score=False, round_idx=None) -> bool:
         """
         Commit the next activation state and last tweet.
         S.T all updates happen simultaneously after all agents have decided.
-        """       
+
+        Also appends one entry to ``self.neighbor_history`` (index-aligned with
+        ``tweethistory`` / ``all_phq9_sumscores``) capturing this round's own
+        tweet/PHQ-9/distortion plus the full neighbour context stashed by
+        ``step_llm_tweet``. ``round_idx`` (the network iteration) is stored when
+        provided, else the 0-based position is used.
+        """
         tweetje = self._next_last_tweet
         distorted = False
         if  self._next_activation_state:
@@ -408,15 +455,34 @@ class Agent:
             self.distorted_tweets = self.distorted_tweets[-5:]
             self.active_tweethistory.append(tweetje)
             self.active_tweethistory = self.active_tweethistory[-5:]
-    
+
         self.tweethistory.append(self._next_last_tweet)
         self.last_tweet = self._next_last_tweet
         self.activation_state = self._next_activation_state
         self._tweets_since_phq9_update += 1
 
+        own_phq9 = self.well_being.get("phq9_sumscore") if self.well_being else None
+
         # record phq9 sumscore history (may be updated)
         if True: #update_score:
-            self.all_phq9_sumscores.append(self.well_being.get("phq9_sumscore") if self.well_being else None)
+            self.all_phq9_sumscores.append(own_phq9)
+
+        # record the full per-round neighbour context (raw data; CDS stats are
+        # parsed post-hoc via metrics.neighbor_cds_records). Neighbours were
+        # gathered in step_llm_tweet (previous-round neighbour state); own
+        # tweet/activation/distortion are this round's — the same temporal join
+        # the live cds_info uses.
+        neighbors = (self._pending_neighbor_context
+                     if self._pending_neighbor_context is not None else [])
+        self.neighbor_history.append({
+            "round": round_idx if round_idx is not None else len(self.tweethistory) - 1,
+            "phq9": self._finite_num(own_phq9),
+            "activated": bool(self.activation_state),
+            "distorted": bool(distorted),
+            "tweet": self._next_last_tweet,
+            "neighbors": neighbors,
+        })
+        self._pending_neighbor_context = None
 
         return distorted
     
@@ -592,6 +658,8 @@ class Agent:
         self.activation_state = False
         self.last_tweet = None
         self.tweethistory = []
+        self.neighbor_history = []
+        self._pending_neighbor_context = None
 
 
     def __hash__(self):

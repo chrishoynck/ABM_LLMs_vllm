@@ -190,6 +190,11 @@ def generate_parser():
                         help="Cap PHQ-9 score changes to ±1 per update")
     parser.add_argument("--phq9_threshold", type=float, default=0, metavar="X",
                         help="Minimum PHQ-9 score difference required before the change is applied")
+    parser.add_argument("--cds_dynamic", action=argparse.BooleanOptionalAction, default=None,
+                        help="Also save the legacy on-the-fly CDS info (network.cds_info) each "
+                             "round, on top of the always-on per-agent neighbor_history. "
+                             "Unset: off for new runs, but a resumed checkpoint that had it on "
+                             "keeps it on. Use --no-cds_dynamic to force it off.")
 
     # specify if to save network properties after simulation
     parser.add_argument("--save", action="store_true", help="Save network properties after simulation")
@@ -226,13 +231,18 @@ def update_network(network,
                     check_point = 10,
                     sample_phq9 = None,
                     cap_phq9 = False,
-                    phq9_threshold = 0):
+                    phq9_threshold = 0,
+                    cds_dynamic = None):
     """Update the network for one round and return the mean fraction of distorted tweets."""
 
     # Store PHQ-9 options on the network so PathManager can read them
     network.sample_phq9 = sample_phq9
     network.cap_phq9 = cap_phq9
     network.phq9_threshold = phq9_threshold
+    # None = keep current (fresh default False, or a resumed checkpoint's value);
+    # True/False explicitly overrides.
+    if cds_dynamic is not None:
+        network.cds_dynamic = cds_dynamic
 
     # only enforce n-grams if specified
     if enforce_ngrams:
@@ -314,6 +324,9 @@ def run_simulation(args, pipe=None):
     network.sample_phq9 = args.sample_phq9
     network.cap_phq9 = args.cap_phq9
     network.phq9_threshold = args.phq9_threshold
+    # Fresh network: default off (neighbor_history only) unless explicitly set.
+    if args.cds_dynamic is not None:
+        network.cds_dynamic = args.cds_dynamic
 
     # run updates
     if args.rounds == 0:
@@ -331,7 +344,8 @@ def run_simulation(args, pipe=None):
                                                              check_point=args.check_point,
                                                              sample_phq9=args.sample_phq9,
                                                              cap_phq9=args.cap_phq9,
-                                                             phq9_threshold=args.phq9_threshold)
+                                                             phq9_threshold=args.phq9_threshold,
+                                                             cds_dynamic=args.cds_dynamic)
     return network, running_fracs, fracs_dist_step
 
 def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_step=[]):
@@ -358,7 +372,8 @@ def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_st
                                                              check_point=args.check_point,
                                                              sample_phq9=args.sample_phq9,
                                                              cap_phq9=args.cap_phq9,
-                                                             phq9_threshold=args.phq9_threshold)
+                                                             phq9_threshold=args.phq9_threshold,
+                                                             cds_dynamic=args.cds_dynamic)
 
     # tweet_history = [(a.ID, a.tweethistory) for a in network.all_agents]
     if args.save:
@@ -411,7 +426,13 @@ def call_visualizations(network, path, filename, args, running_fracs, fracs_dist
     mean_var_freqs = metrics.calculate_tweet_frequency_stats(tweet_histories)
     
     vis.plot_tweet_frequency(mean_var_freqs['mean'], mean_var_freqs['variance'], 5, path, filename, save=args.save)
-    vis.distorted_info(network.cds_info, path, filename, save=args.save)
+    # cds_info is only populated live when dynamic CDS is on; otherwise
+    # re-derive it from the per-agent neighbor_history for the plot.
+    cds_info = network.cds_info
+    if not cds_info:
+        n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
+        cds_info = metrics.cds_info_from_neighbor_history(network, n_grams)
+    vis.distorted_info(cds_info, path, filename, save=args.save)
     vis.plot_running_fracs(running_fracs, path, filename, save=args.save)
     vis.plot_distorted_fracs(fracs_dist_step, path, filename, save=args.save)
 
