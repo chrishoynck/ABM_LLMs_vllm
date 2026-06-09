@@ -1,4 +1,5 @@
 import json
+import datetime
 from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
 from utils.tools.path_manager import PathManager, TestPathManager
 import ast, torch, os, random
@@ -28,7 +29,77 @@ def read_in_network_properties(file_path):
     
     return properties
 
-def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
+def _write_meta_file(network, path_manager, args=None):
+    """Write a human-readable meta.json alongside net.json for reporting purposes.
+
+    Contains all experiment parameters that are useful for reporting but are not
+    required (or are redundant) for the reconstruction path in generate_network.
+    """
+    degrees = [len(a.agent_connections) for a in network.all_agents]
+    mean_degree = float(np.mean(degrees)) if degrees else 0.0
+
+    import os
+    meta = {
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "model": os.environ.get("LLAMA_ID", "meta-llama/Llama-3.1-8B-Instruct"),
+        "network_type": type(network).__name__,
+        "common": {
+            "num_agents":  len(network.all_agents),
+            "seed":        network.seed,
+            "directed":    network.directed,
+            "state":       network.state,
+            "final_iteration": network.iterations,
+        },
+        "phq9_settings": {
+            "mode":            getattr(network, "phq9_mode", "llm"),
+            "sample_fraction": getattr(network, "sample_phq9", None),
+            "cap":             getattr(network, "cap_phq9", False),
+            "threshold":       getattr(network, "phq9_threshold", 0),
+            "bert_mentalbert": getattr(network, "bert_mentalbert", True),
+        },
+        "topology": {
+            "mean_degree":    round(mean_degree, 3),
+            "powerlaw_gamma": round(getattr(network, "_powerlaw_gamma", float("nan")), 4),
+            "powerlaw_ks":    round(getattr(network, "_powerlaw_ks",    float("nan")), 4),
+        },
+    }
+
+    if isinstance(network, SocialDistanceAttachment):
+        meta["network_params"] = {
+            "alpha":      network.alpha,
+            "degree":     network.degree,
+            "dim":        network.dim,
+            "b_fitted":   round(network.b, 6),
+            "dist_type":  getattr(network, "dist_type", "gaussian_clusters"),
+            "sdc":        network.sdc,
+            "age_weight":    getattr(network, "age_weight",    1.0),
+            "use_phq9":      getattr(network, "use_phq9",      True),
+            "latent_weight": getattr(network, "latent_weight", 1.0),
+            "n_clusters":    getattr(network, "n_clusters",    4),
+        }
+    elif isinstance(network, RandomNetwork):
+        meta["network_params"] = {
+            "p": network.p,
+            "k": network.k,
+        }
+
+    if args is not None:
+        meta["simulation"] = {
+            "rounds":          getattr(args, "rounds",          None),
+            "update_fraction": getattr(args, "update_fraction", None),
+            "check_point":     getattr(args, "check_point",     None),
+            "enforce_ngrams":  getattr(args, "enforce_ngrams",  False),
+            "cds_dynamic":     getattr(args, "cds_dynamic",     None),
+            "log":             getattr(args, "log",             None),
+        }
+
+    meta_path = path_manager.get_run_directory(is_plot=False) / "meta.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=4)
+    return str(meta_path)
+
+
+def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, args=None):
     """
     Extracts and returns the properties of a network for analysis or storage.
     Supports RandomNetwork, ScaleFreeNetwork, SocialDistanceAttachment.
@@ -107,6 +178,9 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
         "sample_phq9": getattr(network, 'sample_phq9', None),
         "cap_phq9": getattr(network, 'cap_phq9', False),
         "phq9_threshold": getattr(network, 'phq9_threshold', 0),
+        "phq9_mode": getattr(network, 'phq9_mode', 'llm'),
+        "bert_regressor_path": getattr(network, '_bert_regressor_path', None),
+        "bert_mentalbert": getattr(network, 'bert_mentalbert', True),
     }
 
     # randomness:
@@ -139,7 +213,8 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs):
 
     with open(file_output_path, "w", encoding="utf-8") as file:
         json.dump(properties, file, indent=4, cls=NetworkEncoder)
-        
+
+    _write_meta_file(network, path_manager, args=args)
     return file_output_path
 
 
@@ -215,6 +290,20 @@ def generate_network(args, pipe):
     network.sample_phq9 = props.get("sample_phq9", None)
     network.cap_phq9 = props.get("cap_phq9", False)
     network.phq9_threshold = props.get("phq9_threshold", 0)
+
+    phq9_mode = props.get("phq9_mode", "llm")
+    network.phq9_mode = phq9_mode
+    if phq9_mode == "bert":
+        bert_regressor_path = props.get("bert_regressor_path")
+        bert_mentalbert = props.get("bert_mentalbert", True)
+        network.bert_mentalbert = bert_mentalbert
+        network._init_bert_components(
+            bert_regressor=None,
+            bert_encoder=None,
+            bert_regressor_path=bert_regressor_path,
+            bert_mentalbert=bert_mentalbert,
+            bert_device=None,
+        )
 
     network.cds_info = props["CDS Info"]
     # Pursue the checkpoint's dynamic-CDS choice. Pre-flag checkpoints have no

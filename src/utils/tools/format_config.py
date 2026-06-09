@@ -38,7 +38,7 @@ class _FormatConfig:
         self.Label_plural = "Posts" if self.is_post else "Tweets"
 
         # Which prompt JSON to load
-        self.PROMPTS_FILE = "data/prompts_post_minimal.json"
+        self.PROMPTS_FILE = "data/prompts_optimal.json"
 
         # Suffix appended to data / plot base directories
         self.DIR_SUFFIX = "_post" if self.is_post else ""

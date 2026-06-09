@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from utils.tools.format_config import FC
 
@@ -8,7 +7,6 @@ class PathManager:
         Initialize with either parsed args or an existing network object.
         """
         self.base_data = Path(f"data/networks{FC.DIR_SUFFIX}")
-        self.base_plots = Path(f"plots/networks{FC.DIR_SUFFIX}")
         
         # Extract parameters from args OR network
         if args:
@@ -84,23 +82,26 @@ class PathManager:
         if "SocialDistanceAttachment" in str(type(network)) and getattr(network, 'sdc', False): return "sdc"
         return "sda"
 
-    def _get_parent_directory(self, is_plot=False):
+    def _get_parent_directory(self):
         """Parent directory (parameters only, no seed): .../rounds{N}_N{agents}/[phq9_mode]/"""
-        base = self.base_plots if is_plot else self.base_data
-        path = base / self.state / self.net_type / self.directed / self.params / self.subparams
+        path = self.base_data / self.state / self.net_type / self.directed / self.params / self.subparams
         if self.phq9_mode:
             path = path / self.phq9_mode
         return path
 
     def get_run_directory(self, is_plot=False):
-        """Run-specific directory: .../rounds{N}_N{agents}/seed_{seed}/"""
-        path = self._get_parent_directory(is_plot=is_plot) / f"seed_{self.seed}"
+        """Run-specific directory. Plots go into a plots/ subfolder of the data run dir."""
+        path = self._get_parent_directory() / f"seed_{self.seed}"
+        if is_plot:
+            path = path / "plots"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def get_aggregate_directory(self, is_plot=False):
-        """Parent directory for aggregate (over-runs) plots. Creates dir if needed."""
-        path = self._get_parent_directory(is_plot=is_plot)
+        """Parent directory for aggregate (over-runs) plots/data. Creates dir if needed."""
+        path = self._get_parent_directory()
+        if is_plot:
+            path = path / "plots"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

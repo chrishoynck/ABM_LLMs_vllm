@@ -274,28 +274,25 @@ class Agent:
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
 
-        # own history block — grows with each round up to max_history posts
-        max_history = 2
-        own_block = ""
-        if len(self.tweethistory) == 0:
-            own_block = f"(no own previous {FC.label_plural})"
-        else:
-            recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
-            if recent:
-                items = "\n".join(f"- {t[:max_chars]}" for t in reversed(recent))
-                own_block = items + f"\n(Do not repeat topics or reuse words from your previous {FC.label_plural}.)"
-            else:
-                own_block = f"(no own previous {FC.label_plural})"
-        
-        neighbor_block = f"(no neighbor {FC.label_plural})" if len(neighbor_pairs) == 0 else "\n".join(
-            f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs 
-        )
-
         prompt_cfg = self._PROMPTS["tweet_gen"]
         system_str = prompt_cfg["system_forced"] if force_active else prompt_cfg["system_standard"]
-        
         system_content = system_str.format(max_chars=max_chars)
+
         if not force_active:
+            # Data-generation path (TestLLMs with interaction=True): own-block + neighbor-block
+            # fed into user_template. tweet_block_phq9 adds same-score anti-repetition.
+            max_history = 2
+            own_block = ""
+            if len(self.tweethistory) == 0:
+                own_block = f"(no own previous {FC.label_plural})"
+            else:
+                recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
+                if recent:
+                    items = "\n".join(f"- {t[:max_chars]}" for t in reversed(recent))
+                    own_block = items + f"\n(Do not repeat topics or reuse words from your previous {FC.label_plural}.)"
+                else:
+                    own_block = f"(no own previous {FC.label_plural})"
+
             if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
                 recent = self.tweethistory[-self._tweets_since_phq9_update:]
                 same_score = [t for t in recent if t and t != FC.NO_CONTENT]
@@ -309,15 +306,20 @@ class Agent:
                 else:
                     own_block = ""
 
+            neighbor_block = f"(no neighbor {FC.label_plural})" if len(neighbor_pairs) == 0 else "\n".join(
+                f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs
+            )
             user_content = prompt_cfg["user_template"].format(
-                agent_id = self.ID,
+                agent_id=self.ID,
                 persona=self.persona,
                 well_being=self.well_being_prompt(self.well_being),
                 neighbor_block=neighbor_block,
-                own_block=own_block
+                own_block=own_block,
             )
+
         else:
             if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
+                # Data-generation path: show tweets since last PHQ-9 update.
                 recent = self.tweethistory[-self._tweets_since_phq9_update:]
                 same_score = [t for t in recent if t and t != FC.NO_CONTENT]
                 if same_score:
@@ -329,24 +331,49 @@ class Agent:
                     )
                 else:
                     previous_tweet_block = ""
+                user_content = prompt_cfg["user_template_forced"].format(
+                    agent_id=self.ID,
+                    persona=self.persona,
+                    well_being=self.well_being_prompt(self.well_being),
+                    previous_tweet_block=previous_tweet_block,
+                )
             else:
-                max_history = 2
-                recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
-                if recent:
-                    items = "\n".join(f'- "{t[:max_chars]}"' for t in reversed(recent))
-                    previous_tweet_block = (
-                        f"\nYour recent {FC.label_plural}:\n{items}\n"
-                        f"(Do NOT repeat topics or reuse words. Be original.)"
+                # Main simulation path — SA-aligned format.
+                # Own posts: last 5 actual tweets.
+                recent_own = [t for t in self.tweethistory[-3:] if t and t != FC.NO_CONTENT]
+                if recent_own:
+                    # first_words = list(dict.fromkeys(
+                    #     t.split()[0].strip('"\'.!?,') for t in recent_own if t.split()
+                    # ))
+                    own_section = "### PREVIOUS POSTS ###\n" + "\n".join(
+                        f"- {t[:max_chars]}" for t in recent_own
+                    )
+                    # + "\n(Do not repeat recurring phrases or topic-specific terms that appear across your previous posts above."
+                    # if first_words:
+                    #     own_section += f" Do NOT start your post with: {', '.join(first_words)}.)"
+                    # else:
+                    #     own_section += ")"
+                else:
+                    own_section = "### PREVIOUS POSTS ###\n(none yet)"
+
+                # Neighbor posts.
+                if len(neighbor_pairs) > 0:
+                    neighbor_section = "\n\n### POSTS FROM OTHERS ###\n" + "\n".join(
+                        f"- @user_{nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs
                     )
                 else:
-                    previous_tweet_block = ""
+                    neighbor_section = ""
 
-            user_content = prompt_cfg["user_template_forced"].format(
-                agent_id = self.ID,
-                persona=self.persona,
-                well_being=self.well_being_prompt(self.well_being),
-                previous_tweet_block=previous_tweet_block,
-            )
+                phq9_val = (self.well_being or {}).get("phq9_sumscore", 0) or 0
+                severity = self.phq9_severity_category(phq9_val)
+                well_being_str = f"{severity} (PHQ-9: {int(round(float(phq9_val)))})"
+
+                user_content = prompt_cfg["user_template_forced"].format(
+                    agent_id=self.ID,
+                    persona=self.persona,
+                    well_being=well_being_str,
+                    previous_tweet_block=own_section + neighbor_section,
+                )
 
         messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
         
@@ -396,7 +423,7 @@ class Agent:
         else:
             self.frac_distorted_neigh = 0
             
-        neighbor_msgs = rng.permutation(neighbor_msgs)[:5]  # limit to first 10 neighbors
+        neighbor_msgs = rng.permutation(neighbor_msgs)[:5]
 
         # force tweet if needed
         self._force_active = force_active

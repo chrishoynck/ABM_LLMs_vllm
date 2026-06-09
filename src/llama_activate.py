@@ -94,7 +94,7 @@ def how_many_gpus():
     print(f"Number of GPUs: {number_of_gpus}")
     return number_of_gpus
 
-def get_llm(model_id=None):
+def get_llm(model_id=None, seed=None):
     """Set up the vLLM engine. If model_id is given, load that model; else use MODEL_ID."""
     load_id = model_id if model_id is not None else MODEL_ID
     print(f"Loading vLLM model: {load_id}...")
@@ -106,9 +106,10 @@ def get_llm(model_id=None):
         trust_remote_code=True,
         tensor_parallel_size=gpus_count,
         gpu_memory_utilization=0.90,
-        seed=SEED,
         max_model_len=8192,
     )
+    if seed is not None:
+        kwargs["seed"] = seed
 
     if "qwen3.5" in load_id.lower():
         kwargs["limit_mm_per_prompt"] = {"image": 0}
@@ -127,20 +128,28 @@ def build_network(args, personas, well_being, depressed_personas=None):
     Returns:
         network: Generated network object.
     '''
-    
+    phq9_mode = getattr(args, "phq9_mode", "llm")
+    bert_regressor_path = getattr(args, "bert_regressor_path", None) if phq9_mode == "bert" else None
+
     if args.net == "sda" or args.net == "sdc":
         return SocialDistanceAttachment(
             alpha=args.alpha,
             degree=args.degree,
             dim=args.dim,
+            n_clusters=args.n_clusters,
+            latent_weight=getattr(args, "latent_weight", 1.0),
+            age_weight=getattr(args, "age_weight", 1.0),
             num_agents=args.num_agents,
             seed=args.seed,
             plot=False,
-            well_being= well_being,
+            well_being=well_being,
             personas=personas,
             sdc=(args.net == "sdc"),
             depressed_personas=depressed_personas,
             directed=args.directed,
+            phq9_mode=phq9_mode,
+            bert_regressor_path=bert_regressor_path,
+            bert_mentalbert=True,
         )
     else:
         return RandomNetwork(
@@ -149,9 +158,12 @@ def build_network(args, personas, well_being, depressed_personas=None):
             num_agents=args.num_agents,
             seed=args.seed,
             personas=personas,
-            well_being= well_being,
+            well_being=well_being,
             depressed_personas=depressed_personas,
             directed=args.directed,
+            phq9_mode=phq9_mode,
+            bert_regressor_path=bert_regressor_path,
+            bert_mentalbert=True,
         )
 
 def generate_parser():
@@ -174,13 +186,24 @@ def generate_parser():
     parser.add_argument("--k", type=int, default=0, help="Regular degree (Watts–Strogatz if >0)")
 
     # Social distance attachment specific
-    parser.add_argument("--alpha", type=float, default=1.0, help="Alpha parameter for social distance attachment (scale-free)")
-    parser.add_argument("--degree", type=int, default=2, help="Dimensionality of social space (scale-free)")
-    parser.add_argument("--dim", type=int, default=2, help="Dimensionality of social space (social distance attachment)")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Alpha parameter for social distance attachment")
+    parser.add_argument("--degree", type=int, default=2, help="Target degree for social distance attachment")
+    parser.add_argument("--dim", type=int, default=2, help="Dimensionality of social space")
+    parser.add_argument("--n_clusters", type=int, default=2, help="Number of Gaussian clusters in latent space (SDA); calibration fixes this at 2")
+    parser.add_argument("--latent_weight", type=float, default=1.0, help="Latent dimension scaling (SDA)")
+    parser.add_argument("--age_weight", type=float, default=1.0, help="Age dimension scaling (SDA)")
 
     # Experiment Settings
     parser.add_argument("--depressed", action="store_true", help="Include depressed personas")
     parser.add_argument("--enforce_ngrams", action="store_true", help="Enforce distorted-language n-grams in tweets")
+
+    # PHQ-9 scoring mode
+    parser.add_argument("--phq9_mode", type=str, default="llm", choices=["llm", "bert"],
+                        help="PHQ-9 scoring backend: 'llm' (default) or 'bert' (BERT+MLP regressor).")
+    parser.add_argument("--bert_regressor_path", type=str,
+                        default="data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35/regressor.pt",
+                        help="Path to a saved regressor.pt for --phq9_mode bert. "
+                             "Defaults to the best fine-tuned seed (seed 35, test MAE=2.76).")
 
     # PHQ-9 sampling / smoothing (simulation only, not testing)
     parser.add_argument("--sample_phq9", type=float, default=None, metavar="FRAC",
@@ -195,6 +218,8 @@ def generate_parser():
                              "round, on top of the always-on per-agent neighbor_history. "
                              "Unset: off for new runs, but a resumed checkpoint that had it on "
                              "keeps it on. Use --no-cds_dynamic to force it off.")
+    parser.add_argument("--time_info", action="store_true",
+                        help="Print per-round timing breakdown (LLM inference, PHQ-9 update, etc.).")
 
     # specify if to save network properties after simulation
     parser.add_argument("--save", action="store_true", help="Save network properties after simulation")
@@ -220,19 +245,20 @@ def generate_parser():
 
 
 
-def update_network(network, 
-                    pipe, 
-                    fracs_dist_step = [], 
-                    running_fracs = [], 
-                    rounds=1, 
-                    seed=42, 
-                    enforce_ngrams = False, 
+def update_network(network,
+                    pipe,
+                    fracs_dist_step = [],
+                    running_fracs = [],
+                    rounds=1,
+                    seed=42,
+                    enforce_ngrams = False,
                     log = False,
                     check_point = 10,
                     sample_phq9 = None,
                     cap_phq9 = False,
                     phq9_threshold = 0,
-                    cds_dynamic = None):
+                    cds_dynamic = None,
+                    time_info = False):
     """Update the network for one round and return the mean fraction of distorted tweets."""
 
     # Store PHQ-9 options on the network so PathManager can read them
@@ -252,16 +278,20 @@ def update_network(network,
     
     log_path = None
     log_iteration = log if isinstance(log, int) else 30
-    
-    n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
-    
+
+    # Load n-grams only when dynamic CDS is on; otherwise computed post-hoc.
+    if cds_dynamic:
+        n_grams = metrics.load_ngrams_tsv("data/distorted_language_ngrams.tsv")
+    else:
+        n_grams = []
+
     for _ in range(rounds):
         set_seed(seed + network.iterations)  # change seed each round for variability
-        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer, 
-                                                                           pipe, 
-                                                                           n_grams=n_grams, 
-                                                                           distorted_tweets=distorted_tweets, 
-                                                                           time_info=False, 
+        mean_running_frac, frac_distorted_this_step = network.update_round(tokenizer,
+                                                                           pipe,
+                                                                           n_grams=n_grams,
+                                                                           distorted_tweets=distorted_tweets,
+                                                                           time_info=time_info,
                                                                            check_point=check_point,
                                                                            sample_phq9=sample_phq9,
                                                                            cap_phq9=cap_phq9,
@@ -272,13 +302,14 @@ def update_network(network,
         if network.iterations % 10 == 0:
             print(f"finished round {network.iterations}")
         
-        if log and network.iterations % log_iteration == 0: 
+        if log and network.iterations % log_iteration == 0:
             new_dir = ri.log_network_state(network, seed, running_fracs, fracs_dist_step)
-            # cleanup old log
+            # cleanup previous checkpoint directory (replace with current one)
             if log_path is not None:
-                os.remove(log_path)  
-                os.rmdir(os.path.dirname(log_path))
-
+                import shutil
+                old_dir = os.path.dirname(log_path)
+                if os.path.isdir(old_dir):
+                    shutil.rmtree(old_dir)
             log_path = new_dir
 
     return running_fracs, network, fracs_dist_step
@@ -293,9 +324,6 @@ def run_simulation(args, pipe=None):
         running_fracs: List of running fractions of distorted tweets.
         fracs_dist_step: List of fractions of distorted tweets per step.
         '''
-    # set_seed(args.seed)     
-    # print(type(pipe.model))
-    # print("GENERATOR: ", inspect.signature(pipe.model.generate))
 
     # build an argparse-like namespace
     
@@ -333,19 +361,20 @@ def run_simulation(args, pipe=None):
         return network, [], []
     
      # run updates
-    running_fracs, network, fracs_dist_step = update_network(network, 
-                                                             pipe=pipe, 
-                                                             fracs_dist_step=[], 
-                                                             running_fracs=[], 
+    running_fracs, network, fracs_dist_step = update_network(network,
+                                                             pipe=pipe,
+                                                             fracs_dist_step=[],
+                                                             running_fracs=[],
                                                              rounds=args.rounds,
-                                                             seed=args.seed, 
-                                                             enforce_ngrams=args.enforce_ngrams, 
-                                                             log = args.log,
+                                                             seed=args.seed,
+                                                             enforce_ngrams=args.enforce_ngrams,
+                                                             log=args.log,
                                                              check_point=args.check_point,
                                                              sample_phq9=args.sample_phq9,
                                                              cap_phq9=args.cap_phq9,
                                                              phq9_threshold=args.phq9_threshold,
-                                                             cds_dynamic=args.cds_dynamic)
+                                                             cds_dynamic=args.cds_dynamic,
+                                                             time_info=getattr(args, "time_info", False))
     return network, running_fracs, fracs_dist_step
 
 def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_step=[]):
@@ -361,26 +390,28 @@ def update_existing_network(pipe, args, network, running_fracs=[], fracs_dist_st
     # reload network from saved properties
 
     # network, running_fracs, fracs_dist_step= ri.generate_network(args, pipe)
-    running_fracs, network, fracs_dist_step = update_network(network, 
-                                                             pipe=pipe, 
-                                                             fracs_dist_step=fracs_dist_step, 
-                                                             running_fracs=running_fracs, 
-                                                             rounds=args.rounds, 
-                                                             seed=args.seed, 
+    running_fracs, network, fracs_dist_step = update_network(network,
+                                                             pipe=pipe,
+                                                             fracs_dist_step=fracs_dist_step,
+                                                             running_fracs=running_fracs,
+                                                             rounds=args.rounds,
+                                                             seed=args.seed,
                                                              enforce_ngrams=args.enforce_ngrams,
                                                              log=args.log,
                                                              check_point=args.check_point,
                                                              sample_phq9=args.sample_phq9,
                                                              cap_phq9=args.cap_phq9,
                                                              phq9_threshold=args.phq9_threshold,
-                                                             cds_dynamic=args.cds_dynamic)
+                                                             cds_dynamic=args.cds_dynamic,
+                                                             time_info=getattr(args, "time_info", False))
 
     # tweet_history = [(a.ID, a.tweethistory) for a in network.all_agents]
     if args.save:
-        file_output_path = ri.read_out_network_properties(network, 
-                                                          args.seed, 
-                                                          fracs_dist_step, 
-                                                          running_fracs)
+        file_output_path = ri.read_out_network_properties(network,
+                                                          args.seed,
+                                                          fracs_dist_step,
+                                                          running_fracs,
+                                                          args=args)
         print(f"Network properties saved to {file_output_path}")
     return network, running_fracs, fracs_dist_step
 
@@ -398,10 +429,11 @@ def generate_new_net(args, pipe):
     network, running_fracs, fracs_dist_step = run_simulation(args = args, pipe=pipe)
     # return output file the network is printed to
     if args.save:
-        file_output_path = ri.read_out_network_properties(network, 
-                                                          args.seed, 
-                                                          fracs_dist_step, 
-                                                          running_fracs)
+        file_output_path = ri.read_out_network_properties(network,
+                                                          args.seed,
+                                                          fracs_dist_step,
+                                                          running_fracs,
+                                                          args=args)
         print(f"Network properties saved to {file_output_path}")
 
     return network, running_fracs, fracs_dist_step
@@ -515,15 +547,40 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=35, shif
                                 path=path, filename=filename, save=args.save)
 
 
+def _free_bert_from_network(network):
+    """Delete BERT encoder/regressor from a finished network to free GPU memory.
+
+    Transformer modules contain reference cycles, so dropping the last reference
+    does NOT free them synchronously via refcounting — the cyclic collector has
+    to run first. Without the explicit gc.collect(), torch.cuda.empty_cache()
+    runs while the old model is still resident on the GPU, so its memory is never
+    reclaimed and each seed stacks a fresh encoder+regressor on top of the
+    previous one until GPU 0 OOMs (vLLM already holds ~0.90 of the card).
+    """
+    for attr in ("bert_encoder", "bert_regressor"):
+        if getattr(network, attr, None) is not None:
+            setattr(network, attr, None)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def main(args, pipe, states):
 
     all_networks_results = {}
+    prev_seed_networks = []  # track networks from the previous seed to free BERT
+
     for seed in args.seeds:
         args.seed = seed
-        
-        # set seed when loading in the network. 
+
+        # Free BERT from the previous seed's networks before loading new ones.
+        # This ensures only one MentalBERT instance occupies GPU at a time.
+        for prev_net in prev_seed_networks:
+            _free_bert_from_network(prev_net)
+        prev_seed_networks = []
+
+        # set seed when loading in the network.
         set_seed(seed)
-        
+
         # loop over all states
         for state in states:
             args.enforce_ngrams = (state == "enforced_ngrams")
@@ -542,7 +599,9 @@ def main(args, pipe, states):
             else:
                 print(f"Generating new network for state '{state}' and seed {seed}...\n")
                 network, running_fracs, fracs_dist_step = generate_new_net(args, pipe)
-            
+
+            prev_seed_networks.append(network)
+
             # Collect result
             all_networks_results.setdefault(state, []).append({
             "network": network,

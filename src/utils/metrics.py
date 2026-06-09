@@ -252,14 +252,16 @@ def cds_info_from_neighbor_history(network, ngrams):
 
 #=========================SBERT functions=========================
 
-def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False):
+def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False, device=None):
     """Generates and returns a SBERT model for embedding sentences.
-    
+
     Args:
         model_name (str): Name of the pre-trained SBERT model to load.
         mentalbert (bool): Whether to use a custom MentalBERT architecture.
             (use "mental/mental-bert-base-uncased" as model_name in that case)
-    
+        device: torch device or string to place the model on (e.g. "cpu", "cuda").
+            Defaults to CUDA if available when None.
+
     Returns:
         SentenceTransformer: The loaded SBERT model.
     """
@@ -270,10 +272,10 @@ def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False):
                                        pooling_mode_mean_tokens=True,
                                        pooling_mode_cls_token=False,
                                        pooling_mode_max_tokens=False)
-        
-        model = sbert(modules=[word_embedding_model, pooling_model])
+
+        model = sbert(modules=[word_embedding_model, pooling_model], device=device)
     else:
-        model = sbert(model_name)
+        model = sbert(model_name, device=device)
     return model
 
 def build_network_graph(network):

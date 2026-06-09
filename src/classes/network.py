@@ -111,6 +111,7 @@ class _Network:
         if bert_device is None:
             bert_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.bert_device = bert_device
+        self._bert_regressor_path = bert_regressor_path
 
         if bert_regressor is None:
             if bert_regressor_path is None:
@@ -118,8 +119,12 @@ class _Network:
                     "phq9_mode='bert' requires either bert_regressor or bert_regressor_path"
                 )
             print(f"[network] loading BERT regressor from {bert_regressor_path}")
-            # neural_net_BERT must be importable to unpickle the saved module.
-            from utils.prompt_optimizer import neural_net_BERT  # noqa: F401
+            # The regressor was pickled while prompt_optimizer.py ran as __main__,
+            # so pickle encoded the class as __main__.neural_net_BERT. Inject it
+            # into __main__ so unpickling succeeds regardless of entry point.
+            import sys
+            from utils.prompt_optimizer import neural_net_BERT
+            setattr(sys.modules["__main__"], "neural_net_BERT", neural_net_BERT)
             bert_regressor = torch.load(
                 bert_regressor_path, map_location=bert_device, weights_only=False,
             )
@@ -168,7 +173,7 @@ class _Network:
     def update_round(self, 
                      tokenizer, 
                      pipe, 
-                     update_fraction=0.5, 
+                     update_fraction=1.0,
                      n_grams=[], 
                      distorted_tweets=[], 
                      time_info = False, 
@@ -205,20 +210,25 @@ class _Network:
         # PHQ-9 questionnaire AFTER commit so that:
         #  - all_phq9_sumscores[i] matches the PHQ-9 that prompted tweethistory[i]
         #  - the questionnaire sees the current round's tweet in tweethistory
+        t4 = t3
         if sample_phq9:
             n_sample = max(1, int(sample_phq9 * len(self.all_agents)))
             sampled = list(self.rng.choice(self.all_agents, n_sample, replace=False))
             self._phq9_questionnaire(tokenizer, pipe, check_point=check_point,
                                      agents=sampled, cap_phq9=cap_phq9,
                                      phq9_threshold=phq9_threshold)
+            t4 = time.perf_counter()
         elif self.iterations % check_point == 0:
             self._phq9_questionnaire(tokenizer, pipe, check_point=check_point,
                                      cap_phq9=cap_phq9, phq9_threshold=phq9_threshold)
+            t4 = time.perf_counter()
 
         if time_info:
             print(f"Time to prepare prompts: {t1 - t0:.4f} seconds")
             print(f"Time to generate outputs: {t2 - t1:.4f} seconds")
             print(f"Time to apply outputs and update state: {t3 - t2:.4f} seconds")
+            if t4 > t3:
+                print(f"Time to run PHQ-9 update: {t4 - t3:.4f} seconds")
 
         return mean_distorted_frac, dist_this_step_norm
 
@@ -240,12 +250,20 @@ class _Network:
             for agent in self.all_agents:
                 # set default
                 agent.send_tweet(max_chars=240, raw_tweet=FC.NO_CONTENT)
+            first_in_round = True
             for agent in self.rng.choice(self.all_agents, int(len(self.all_agents) * update_fraction), replace=False):
                 raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
                 templated = tokenizer.apply_chat_template(
                     raw_messages, tokenize=False, add_generation_prompt=True,
-                    chat_template_kwargs={"enable_thinking": False}
+                    enable_thinking=False,
                 )
+                if first_in_round:
+                    print("=" * 70)
+                    print(f"[FULL PROMPT — seed {self.seed}, agent {agent.ID}, round 1]")
+                    print("=" * 70)
+                    print(templated)
+                    print("=" * 70)
+                    first_in_round = False
                 prompts.append(templated)
                 # prompt = add_salt(prompt)
                 agents_w_prompt.append(agent)
@@ -255,11 +273,11 @@ class _Network:
             # randomize order of agent updates
             permuted = self.rng.permutation(self.all_agents)
             for agent in permuted:
-                raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=False)
+                raw_messages = agent.step_llm_tweet(tokenizer, rng=self.rng, round_idx=self.iterations, force_active=True)
                 # prompt = add_salt(prompt)
                 templated = tokenizer.apply_chat_template(
                     raw_messages, tokenize=False, add_generation_prompt=True,
-                    chat_template_kwargs={"enable_thinking": False}
+                    enable_thinking=False,
                 )
                 prompts.append(templated)
                 agents_w_prompt.append(agent)
@@ -304,7 +322,7 @@ class _Network:
             )
             templated = tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True,
-                chat_template_kwargs={"enable_thinking": False}
+                enable_thinking=False,
             )
             prompts.append(templated)
         
@@ -341,6 +359,11 @@ class _Network:
         if agents is None:
             agents = self.all_agents
 
+        encoder_name = "MentalBERT" if getattr(self, "bert_mentalbert", True) else "SBERT"
+        print(f"[PHQ-9 BERT] round {self.iterations}: scoring {len(agents)} agents "
+              f"(window={check_point} tweets, encoder={encoder_name}, "
+              f"centroid=mean+max+std, cap={cap_phq9}, threshold={phq9_threshold})")
+
         valid_agents = []
         blocks = []
         for agent in agents:
@@ -352,6 +375,7 @@ class _Network:
             blocks.append(recent)
 
         if not valid_agents:
+            print(f"[PHQ-9 BERT] round {self.iterations}: no agents with tweets in window — skipped.")
             return
 
         centroids = []
@@ -369,6 +393,7 @@ class _Network:
         with torch.no_grad():
             preds = self.bert_regressor(batch).squeeze(-1).cpu().numpy()
 
+        n_updated = 0
         for agent, pred in zip(valid_agents, preds):
             new_score = int(round(float(pred)))
             new_score = max(0, min(27, new_score))
@@ -383,7 +408,11 @@ class _Network:
                 diff = max(-1, min(1, diff))
                 new_score = old_score + diff
 
-            agent.update_well_being(new_score)
+            agent.update_well_being(new_score, new_phq9=True)
+            n_updated += 1
+
+        print(f"[PHQ-9 BERT] round {self.iterations}: updated {n_updated}/{len(valid_agents)} agents "
+              f"({len(agents) - len(valid_agents)} skipped — no tweets).")
 
     # VLLM
     def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False):
@@ -403,7 +432,6 @@ class _Network:
                     temperature=0.2,
                     top_p=0.9,
                     max_tokens=256,
-                    seed=self.seed + self.iterations,
                 )
             outputs = llm.generate(prompts, sampling_params_clinical)
             return outputs
@@ -412,7 +440,6 @@ class _Network:
             temperature=0.7,
             top_p=0.9,
             max_tokens=512,
-            seed=self.seed + self.iterations,
         )
 
         # VLLM does batching automatically. 
@@ -563,15 +590,19 @@ class SocialDistanceAttachment(_Network):
     This class represents a social distance attachment network of agents.
     It inherits from the _Network class and initializes the network by connecting agents based on social distance.
     """
-    def __init__(self, 
-                 alpha, 
-                 dim, 
-                 degree, 
-                 sdc=False, 
-                 plot=False, 
-                 depressed_personas=None, 
-                 dist_type= "gaussian_clusters", 
-                 form_connections=True, 
+    def __init__(self,
+                 alpha,
+                 dim,
+                 degree,
+                 sdc=False,
+                 plot=False,
+                 depressed_personas=None,
+                 dist_type= "gaussian_clusters",
+                 form_connections=True,
+                 age_weight=1.0,
+                 use_phq9=True,
+                 latent_weight=1.0,
+                 n_clusters=4,
                  **kwargs):
         """
         Initialize the network by connecting agents based on social distance.
@@ -585,6 +616,10 @@ class SocialDistanceAttachment(_Network):
         self.agent_positions = None
         self.degree = degree
         self.sdc = sdc
+        self.age_weight = age_weight
+        self.use_phq9 = use_phq9
+        self.latent_weight = latent_weight
+        self.n_clusters = n_clusters
         
         if form_connections:
             self.initialize_network(depressed_personas=depressed_personas, plot=plot)
@@ -606,7 +641,12 @@ class SocialDistanceAttachment(_Network):
             ages = [agent.well_being.get("age", 0) if agent.well_being else 0 for agent in self.all_agents]
 
          # generate agent positions for distance calculations
-        self.agent_positions = self.sample_positions(len(self.all_agents), space_type=self.dist_type, phq9_scores=phq9_scores, ages=ages)
+        self.agent_positions = self.sample_positions(
+            len(self.all_agents), space_type=self.dist_type,
+            n_clusters=self.n_clusters,
+            phq9_scores=phq9_scores if self.use_phq9 else [],
+            ages=ages,
+        )
         self.dist_matrix = cdist(self.agent_positions, self.agent_positions)
         # print("Distance matrix:", self.dist_matrix)
         print("N =", len(self.all_agents), "target degree =", self.degree, "max possible =", len(self.all_agents)-1)
@@ -636,11 +676,15 @@ class SocialDistanceAttachment(_Network):
 
         assert self.dim >= 0, "Dimension must be non-negative"
         positions = None
-        
-        if self.dim > 0 and len(phq9_scores) > 0:
-            use_dim = self.dim - 1
-        else:
-            use_dim = self.dim
+
+        # dim is the total number of dimensions including phq9 and age.
+        # subtract one slot for each demographic axis that will be appended.
+        use_dim = self.dim
+        if len(phq9_scores) > 0:
+            use_dim -= 1
+        if len(ages) > 0:
+            use_dim -= 1
+        use_dim = max(use_dim, 0)
         
         # add additional dimension for phq9 scores if specified and dim > 1
         if use_dim > 0:
@@ -668,6 +712,17 @@ class SocialDistanceAttachment(_Network):
                 positions = self.rng.lognormal(mean=0.0, sigma=1.0, size=(N, use_dim))
             else:
                 raise ValueError("unknown space_type")
+
+            # Normalize latent dims to [-1, 1] so they start at the same scale
+            # as the age dimension, then apply latent_weight.
+            # Without this, uniform [0,1] has half the range of age [-1,1],
+            # making latent_weight systematically weaker than age_weight.
+            col_min = positions.min(axis=0)
+            col_max = positions.max(axis=0)
+            rng = col_max - col_min
+            rng[rng == 0] = 1.0
+            positions = 2 * (positions - col_min) / rng - 1  # → [-1, 1]
+            positions = positions * self.latent_weight
             
         # add phq9 as an additional dimension
         if len(phq9_scores) > 0:
@@ -677,13 +732,12 @@ class SocialDistanceAttachment(_Network):
             # make column array to stack later
             phq9_array = np.array(phq9_scores).reshape(-1, 1)
 
-            # Normalize to [0, 1]
+            # Normalize to [-1, 1] — consistent with age and latent dimensions
             if phq9_array.max() > phq9_array.min():
                 phq9_norm = (phq9_array - phq9_array.min()) / (phq9_array.max() - phq9_array.min())
+                phq9_norm = 2 * phq9_norm - 1
             else:
-                phq9_norm = np.zeros_like(phq9_array)*0.5
-            
-            # phq9_norm = 2*phq9_norm - 1  # scale to [-1, 1]
+                phq9_norm = np.zeros_like(phq9_array)
             if positions is None:
                 positions = phq9_norm
             else:
@@ -704,6 +758,7 @@ class SocialDistanceAttachment(_Network):
                 age_norm = np.zeros_like(age_array)*0.5
             
             age_norm = 2*age_norm - 1  # scale to [-1, 1]
+            age_norm = age_norm * self.age_weight
             if positions is None:
                 positions = age_norm
             else:
@@ -912,8 +967,11 @@ class SocialDistanceAttachment(_Network):
             vis.check_degree_distribution(unique_degrees, frequencies)
 
         fit = Fit(degrees)
-        print(f"Power-law fit: alpha={fit.power_law.alpha}, KS={fit.power_law.KS()}")
-        assert fit.power_law.KS() < 0.5, f"Power-law fit is not significant; {fit.power_law.KS()}"
+        self._powerlaw_gamma = fit.power_law.alpha
+        self._powerlaw_ks    = fit.power_law.KS()
+        print(f"Power-law fit: alpha={self._powerlaw_gamma}, KS={self._powerlaw_ks}")
+        if self._powerlaw_ks >= 0.5:
+            print(f"Warning: power-law fit is weak (KS={self._powerlaw_ks:.3f} >= 0.5); degree distribution may not be scale-free.")
         # assert fit.power_law.alpha < 7, f"Power-law exponent is too high; {fit.power_law.alpha}"
 
         

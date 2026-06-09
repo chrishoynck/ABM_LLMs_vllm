@@ -933,6 +933,402 @@ def plot_agent_phq9_combined(agent_df: pd.DataFrame, phq9_matrix: pd.DataFrame,
 
 
 # =====================================================================
+# OPTIMIZATION RUN SUMMARIES
+# =====================================================================
+
+def _read_instruction(seed_dir: str, prompt_type: str) -> str:
+    """Return the best saved instruction for a prompt-optimizer run dir.
+
+    Strips the ``# val score: X | test score: Y`` metadata header that the
+    tweet optimizer prepends before the first blank line.
+    """
+    candidates = (
+        ["optimized_instruction.txt", "best_instruction.txt"]
+        if prompt_type == "phq9"
+        else ["optimized_instruction_tweet.txt", "best_instruction_tweet.txt"]
+    )
+    for fname in candidates:
+        p = os.path.join(seed_dir, fname)
+        if os.path.isfile(p):
+            text = open(p).read().strip()
+            if text.startswith("#"):
+                _hdr, _, rest = text.partition("\n\n")
+                if rest:
+                    text = rest.strip()
+            return text
+    return ""
+
+
+def _summarize_prompt_run(seed_dir: str, prompt_type: str,
+                           best_is: str = "min") -> dict | None:
+    """One-row summary dict for a single prompt-optimizer run dir.
+
+    best_is="min" for PHQ-9 (MAE, lower better), "max" for tweet quality.
+    Returns None if no trajectory CSV is found.
+    """
+    import pandas as _pd
+    traj_path = os.path.join(seed_dir, "training_trajectory.csv")
+    if not os.path.isfile(traj_path):
+        return None
+    traj = _pd.read_csv(traj_path)
+    if traj.empty:
+        return None
+    val   = traj[traj.split == "val"]
+    train = traj[traj.split == "train"]
+    test  = traj[traj.split == "test"]
+    if val.empty:
+        return None
+    idx = val["mean_score"].idxmin() if best_is == "min" else val["mean_score"].idxmax()
+    best_val_row = val.loc[idx]
+    best_step = int(best_val_row["step"])
+    train_at_best = train[train["step"] == best_step]
+    test_row = test.iloc[-1] if not test.empty else None
+    return {
+        "best_step":     best_step,
+        "best_val":      float(best_val_row["mean_score"]),
+        "best_val_std":  float(best_val_row["std_score"]),
+        "train_at_best": float(train_at_best["mean_score"].iloc[0]) if not train_at_best.empty else float("nan"),
+        "train_std":     float(train_at_best["std_score"].iloc[0])  if not train_at_best.empty else float("nan"),
+        "test_mean":     float(test_row["mean_score"]) if test_row is not None else float("nan"),
+        "test_std":      float(test_row["std_score"])  if test_row is not None else float("nan"),
+        "test_n":        int(test_row["n_samples"])    if test_row is not None else 0,
+        "batch_size":    int(train["n_samples"].iloc[0]) if not train.empty else None,
+        "val_size":      int(best_val_row["n_samples"]),
+        "num_steps":     int(traj["step"].max()),
+        "instruction":   _read_instruction(seed_dir, prompt_type),
+    }
+
+
+def summarize_prompt_runs(base_dir: str, seeds: list, prompt_type: str,
+                           best_is: str = "min",
+                           model_short: str = "Qwen3.5-27B") -> "pd.DataFrame":
+    """Aggregate per-seed prompt-optimizer summaries into a DataFrame."""
+    rows = []
+    for seed in seeds:
+        d = os.path.join(base_dir, f"{model_short}_seed{seed}")
+        s = _summarize_prompt_run(d, prompt_type, best_is=best_is)
+        if s is not None:
+            s["seed"] = seed
+            rows.append(s)
+    cols = ["seed", "best_step", "best_val", "best_val_std",
+            "train_at_best", "train_std", "test_mean", "test_std",
+            "test_n", "batch_size", "val_size", "num_steps", "instruction"]
+    return pd.DataFrame(rows)[cols] if rows else pd.DataFrame(columns=cols)
+
+
+def print_prompt_summary(df: "pd.DataFrame", title: str) -> None:
+    """Print the numeric table and each seed's optimised instruction."""
+    import textwrap
+    print(f"\n=== {title} ===\n")
+    print(df.drop(columns=["instruction"]).round(3).to_string(index=False))
+    print("\n--- Optimized instructions ---")
+    for _, r in df.iterrows():
+        wrapped = textwrap.fill(r["instruction"], width=100,
+                                initial_indent="  ", subsequent_indent="  ")
+        print(f"\n[seed {int(r['seed'])}]  best_step={int(r['best_step'])}  "
+              f"val={r['best_val']:.2f}  test={r['test_mean']:.2f}\n{wrapped}")
+
+
+def summarize_bert_runs(base_dir: str = "data/test_post/bert_regression",
+                        model_short: str = "Qwen3.5-27B") -> "pd.DataFrame":
+    """Read performance.json for each BERT seed dir; return a summary DataFrame."""
+    import glob as _glob
+    import json as _json
+    rows = []
+    for d in sorted(_glob.glob(os.path.join(base_dir, f"{model_short}_seed*"))):
+        try:
+            seed = int(d.rsplit("seed", 1)[-1])
+        except ValueError:
+            continue
+        perf_path = os.path.join(d, "performance.json")
+        if not os.path.isfile(perf_path):
+            continue
+        with open(perf_path) as fh:
+            perf = _json.load(fh)
+        epochs = perf.get("epochs", [])
+        if not epochs:
+            continue
+        best = min(epochs, key=lambda e: e["val_mae"])
+        rows.append({
+            "seed":              seed,
+            "best_epoch":        int(best["epoch"]),
+            "best_val_mae":      float(best["val_mae"]),
+            "best_val_std":      float(best["val_std"]),
+            "train_at_best_mae": float(best["train_mae"]),
+            "train_at_best_std": float(best["train_std"]),
+            "test_mae":          float(perf["test_mae"]),
+            "test_std":          float(perf["test_std"]),
+            "n_train":           int(perf["n_train"]),
+            "n_val":             int(perf["n_val"]),
+            "n_test":            int(perf["n_test"]),
+            "total_epochs":      len(epochs),
+            "mental_bert":       bool(perf.get("mental_bert", True)),
+        })
+    return pd.DataFrame(rows)
+
+
+# =====================================================================
+# PROMPT-STRING ROBUSTNESS (prompt sensitivity analysis)
+# =====================================================================
+
+_PROMPT_TYPE_META = {
+    "post_gen": {
+        "base_dir": "data/test_post/optimized_tweets",
+        "filename": "best_instruction_tweet.txt",
+    },
+    "phq9": {
+        "base_dir": "data/test_post/optimized_phq9",
+        "filename": "best_instruction.txt",
+    },
+}
+
+
+def load_best_prompts(model_name: str, seeds: list,
+                      prompt_type: str = "post_gen") -> list:
+    """Read the best instruction file for each seed run."""
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    meta = _PROMPT_TYPE_META[prompt_type]
+    prompts = []
+    for seed in seeds:
+        path = os.path.join(meta["base_dir"], f"{model_name}_seed{seed}", meta["filename"])
+        with open(path) as f:
+            prompts.append(f.read().strip())
+    return prompts
+
+
+def load_test_scores(model_name: str, seeds: list,
+                     prompt_type: str = "post_gen") -> list:
+    """Read the final test-split mean_score from training_trajectory.csv for each seed."""
+    import csv
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    base_dir = _PROMPT_TYPE_META[prompt_type]["base_dir"]
+    scores = []
+    for seed in seeds:
+        path = os.path.join(base_dir, f"{model_name}_seed{seed}", "training_trajectory.csv")
+        test_score = None
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["split"] == "test":
+                    test_score = float(row["mean_score"])
+        if test_score is None:
+            raise ValueError(f"No test split found in {path}")
+        scores.append(test_score)
+    return scores
+
+
+def load_minimal_score(model_name: str, seeds: list,
+                       prompt_type: str = "post_gen") -> float:
+    """Average the first val-split mean_score across seeds (un-optimised baseline)."""
+    import csv
+    if prompt_type not in _PROMPT_TYPE_META:
+        raise ValueError(f"prompt_type must be one of {list(_PROMPT_TYPE_META)}")
+    base_dir = _PROMPT_TYPE_META[prompt_type]["base_dir"]
+    firsts = []
+    for seed in seeds:
+        path = os.path.join(base_dir, f"{model_name}_seed{seed}", "training_trajectory.csv")
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["split"] == "val":
+                    firsts.append(float(row["mean_score"]))
+                    break
+            else:
+                raise ValueError(f"No val split found in {path}")
+    return sum(firsts) / len(firsts)
+
+
+def compute_prompt_robustness(prompts: list, test_scores: list,
+                               baseline_prompt: str = None,
+                               baseline_score: float = None,
+                               seeds: list = None,
+                               labels: list = None,
+                               model_name: str = "all-MiniLM-L6-v2") -> dict:
+    """Pairwise cosine-similarity matrix across optimised prompts.
+
+    When `baseline_prompt` is provided it is appended as the final row/column
+    and labelled "minimal". Returns a dict with keys: sim_matrix, labels,
+    test_scores, baseline_score, has_baseline.
+    """
+    from sentence_transformers import SentenceTransformer
+    all_prompts = list(prompts)
+    if baseline_prompt is not None:
+        all_prompts.append(baseline_prompt)
+
+    model = SentenceTransformer(model_name)
+    embeddings = model.encode(all_prompts, convert_to_numpy=True, show_progress_bar=False)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / np.maximum(norms, 1e-10)
+    sim_matrix = (normed @ normed.T).astype(float)
+
+    if labels is not None:
+        if len(labels) != len(prompts):
+            raise ValueError(f"labels length {len(labels)} != prompts length {len(prompts)}")
+        resolved_labels = list(labels)
+    elif seeds is not None and len(seeds) == len(prompts):
+        resolved_labels = [f"seed {s}" for s in seeds]
+    else:
+        resolved_labels = [f"run {i+1}" for i in range(len(prompts))]
+    if baseline_prompt is not None:
+        resolved_labels.append("minimal")
+
+    return {
+        "sim_matrix": sim_matrix,
+        "labels": resolved_labels,
+        "test_scores": list(test_scores),
+        "baseline_score": baseline_score,
+        "has_baseline": baseline_prompt is not None,
+    }
+
+
+def _sort_by_score(prompts: list, scores: list, seeds: list,
+                   ascending: bool) -> tuple:
+    """Sort prompts/scores/seeds together; return (prompts, scores, seeds, labels)."""
+    order = sorted(range(len(scores)), key=lambda i: scores[i] if ascending else -scores[i])
+    p = [prompts[i] for i in order]
+    s = [scores[i]  for i in order]
+    e = [seeds[i]   for i in order]
+    labels = [f"{s[i]:.2f}" for i in range(len(order))]
+    return p, s, e, labels
+
+
+def _draw_prompt_sim_heatmap(ax, robustness: dict, caption: str,
+                              vmin: float = None) -> None:
+    """Draw a cosine-similarity heatmap panel onto `ax`.
+
+    Cell colour = cosine similarity. Cell annotation = absolute test-score
+    difference between the two runs. `caption` is placed under the panel as
+    an x-axis label (e.g. "(a) PHQ-9 assessment prompt").
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    sim = np.array(robustness["sim_matrix"])
+    labels = robustness["labels"]
+    has_baseline = bool(robustness.get("has_baseline"))
+    test_scores = list(robustness["test_scores"])
+    n_total = sim.shape[0]
+    if vmin is None:
+        vmin = float(np.min(sim[sim < 1.0])) if (sim < 1.0).any() else 0.0
+        vmin = max(0.0, vmin - 0.02)
+
+    scores_with_base = list(test_scores)
+    if has_baseline:
+        scores_with_base.append(robustness.get("baseline_score"))
+
+    annot = np.empty(sim.shape, dtype=object)
+    for i in range(n_total):
+        for j in range(n_total):
+            si, sj = scores_with_base[i], scores_with_base[j]
+            if si is None or sj is None:
+                annot[i, j] = ""
+            else:
+                annot[i, j] = f"{np.abs(si - sj):.2f}"
+
+    sns.heatmap(
+        sim, ax=ax,
+        xticklabels=labels, yticklabels=labels,
+        vmin=vmin, vmax=1.0,
+        annot=annot, fmt="",
+        cmap="Blues", linewidths=0.4, linecolor="white",
+        cbar=False, annot_kws={"fontsize": 8},
+    )
+    ax.set_aspect("equal")
+    ax.tick_params(axis="x", rotation=45, labelsize=8)
+    ax.tick_params(axis="y", rotation=0, labelsize=8)
+    ax.set_xlabel(caption, fontsize=10, labelpad=12)
+
+
+def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dict,
+                                  model_name: str, output_dir: str = None,
+                                  cell: float = 0.55,
+                                  cbar_shrink: float = 0.65,
+                                  cbar_width: float = 0.012) -> str:
+    """Render PHQ-9 and post-generation cosim heatmaps side by side and save."""
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    n_left = len(robustness_phq9["labels"])
+    n_right = len(robustness_post_gen["labels"])
+    panel_w = lambda n: max(3.0, n * 0.8 * cell)
+    fig_w = panel_w(n_left) + panel_w(n_right) + 0.5
+    fig_h = max(3.0, max(n_left, n_right) * cell * 0.8 + 1.0)
+
+    sim_left = np.array(robustness_phq9["sim_matrix"])
+    sim_right = np.array(robustness_post_gen["sim_matrix"])
+    sim_all = np.concatenate([sim_left.ravel(), sim_right.ravel()])
+    shared_vmin = float(np.min(sim_all[sim_all < 1.0])) if (sim_all < 1.0).any() else 0.0
+    shared_vmin = max(0.0, shared_vmin - 0.02)
+
+    fig, (ax_phq9, ax_post) = plt.subplots(
+        1, 2, figsize=(fig_w, fig_h),
+        gridspec_kw={"width_ratios": [panel_w(n_left), panel_w(n_right)]},
+    )
+    _draw_prompt_sim_heatmap(ax_phq9, robustness_phq9,
+                             caption="(a) PHQ-9 assessment prompt", vmin=shared_vmin)
+    _draw_prompt_sim_heatmap(ax_post, robustness_post_gen,
+                             caption="(b) Post-generation prompt", vmin=shared_vmin)
+    fig.tight_layout(rect=[0, 0, 0.94, 1])
+
+    cax = fig.add_axes([0.955, 0.5 - cbar_shrink / 2.0, cbar_width, cbar_shrink])
+    sm = ScalarMappable(norm=Normalize(vmin=shared_vmin, vmax=1.0), cmap="Blues")
+    fig.colorbar(sm, cax=cax)
+    cax.set_ylabel("cosine similarity", fontsize=8)
+    cax.tick_params(labelsize=7)
+
+    if output_dir is None:
+        output_dir = os.path.join(_PROMPT_TYPE_META["phq9"]["base_dir"],
+                                  f"{model_name}_sensitivity")
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(output_dir, "prompt_sensitivity_pair.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Pair sensitivity plot → {out}")
+    return out
+
+
+def draw_prompt_sim_heatmap(ax, robustness: dict, title: str,
+                             cmap: str = "Blues",
+                             annot_fmt: str = "{:.2f}") -> None:
+    """Draw one cosine-similarity heatmap onto `ax` (annotation = mean test score).
+
+    Cell annotation = mean test score of the two runs; baseline row/col blank.
+    """
+    sim = np.array(robustness["sim_matrix"])
+    labels = robustness["labels"]
+    has_baseline = bool(robustness.get("has_baseline"))
+    test_scores = list(robustness["test_scores"])
+    n_runs = len(test_scores)
+    n_total = sim.shape[0]
+
+    vmin = float(np.min(sim[sim < 1.0])) if (sim < 1.0).any() else 0.0
+    vmin = max(0.0, vmin - 0.02)
+
+    annot = np.empty(sim.shape, dtype=object)
+    for i in range(n_total):
+        for j in range(n_total):
+            i_is_base = has_baseline and i == n_runs
+            j_is_base = has_baseline and j == n_runs
+            if i_is_base or j_is_base:
+                annot[i, j] = ""
+            else:
+                annot[i, j] = annot_fmt.format((test_scores[i] + test_scores[j]) / 2.0)
+
+    sns.heatmap(
+        sim, ax=ax,
+        xticklabels=labels, yticklabels=labels,
+        vmin=vmin, vmax=1.0,
+        annot=annot, fmt="",
+        cmap=cmap, linewidths=0.4, linecolor="white",
+        cbar_kws={"label": "cosine similarity", "shrink": 0.8},
+    )
+    ax.set_title(title, fontsize=11)
+    ax.tick_params(axis="x", rotation=45)
+    ax.tick_params(axis="y", rotation=0)
+
+
+
+# =====================================================================
 # MAIN
 # =====================================================================
 
