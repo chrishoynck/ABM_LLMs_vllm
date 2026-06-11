@@ -489,9 +489,9 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=35, shif
 
     n_components = 2
 
-    # Tweet-level embedding cache for sbert_for_runs
-    emb_type = "mentalbert" if mentalbert else "sbert"
-    tweet_cache_path = os.path.join(path, f"{filename}_tweet_embs_{emb_type}.npz")
+    # Tweet-level embedding cache for sbert_for_runs: stored per-seed in this
+    # directory so recombining a different set of seeds reuses prior embeddings.
+    tweet_cache_dir = path
 
     # Use mean within-run variance for marker size (not between-run variance)
     if sbert:
@@ -500,7 +500,7 @@ def pca_visualize(all_networks_results, path, filename, args, num_steps=35, shif
             num_steps=num_steps,
             shift=shift,
             mentalbert=mentalbert,
-            cache_path=tweet_cache_path,
+            cache_dir=tweet_cache_dir,
         )
     else:
         mean_embedding_per_setting, all_mats_per_setting, mean_within_var_per_setting = metrics.tf_idf_for_runs(

@@ -139,8 +139,16 @@ def load_persona_phq9(path: str, n_rows: int | None = None,
     given, ``n_rows`` rows are sampled with rng(sample_seed) and ``sample_idx``
     is the sorted positional index of the kept rows; otherwise rows are taken in
     file order and ``sample_idx`` is ``list(range(n_rows))``.
+
+    A persona-only pool (no ``phq9`` column, e.g. data/personas_short_10k.csv) is
+    accepted directly: PHQ-9 is filled balanced (round-robin 0..27) so the pool
+    can be used as-is for calibration data. Pair with
+    ``generate_test_data --phq9-band-range 0 27`` for exactly balanced coverage.
     """
     df = pd.read_csv(path)
+    if "phq9" not in df.columns:
+        df = df.copy()
+        df["phq9"] = [i % 28 for i in range(len(df))]
     if n_rows is None:
         n_rows = len(df)
     if len(df) < n_rows:

@@ -1,7 +1,8 @@
 """Validate that cognitive-distortion schemas (CDS) get more probable as PHQ-9 rises.
 
-Loads the fine-tuning post datasets (train_posts.csv, test_posts.csv and the
-extra split), flags each post for distorted-language n-grams with the same
+Loads the fine-tuning post datasets (train_posts.csv, test_posts.csv, the extra
+split, and the balanced bias-calibration set calibration_posts.csv), flags each
+post for distorted-language n-grams with the same
 detector logic the simulation uses (word-boundary, case-insensitive matching of
 the n-grams in ``data/distorted_language_ngrams.tsv``), and reports the average
 percentage of CDS posts per PHQ-9 score -- overall and broken down by the 12
@@ -36,7 +37,8 @@ import pandas as pd
 # not just as a module, by putting the src/ dir on the path.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "test_posts_extra.csv")
+DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "test_posts_extra.csv",
+                 "calibration_posts.csv")
 
 # Standard PHQ-9 severity bands (sum-score cut-offs).
 SEVERITY_BANDS = [
@@ -129,9 +131,23 @@ def _severity(phq9: int) -> str:
     return "unknown"
 
 
+# Colours / labels matched to the SA cosine figure in sensitivity/sa_analyze.py
+# (blue = within-setting bar, orange = cross-setting bar, Oranges heatmap).
+COLOUR_BLUE = "#1f77b4"
+COLOUR_ORANGE = "#ff7f0e"
+HEATMAP_CMAP = "Oranges"
+# Reference panel-(b) band labels (single line, Title case) so the x-axis
+# matches "Minimal / Mild / Moderate / Mod. Severe / Severe".
+FIG_BAND_LABELS = ["Minimal", "Mild", "Moderate", "Mod. Severe", "Severe"]
+
+
 def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
                 r_agg: float, fig_path: str):
     """Two-panel figure: overall trend (left) + category heatmap (right).
+
+    Colour scheme and proportions follow the SA cosine figure in
+    sensitivity/sa_analyze.py: blue/orange accents, an Oranges heatmap, and a
+    wide (~2:1) two-panel layout.
 
     Args:
         per_score: columns phq9, pct_cds (overall, any category).
@@ -139,44 +155,46 @@ def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
         r_agg:     per-score Pearson r (% CDS vs PHQ-9), shown on the left panel.
         fig_path:  output path (.png/.pdf).
     """
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(15, 6.5),
-                                   gridspec_kw={"width_ratios": [1, 1.25]})
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(7.5, 3.5),
+                                   gridspec_kw={"width_ratios": [1, 1.1]})
 
     # ── Left: overall % CDS vs PHQ-9 score ──────────────────────────────────
     ax0.plot(per_score["phq9"], per_score["pct_cds"], "o-",
-             color="#b2182b", lw=2, ms=5)
+             color=COLOUR_BLUE, lw=2, ms=5, label="% CDS posts")
     # linear fit to make the trend explicit
     coef = np.polyfit(per_score["phq9"], per_score["pct_cds"], 1)
     xs = np.array([per_score["phq9"].min(), per_score["phq9"].max()])
-    ax0.plot(xs, np.polyval(coef, xs), "--", color="0.4", lw=1.5,
+    ax0.plot(xs, np.polyval(coef, xs), "--", color=COLOUR_ORANGE, lw=1.8,
              label=f"linear fit (r={r_agg:+.2f})")
     ax0.set_xlabel("PHQ-9 sum-score")
     ax0.set_ylabel("% of posts containing CDS")
-    ax0.set_title("Any CDS vs PHQ-9")
-    ax0.set_ylim(0, 100)
-    ax0.grid(alpha=0.3)
+    ax0.set_ylim(25, 90)
+    ax0.grid(axis="y", linestyle=":", alpha=0.5)
     ax0.legend(loc="lower right", frameon=False)
+    ax0.text(0.5, -0.26, "(a) CDS vs PHQ-9", transform=ax0.transAxes,
+             ha="center", va="top", fontsize=11)
 
-    # ── Right: category x severity-band heatmap ─────────────────────────────
+    # ── Right: category x severity-band heatmap (Oranges) ───────────────────
     data = cat_band.values
-    im = ax1.imshow(data, aspect="auto", cmap="YlOrRd", vmin=0,
+    im = ax1.imshow(data, aspect="auto", cmap=HEATMAP_CMAP, vmin=0,
                     vmax=np.nanmax(data))
     ax1.set_xticks(range(cat_band.shape[1]))
-    ax1.set_xticklabels(cat_band.columns, fontsize=9)
+    ax1.set_xticklabels(FIG_BAND_LABELS, rotation=30, ha="right", fontsize=9)
     ax1.set_yticks(range(cat_band.shape[0]))
     ax1.set_yticklabels(cat_band.index, fontsize=9)
-    ax1.set_title("% posts with each CDS category, by PHQ-9 severity")
-    # annotate cells
+    # annotate cells (white on dark, black on light)
     thresh = np.nanmax(data) * 0.6
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
             val = data[i, j]
             if np.isnan(val):
                 continue
-            ax1.text(j, i, f"{val:.0f}", ha="center", va="center", fontsize=8,
+            ax1.text(j, i, f"{val:.1f}", ha="center", va="center", fontsize=8,
                      color="white" if val > thresh else "black")
-    cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+    cbar = fig.colorbar(im, ax=ax1, fraction=0.045, pad=0.04)
     cbar.set_label("% of posts")
+    ax1.text(0.5, -0.26, "(b) CDS category by PHQ-9 band", transform=ax1.transAxes,
+             ha="center", va="top", fontsize=11)
 
     fig.tight_layout()
     os.makedirs(os.path.dirname(fig_path) or ".", exist_ok=True)

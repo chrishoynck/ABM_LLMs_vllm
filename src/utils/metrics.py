@@ -368,51 +368,82 @@ def load_tweet_embeddings(filepath):
     return tweet_to_emb
 
 
-def build_tweet_embedding_cache(all_networks, mentalbert=True, cache_path=None):
-    """Collect all unique tweets across networks, encode once, return tweet→emb dict.
-
-    If cache_path exists, loads from disk. Otherwise encodes and saves.
-
-    Args:
-        all_networks: List of network dicts (each with "network" key).
-        mentalbert (bool): Model choice.
-        cache_path (str | None): Optional .npz path for caching.
-
-    Returns:
-        tweet_to_emb: dict[str, ndarray]
-        embedding_dim: int
-    """
-    if cache_path is not None:
-        if not cache_path.endswith(".npz"):
-            cache_path += ".npz"
-        if os.path.exists(cache_path):
-            print(f"[Cache hit] Loading tweet embeddings from {cache_path}")
-            tweet_to_emb = load_tweet_embeddings(cache_path)
-            dim = next(iter(tweet_to_emb.values())).shape[0]
-            return tweet_to_emb, dim
-
-    # Collect all unique tweets across every network
+def _collect_unique_tweets(networks):
+    """Return the list of unique, non-empty tweets across a list of network dicts."""
     unique_tweets = set()
-    for net_dict in all_networks:
+    for net_dict in networks:
         net = net_dict["network"]
         for agent in net.all_agents:
             for tweet in agent.tweethistory:
                 if tweet and tweet != FC.NO_CONTENT:
                     unique_tweets.add(tweet)
-    unique_tweets = list(unique_tweets)
+    return list(unique_tweets)
 
-    if not unique_tweets:
+
+def build_tweet_embedding_cache(all_networks, mentalbert=True, cache_dir=None):
+    """Collect unique tweets, encode them, and return a tweet→emb dict.
+
+    Embeddings are cached *per seed* so that recombining a different set of
+    seeds never re-encodes a seed that was already computed. Each seed gets its
+    own ``seed_{seed}_tweet_embs_{emb_type}.npz`` file inside ``cache_dir``:
+    a seed is loaded from disk when its file exists, otherwise its tweets are
+    encoded and saved. The per-seed dicts are merged into one lookup table.
+
+    Args:
+        all_networks: List of network dicts (each with a "network" key).
+        mentalbert (bool): Model choice (selects the cache filename suffix too).
+        cache_dir (str | None): Directory holding the per-seed .npz caches.
+            When None, everything is encoded in-memory without caching.
+
+    Returns:
+        tweet_to_emb: dict[str, ndarray]
+        embedding_dim: int
+    """
+    emb_type = "mentalbert" if mentalbert else "sbert"
+
+    # Group networks by seed so each seed caches independently (dicts keep
+    # insertion order on py3.7+, so the merge order stays deterministic).
+    seed_to_nets = {}
+    for net_dict in all_networks:
+        seed = getattr(net_dict["network"], "seed", None)
+        seed_to_nets.setdefault(seed, []).append(net_dict)
+
+    tweet_to_emb = {}
+    model = None  # loaded lazily, only when at least one seed needs encoding
+
+    for seed, nets in seed_to_nets.items():
+        per_seed_path = None
+        if cache_dir is not None:
+            per_seed_path = os.path.join(cache_dir, f"seed_{seed}_tweet_embs_{emb_type}.npz")
+
+        # ── cache hit: load this seed's embeddings ──
+        if per_seed_path is not None and os.path.exists(per_seed_path):
+            print(f"[Cache hit] Loading seed {seed} tweet embeddings from {per_seed_path}")
+            tweet_to_emb.update(load_tweet_embeddings(per_seed_path))
+            continue
+
+        # ── cache miss: encode this seed's tweets and save ──
+        unique_tweets = _collect_unique_tweets(nets)
+        if not unique_tweets:
+            continue
+
+        if model is None:
+            model = generate_sbert_model(mentalbert=mentalbert)
+        print(f"Embedding {len(unique_tweets)} unique tweets for seed {seed} "
+              f"({len(nets)} network(s))...")
+        raw_embs = model.encode(unique_tweets, batch_size=64, show_progress_bar=True, convert_to_numpy=True)
+        seed_emb = dict(zip(unique_tweets, raw_embs))
+
+        if per_seed_path is not None:
+            save_tweet_embeddings(seed_emb, per_seed_path)
+
+        tweet_to_emb.update(seed_emb)
+
+    if not tweet_to_emb:
         return {}, 0
 
-    print(f"Embedding {len(unique_tweets)} unique tweets across {len(all_networks)} networks...")
-    model = generate_sbert_model(mentalbert=mentalbert)
-    raw_embs = model.encode(unique_tweets, batch_size=64, show_progress_bar=True, convert_to_numpy=True)
-    tweet_to_emb = dict(zip(unique_tweets, raw_embs))
-
-    if cache_path is not None:
-        save_tweet_embeddings(tweet_to_emb, cache_path)
-
-    return tweet_to_emb, raw_embs.shape[1]
+    embedding_dim = next(iter(tweet_to_emb.values())).shape[0]
+    return tweet_to_emb, embedding_dim
 
 
 def build_agent_embeddings(network, mentalbert=True, cache_path=None):
@@ -612,7 +643,7 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5,
 
 
 def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert=True,
-                   cache_path=None):
+                   cache_dir=None):
     """
     Computes SBERT embeddings using Mean Pooling over time windows.
 
@@ -624,7 +655,7 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
         mentalbert (bool): If True, use MentalBERT; else use default SBERT.
-        cache_path (str | None): Optional .npz path for tweet embedding cache.
+        cache_dir (str | None): Optional directory for per-seed tweet embedding caches.
 
     Returns:
         mean_sbert_per_setting: {setting: (Time, dim) array} -> Average trajectory
@@ -635,9 +666,9 @@ def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert
     # Flatten networks and get slices
     all_networks, setting_slices = network_list_w_slices(networks_per_setting)
 
-    # Build or load the tweet→embedding cache
+    # Build or load the tweet→embedding cache (per-seed files under cache_dir)
     tweet_to_emb, embedding_dim = build_tweet_embedding_cache(
-        all_networks, mentalbert=mentalbert, cache_path=cache_path
+        all_networks, mentalbert=mentalbert, cache_dir=cache_dir
     )
 
     # Compute windowed means using cached lookups (no model needed)

@@ -25,7 +25,8 @@ if [[ ! -x "$PYTHON" ]]; then
     exit 1
 fi
 
-OUT_DIR="data/sensitivity/network"
+
+OUT_DIR="data/sensitivity/network_100_3"
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/run_$(date +%Y%m%d_%H%M%S).log"
 
@@ -34,8 +35,8 @@ echo "[sa_network] logging to $LOG"
 PYTHONPATH="$REPO_DIR/src" "$PYTHON" -m utils.sensitivity.sa_network \
     --well-being "data/confidential/phq9.sav" \
     --n-sobol    512 \
-    --n-agents   200 \
-    --degree     6   \
+    --n-agents   100 \
+    --degree     3   \
     --seeds      43 44 45 46 47 \
     --n-jobs     ${SLURM_CPUS_PER_TASK:-4} \
     --dist-type  gaussian_clusters \

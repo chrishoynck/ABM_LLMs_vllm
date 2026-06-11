@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Full ABM simulation — optimal SDA parameters, 5 seeds.
 #
-# Optimal network parameters (from sa_network multi-seed calibration):
-#   alpha=3.6772  latent_weight=16.0962  dim=5  age_weight=2.7192  n_clusters=2
-#   (C=0.1383  age_assort=0.2685  phq9_assort=0.0224  mean_loss=0.7963)
+# Optimal network parameters (from sa_network calibration, C-prioritised):
+#   alpha=3.4312  latent_weight=19.9048  dim=4  age_weight=2.5259  n_clusters=2
+#   (degree-3 SA: C=0.1301  age_assort=0.4189  phq9_assort=0.0337)
+#
+# Previous parameter sets:
+#   2026-06-10 active   : alpha=2.1655  latent_weight=7.9839   dim=5  age_weight=2.3149  n_clusters=2
+#   earlier (loss-opt)  : alpha=3.6772  latent_weight=16.0962  dim=5  age_weight=2.7192  n_clusters=2  (C=0.1383 age=0.2685 phq9=0.0224 loss=0.7963)
 #
 # Called via run_data_simulation.job (SLURM resources allocated there).
 # Can also run interactively:  bash run_simulation.sh
@@ -35,15 +39,23 @@ trap 'kill "$WATCHDOG_PID" 2>/dev/null || true' EXIT
 # ── Simulation parameters ──────────────────────────────────────────────────
 ROUNDS=300
 NUM_AGENTS=100
-DEGREE=6
-SEEDS=(14 15 16 17 18)   # 5 seeds for multi-run calibration
+DEGREE=0
+SEEDS=(14 16 17 18)   # 5 seeds for multi-run calibration
 
 # Optimal SDA topology parameters
+# Previous (2026-06-10): ALPHA=2.1655  LATENT_WEIGHT=7.9839  DIM=5  AGE_WEIGHT=2.3149
+# ALPHA=3.4312
+# LATENT_WEIGHT=19.9048
+# DIM=4
+# AGE_WEIGHT=2.5259
+# N_CLUSTERS=2            # match calibration (N_CLUSTERS_FIXED=2 in sa_network)
+
 ALPHA=2.1655
 LATENT_WEIGHT=7.9839
 DIM=5
 AGE_WEIGHT=2.3149
 N_CLUSTERS=2            # match calibration (N_CLUSTERS_FIXED=2 in sa_network)
+
 
 # Checkpointing / saving
 CHECK_POINT=10          # PHQ-9 update cadence (every 10 rounds)

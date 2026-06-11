@@ -2,10 +2,12 @@ import numpy as np
 import torch
 from classes.agent import Agent
 from utils.tools.format_config import FC
+from utils.tools.phq9_bias import apply_bias_correction, load_bias_table
 from scipy.spatial.distance import cdist
 from powerlaw import Fit
 
 from vllm import LLM, SamplingParams
+import os
 import time
 import bisect as bs_norm
 from scipy.optimize import bisect
@@ -135,7 +137,28 @@ class _Network:
             print(f"[network] loading BERT encoder (mentalbert={bert_mentalbert})")
             bert_encoder = generate_sbert_model(mentalbert=bert_mentalbert)
         self.bert_encoder = bert_encoder.to(bert_device)
-      
+
+        # Per-level bias-correction table for the assessment loop. The regressor
+        # over-/under-predicts in a level-dependent way (regression-to-the-mean);
+        # subtracting this offset — indexed by the agent's previous PHQ-9, the
+        # score its assessed posts were generated at — removes the instrument
+        # bias so the well-being drift is driven by social influence rather than
+        # the regressor. The table is PRECOMPUTED separately (run_bias_calibration.sh
+        # -> utils.tools.phq9_bias) and saved as phq9_bias_table.csv next to
+        # regressor.pt; the network only loads and applies it.
+        self._phq9_bias_table = None
+        table_path = (os.path.join(os.path.dirname(bert_regressor_path), "phq9_bias_table.csv")
+                      if bert_regressor_path else None)
+        if table_path and os.path.isfile(table_path):
+            self._phq9_bias_table = load_bias_table(table_path)
+            print(f"[network] loaded PHQ-9 bias-correction table from {table_path}")
+            print(f"[network]   per-level bias (pred-true): "
+                  f"{np.round(self._phq9_bias_table, 2).tolist()}")
+        else:
+            print(f"[network] WARNING: no precomputed bias table at {table_path}; "
+                  f"PHQ-9 assessment will be UNcorrected. Run run_bias_calibration.sh "
+                  f"(or python -m utils.tools.phq9_bias) to build it.")
+
 
     def add_connection(self, agent1, agent2):
         """
@@ -395,10 +418,13 @@ class _Network:
 
         n_updated = 0
         for agent, pred in zip(valid_agents, preds):
-            new_score = int(round(float(pred)))
-            new_score = max(0, min(27, new_score))
             old_score = (agent.well_being.get("phq9_sumscore", 0)
                          if agent.well_being else 0)
+            # De-bias the raw prediction, indexed by the previous PHQ-9 (the score
+            # the assessed posts were generated at). No-op when no table is loaded.
+            corrected = apply_bias_correction(pred, old_score, self._phq9_bias_table)
+            new_score = int(round(corrected))
+            new_score = max(0, min(27, new_score))
             diff = new_score - old_score
 
             if phq9_threshold > 0 and abs(diff) < phq9_threshold:
