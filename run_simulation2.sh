@@ -38,20 +38,21 @@ trap 'kill "$WATCHDOG_PID" 2>/dev/null || true' EXIT
 ROUNDS=300
 NUM_AGENTS=100
 SEEDS=(14 15 16 17 18)   # 5 seeds for multi-run calibration
-NET="sda"                # sdc = stub-matched scale-free; sda = SocialDistanceAttachment
+NET="sdc"                # sdc = stub-matched scale-free; sda = SocialDistanceAttachment
 
 # ── Optimal SDC topology parameters (sa_network --net sdc, averaged_best.csv) ─
 # Achieved: mean_degree=5.67  gamma=2.13  ks=0.105  C=0.208  phq9_assort=0.075  lcc=0.868
-# ALPHA=4.9429
-# STUB_GAMMA=1.6187        # power-law exponent for the SDC stub degree sequence
-# DEGREE=10 #8.2539            # target mean fed in; realized mean degree ≈ 5.67 (stub shortfall)
-# DIM=3
-# N_CLUSTERS=2
-# LATENT_WEIGHT=18.3813
-# AGE_WEIGHT=2.2095
+# (high degree)
+ALPHA=4.9429
+STUB_GAMMA=1.6187        # power-law exponent for the SDC stub degree sequence
+DEGREE=10            # target mean fed in; realized mean degree ≈ 5.67 (stub shortfall)
+DIM=3
+N_CLUSTERS=2
+LATENT_WEIGHT=18.3813
+AGE_WEIGHT=2.2095
 
 
-# High PHQ-0 SDC variant
+# # High PHQ-0 SDC variant
 # ALPHA=8
 # STUB_GAMMA=1.6187        # power-law exponent for the SDC stub degree sequence
 # DEGREE=8.2539            # target mean fed in; realized mean degree ≈ 5.67 (stub shortfall)
@@ -62,14 +63,14 @@ NET="sda"                # sdc = stub-matched scale-free; sda = SocialDistanceAt
 
 
 # # NET="sda" (low degree)
-DEGREE=0
-ALPHA=2.1655
-LATENT_WEIGHT=7.9839 #1
-DIM=5       #3
-AGE_WEIGHT=2.3149
-N_CLUSTERS=2
-STUB_GAMMA=2.5          # ignored for sda (sdc-only); kept bound so the shared run command works
-INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
+# DEGREE=3
+# ALPHA=1.1655
+# LATENT_WEIGHT=7.9839
+# DIM=5
+# AGE_WEIGHT=2.3149
+# N_CLUSTERS=2
+# STUB_GAMMA=2.5          # ignored for sda (sdc-only); kept bound so the shared run command works
+# INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
 
 # high phq-9
 # DEGREE=4.5
@@ -90,15 +91,15 @@ INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real d
 # # the undirected k=3 (set DEGREE=1.5 to match undirected density instead).
 # # Rebuilt stats (5 seeds): clustering_out≈0.036  reciprocity≈0.06  lcc≈1.00
 # NET="sda"
-# DEGREE=4.5
-# ALPHA=2.1655
-# LATENT_WEIGHT=1   #7.9839
-# DIM=3   #5
+# DEGREE=3
+# ALPHA=1.1655
+# LATENT_WEIGHT=7.9839
+# DIM=5
 # AGE_WEIGHT=2.3149
 # N_CLUSTERS=2
 # STUB_GAMMA=2.5          # ignored for sda (sdc-only); kept bound so the shared run command works
 INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
-DIRECTED=0             # directed graph -> saved under data/networks_post/basis/sda/directed/...
+DIRECTED=1             # directed graph -> saved under data/networks_post/basis/sda/directed/...
 
 
 # ── Previous parameter sets (kept for reference) ─────────────────────────────
@@ -119,7 +120,6 @@ LOG=20                  # save network state snapshot every 30 iterations
 # The debiased/ vs non_debiased/ split (PathManager) keeps these runs from
 # overwriting each other at the same network parameters.
 _REG_DIR="data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35"
-
 # BIAS_TABLE="none"                                          # uncorrected
 BIAS_TABLE="${_REG_DIR}/phq9_bias_table_fullfit.csv"         # full-corrected (full plotted line)
 # BIAS_TABLE="${_REG_DIR}/phq9_bias_table_interiorfit.csv"   # non-fully corrected (ends excluded)

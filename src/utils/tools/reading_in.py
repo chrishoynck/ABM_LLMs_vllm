@@ -38,6 +38,71 @@ def _write_meta_file(network, path_manager, args=None):
     degrees = [len(a.agent_connections) for a in network.all_agents]
     mean_degree = float(np.mean(degrees)) if degrees else 0.0
 
+    # Topology statistics on the initial graph. agent.phq9_score holds the
+    # initial PHQ-9; well_being["phq9_sumscore"] drifts during the run.
+    # For a directed network we build a DiGraph so reciprocity is well defined:
+    # network.connections then holds both (u, v) and (v, u) for a mutual pair.
+    import networkx as nx
+    directed = bool(getattr(network, "directed", False))
+    g = nx.DiGraph() if directed else nx.Graph()
+    for a in network.all_agents:
+        wb = a.well_being or {}
+        g.add_node(a.ID,
+                   age=float(wb.get("age", 0)),
+                   phq9_initial=float(a.phq9_score if a.phq9_score is not None
+                                      else wb.get("phq9_sumscore", 0)))
+    for conn in network.connections:
+        g.add_edge(conn[0].ID, conn[1].ID)
+
+    # Reciprocity is only defined for a directed graph (every undirected edge is
+    # trivially mutual). Measured on the directed arc set, before symmetrisation.
+    n_arcs = g.number_of_edges()
+    if directed:
+        # Mutual dyads: arcs present in both directions. Each dyad is two arcs,
+        # so summing the reverse-arc test over all arcs counts it twice.
+        n_reciprocal_pairs = sum(g.has_edge(v, u) for u, v in g.edges()) // 2
+        reciprocity = nx.overall_reciprocity(g) if n_arcs else float("nan")
+    else:
+        n_reciprocal_pairs = n_arcs
+        reciprocity = 1.0 if n_arcs else float("nan")
+
+    # Clustering, assortativity and connectivity are measured on the undirected
+    # projection so they stay comparable to the undirected configs (and the
+    # calibrated target bands still apply). The projection keeps an edge when
+    # either direction is present; for an undirected graph it is g itself.
+    gu = g.to_undirected() if directed else g
+    clustering = nx.average_clustering(gu) if gu.number_of_nodes() else float("nan")
+    try:
+        age_assort = nx.numeric_assortativity_coefficient(gu, "age")
+    except Exception:
+        age_assort = float("nan")
+    try:
+        phq9_assort = nx.numeric_assortativity_coefficient(gu, "phq9_initial")
+    except Exception:
+        phq9_assort = float("nan")
+    if gu.number_of_nodes():
+        lcc_frac = len(max(nx.connected_components(gu), key=len)) / gu.number_of_nodes()
+    else:
+        lcc_frac = float("nan")
+
+    # Out-clustering (Fagiolo 2007): among each node's out-neighbours, the
+    # fraction of ordered pairs (j, k) closed by an arc j->k. This is the
+    # directed "friend-of-a-friend" measure (path i->j->k closed by i->k) and is
+    # the meaningful clustering for a directed influence network — on these SDA
+    # graphs it runs ~half the undirected-projection `clustering`. For an
+    # undirected graph in- and out-neighbourhoods coincide, so it reduces to the
+    # ordinary clustering above.
+    if directed and g.number_of_nodes():
+        A    = nx.to_numpy_array(g, nodelist=list(g.nodes()))
+        dout = A.sum(axis=1)
+        tri  = np.einsum("ij,jk,ik->i", A, A, A)        # (A^2 A^T)_ii
+        den  = dout * (dout - 1)                          # ordered out-neighbour pairs
+        with np.errstate(invalid="ignore", divide="ignore"):
+            per = np.where(den > 0, tri / den, np.nan)
+        clustering_out = float(np.nanmean(per)) if np.isfinite(per).any() else float("nan")
+    else:
+        clustering_out = clustering
+
     import os
     meta = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -52,13 +117,25 @@ def _write_meta_file(network, path_manager, args=None):
         },
         "phq9_settings": {
             "mode":            getattr(network, "phq9_mode", "llm"),
+            "init_zero":       getattr(network, "init_phq9_zero", False),
             "sample_fraction": getattr(network, "sample_phq9", None),
             "cap":             getattr(network, "cap_phq9", False),
             "threshold":       getattr(network, "phq9_threshold", 0),
             "bert_mentalbert": getattr(network, "bert_mentalbert", True),
+            "bias_corrected":  getattr(network, "_phq9_bias_table", None) is not None,
+            "bias_table_path": getattr(network, "_bias_table_path", None),
+            "bias_table":      (np.round(network._phq9_bias_table, 4).tolist()
+                                if getattr(network, "_phq9_bias_table", None) is not None else None),
         },
         "topology": {
-            "mean_degree":    round(mean_degree, 3),
+            "mean_degree":         round(mean_degree, 3),
+            "clustering":          round(clustering, 4),
+            "clustering_out":      round(clustering_out, 4),
+            "age_assort":          round(age_assort, 4),
+            "phq9_assort_initial": round(phq9_assort, 4),
+            "lcc_frac":            round(lcc_frac, 4),
+            "reciprocity":         round(reciprocity, 4),
+            "n_reciprocal_pairs":  int(n_reciprocal_pairs),
             "powerlaw_gamma": round(getattr(network, "_powerlaw_gamma", float("nan")), 4),
             "powerlaw_ks":    round(getattr(network, "_powerlaw_ks",    float("nan")), 4),
         },
@@ -178,9 +255,14 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, a
         "sample_phq9": getattr(network, 'sample_phq9', None),
         "cap_phq9": getattr(network, 'cap_phq9', False),
         "phq9_threshold": getattr(network, 'phq9_threshold', 0),
+        "init_phq9_zero": getattr(network, 'init_phq9_zero', False),
         "phq9_mode": getattr(network, 'phq9_mode', 'llm'),
         "bert_regressor_path": getattr(network, '_bert_regressor_path', None),
         "bert_mentalbert": getattr(network, 'bert_mentalbert', True),
+        "bias_corrected": getattr(network, '_phq9_bias_table', None) is not None,
+        "bias_table_path": getattr(network, '_bias_table_path', None),
+        "phq9_bias_table": (np.round(network._phq9_bias_table, 4).tolist()
+                            if getattr(network, '_phq9_bias_table', None) is not None else None),
     }
 
     # randomness:
@@ -218,7 +300,7 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, a
     return file_output_path
 
 
-def generate_network(args, pipe):
+def generate_network(args, pipe, file_path=None):
     """
     Load a single network from a saved properties file created by get_network_properties.
 
@@ -229,13 +311,20 @@ def generate_network(args, pipe):
     - iterations counter
 
     Args:
-        file_path (str): Path to the saved properties file.
+        args: Argument namespace; only used to resolve the on-disk path via
+            ``PathManager`` when ``file_path`` is not given (may be None then).
+        pipe: Unused here (kept for call-site symmetry with the update path).
+        file_path (str | Path, optional): Explicit path to the saved net.json. When
+            provided, ``PathManager`` is bypassed so networks stored under
+            non-standard sub-directories (e.g. ``debiased/``, ``init_0/``) can be
+            loaded directly.
 
     Returns:
         network: A reconstructed RandomNetwork or ScaleFreeNetwork instance.
     """
-    pm = PathManager(args=args)
-    file_path = pm.get_full_network_path()
+    if file_path is None:
+        pm = PathManager(args=args)
+        file_path = pm.get_full_network_path()
     props = read_in_network_properties(file_path)
     
     # metrics
@@ -290,6 +379,7 @@ def generate_network(args, pipe):
     network.sample_phq9 = props.get("sample_phq9", None)
     network.cap_phq9 = props.get("cap_phq9", False)
     network.phq9_threshold = props.get("phq9_threshold", 0)
+    network.init_phq9_zero = props.get("init_phq9_zero", False)
 
     phq9_mode = props.get("phq9_mode", "llm")
     network.phq9_mode = phq9_mode

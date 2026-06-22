@@ -139,6 +139,7 @@ def build_network(args, personas, well_being, depressed_personas=None):
             n_clusters=args.n_clusters,
             latent_weight=getattr(args, "latent_weight", 1.0),
             age_weight=getattr(args, "age_weight", 1.0),
+            gamma=getattr(args, "stub_gamma", 2.5),   # SDC stub-degree power-law exponent
             num_agents=args.num_agents,
             seed=args.seed,
             plot=False,
@@ -149,6 +150,7 @@ def build_network(args, personas, well_being, depressed_personas=None):
             directed=args.directed,
             phq9_mode=phq9_mode,
             bert_regressor_path=bert_regressor_path,
+            bias_table_path=getattr(args, "bias_table_path", None),
             bert_mentalbert=True,
         )
     else:
@@ -163,6 +165,7 @@ def build_network(args, personas, well_being, depressed_personas=None):
             directed=args.directed,
             phq9_mode=phq9_mode,
             bert_regressor_path=bert_regressor_path,
+            bias_table_path=getattr(args, "bias_table_path", None),
             bert_mentalbert=True,
         )
 
@@ -187,11 +190,14 @@ def generate_parser():
 
     # Social distance attachment specific
     parser.add_argument("--alpha", type=float, default=1.0, help="Alpha parameter for social distance attachment")
-    parser.add_argument("--degree", type=int, default=2, help="Target degree for social distance attachment")
+    parser.add_argument("--degree", type=float, default=2, help="Target expected degree for social distance attachment (may be fractional, e.g. 4.5)")
     parser.add_argument("--dim", type=int, default=2, help="Dimensionality of social space")
     parser.add_argument("--n_clusters", type=int, default=2, help="Number of Gaussian clusters in latent space (SDA); calibration fixes this at 2")
     parser.add_argument("--latent_weight", type=float, default=1.0, help="Latent dimension scaling (SDA)")
     parser.add_argument("--age_weight", type=float, default=1.0, help="Age dimension scaling (SDA)")
+    parser.add_argument("--stub_gamma", type=float, default=2.5,
+                        help="Power-law exponent for the SDC stub degree sequence "
+                             "(only used when net=sdc; ignored for sda).")
 
     # Experiment Settings
     parser.add_argument("--depressed", action="store_true", help="Include depressed personas")
@@ -204,6 +210,16 @@ def generate_parser():
                         default="data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35/regressor.pt",
                         help="Path to a saved regressor.pt for --phq9_mode bert. "
                              "Defaults to the best fine-tuned seed (seed 35, test MAE=2.76).")
+    parser.add_argument("--bias_table_path", type=str, default=None,
+                        help="Per-level PHQ-9 bias-correction table (phq9,bias,count CSV) to "
+                             "subtract at assessment. Default: auto-load phq9_bias_table.csv next "
+                             "to the regressor. Pass an explicit table (e.g. a full- or interior-fit "
+                             "table) to swap the correction, or 'none' to run UNcorrected.")
+    parser.add_argument("--init_phq9_zero", action="store_true",
+                        help="Initialize every agent at PHQ-9 = 0 (fully healthy baseline) "
+                             "instead of sampling the real PHQ-9 distribution. Demographic age "
+                             "is still drawn from the dataset; only depression-related values "
+                             "are zeroed.")
 
     # PHQ-9 sampling / smoothing (simulation only, not testing)
     parser.add_argument("--sample_phq9", type=float, default=None, metavar="FRAC",
@@ -336,6 +352,16 @@ def run_simulation(args, pipe=None):
     
     well_being = lp.load_phq9("data/confidential/phq9.sav", args.num_agents, seed=args.seed)
 
+    # Optionally start every agent from a fully healthy baseline (PHQ-9 = 0)
+    # instead of the sampled real distribution. Only phq9_sumscore is used
+    # downstream (prompt tone + feedback loop), so only that field is zeroed;
+    # the sampled age is kept so the persona prompt stays realistic.
+    if getattr(args, "init_phq9_zero", False):
+        for wb in well_being:
+            if wb is not None:
+                wb["phq9_sumscore"] = 0
+        print(f"[init] --init_phq9_zero: initialized all {len(well_being)} agents at PHQ-9 = 0.")
+
     # only load depressed personas if specified
     if args.depressed:
         depressed_personas = lp.load_depressed_personas("data/depressed.csv", personass_to_load=1, seed=args.seed)
@@ -352,6 +378,7 @@ def run_simulation(args, pipe=None):
     network.sample_phq9 = args.sample_phq9
     network.cap_phq9 = args.cap_phq9
     network.phq9_threshold = args.phq9_threshold
+    network.init_phq9_zero = getattr(args, "init_phq9_zero", False)
     # Fresh network: default off (neighbor_history only) unless explicitly set.
     if args.cds_dynamic is not None:
         network.cds_dynamic = args.cds_dynamic

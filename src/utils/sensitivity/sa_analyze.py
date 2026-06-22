@@ -1138,6 +1138,56 @@ def load_minimal_score(model_name: str, seeds: list,
     return sum(firsts) / len(firsts)
 
 
+def _weighted_mae_from_phq9_csv(path: str, metric_col: str = "avg_mae") -> float:
+    """Sample-weighted mean of a per-PHQ-9 metric CSV (cols: phq9, <metric>, n_samples)."""
+    import csv
+    num = den = 0.0
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            n = float(row["n_samples"])
+            num += float(row[metric_col]) * n
+            den += n
+    if den == 0:
+        raise ValueError(f"no samples in {path}")
+    return num / den
+
+
+def load_heldout_phq9_scores(model_name: str, seeds: list,
+                             eval_subdir: str = "eval_on_test_blocks_seed35",
+                             base_dir: str = "data/test_post/optimized_phq9",
+                             metric_col: str = "avg_mae") -> list:
+    """Sample-weighted MAE per seed from the held-out BERT-testset re-scoring.
+
+    Reads ``<base_dir>/<model>_seed<seed>/<eval_subdir>/test_scores_phq9.csv`` — the
+    optimized PHQ-9 prompts scored on the SAME blocks the MentalBERT regressor was
+    tested on (produced by run_phq9_on_bert_testset.sh). Use in place of
+    ``load_test_scores`` to annotate the prompt landscape with held-out,
+    apples-to-apples scores rather than each run's own in-distribution test split.
+    """
+    return [
+        _weighted_mae_from_phq9_csv(
+            os.path.join(base_dir, f"{model_name}_seed{seed}", eval_subdir, "test_scores_phq9.csv"),
+            metric_col,
+        )
+        for seed in seeds
+    ]
+
+
+def load_heldout_minimal_score(model_name: str, minimal_seed: int = 23,
+                               eval_subdir: str = "eval_on_test_blocks_seed35_minimal",
+                               base_dir: str = "data/test_post/optimized_phq9",
+                               metric_col: str = "avg_mae") -> float:
+    """Sample-weighted MAE of the MINIMAL prompt on the same held-out blocks.
+
+    Counterpart to ``load_heldout_phq9_scores`` for the un-optimized baseline.
+    Requires the minimal re-run that writes to ``<eval_subdir>`` (a distinct
+    posts-file stem so it does not overwrite the optimized seed-<minimal_seed> eval).
+    """
+    path = os.path.join(base_dir, f"{model_name}_seed{minimal_seed}",
+                        eval_subdir, "test_scores_phq9.csv")
+    return _weighted_mae_from_phq9_csv(path, metric_col)
+
+
 def compute_prompt_robustness(prompts: list, test_scores: list,
                                baseline_prompt: str = None,
                                baseline_score: float = None,
@@ -1241,17 +1291,22 @@ def _draw_prompt_sim_heatmap(ax, robustness: dict, caption: str,
 
 def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dict,
                                   model_name: str, output_dir: str = None,
-                                  cell: float = 0.55,
-                                  cbar_shrink: float = 0.65,
-                                  cbar_width: float = 0.012) -> str:
-    """Render PHQ-9 and post-generation cosim heatmaps side by side and save."""
+                                  cell: float = 0.55) -> str:
+    """Render PHQ-9 and post-generation cosim heatmaps side by side and save.
+
+    Both panels share ONE colour scale (a single shared ``vmin``), but each panel
+    gets its own docked colourbar drawn via ``fig.colorbar`` so the left and right
+    bars carry the same small black outline (matching
+    ``plot_prompt_output_string_pair``).
+    """
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     n_left = len(robustness_phq9["labels"])
     n_right = len(robustness_post_gen["labels"])
     panel_w = lambda n: max(3.0, n * 0.8 * cell)
-    fig_w = panel_w(n_left) + panel_w(n_right) + 0.5
+    fig_w = panel_w(n_left) + panel_w(n_right) + 1.4
     fig_h = max(3.0, max(n_left, n_right) * cell * 0.8 + 1.0)
 
     sim_left = np.array(robustness_phq9["sim_matrix"])
@@ -1262,19 +1317,22 @@ def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dic
 
     fig, (ax_phq9, ax_post) = plt.subplots(
         1, 2, figsize=(fig_w, fig_h),
-        gridspec_kw={"width_ratios": [panel_w(n_left), panel_w(n_right)]},
+        gridspec_kw={"width_ratios": [panel_w(n_left), panel_w(n_right)],
+                     "wspace": 0.55},
     )
-    _draw_prompt_sim_heatmap(ax_phq9, robustness_phq9,
-                             caption="(a) PHQ-9 assessment prompt", vmin=shared_vmin)
-    _draw_prompt_sim_heatmap(ax_post, robustness_post_gen,
-                             caption="(b) Post-generation prompt", vmin=shared_vmin)
-    fig.tight_layout(rect=[0, 0, 0.94, 1])
 
-    cax = fig.add_axes([0.955, 0.5 - cbar_shrink / 2.0, cbar_width, cbar_shrink])
-    sm = ScalarMappable(norm=Normalize(vmin=shared_vmin, vmax=1.0), cmap="Blues")
-    fig.colorbar(sm, cax=cax)
-    cax.set_ylabel("cosine similarity", fontsize=8)
-    cax.tick_params(labelsize=7)
+    for ax, robustness, caption in (
+            (ax_phq9, robustness_phq9, "(a) PHQ-9 assessment prompt"),
+            (ax_post, robustness_post_gen, "(b) Post-generation prompt")):
+        # Dock a colourbar to each panel via fig.colorbar (not seaborn's) so both
+        # the left and right bars get the same small black outline.
+        cax = make_axes_locatable(ax).append_axes("right", size="5%", pad=0.08)
+        _draw_prompt_sim_heatmap(ax, robustness, caption=caption, vmin=shared_vmin)
+        fig.colorbar(
+            ScalarMappable(norm=Normalize(vmin=shared_vmin, vmax=1.0), cmap="Blues"),
+            cax=cax)
+        cax.set_ylabel("cosine similarity", fontsize=8)
+        cax.tick_params(labelsize=7)
 
     if output_dir is None:
         output_dir = os.path.join(_PROMPT_TYPE_META["phq9"]["base_dir"],
@@ -1326,6 +1384,266 @@ def draw_prompt_sim_heatmap(ax, robustness: dict, title: str,
     ax.tick_params(axis="x", rotation=45)
     ax.tick_params(axis="y", rotation=0)
 
+
+# =====================================================================
+# Generated-OUTPUT cosine companion to plot_prompt_sensitivity_pair
+#   Same figure, but the LEFT panel is switched from the PHQ-9 prompt-string
+#   heatmap to the within/cross cosine of the prompts' GENERATED OUTPUT.
+# =====================================================================
+
+def load_prompt_reps(root: str) -> dict:
+    """``{(label, rep): {embeddings, agent_ids, rounds, phq9}}`` from
+    ``<root>/<label>/rep_<N>/embeddings.npz`` (written by sa_embed)."""
+    runs: dict = {}
+    for p in sorted(glob.glob(os.path.join(root, "*", "rep_*", "embeddings.npz"))):
+        parts = p.split(os.sep)
+        label, rep = parts[-3], int(parts[-2].split("_")[1])
+        d = np.load(p, allow_pickle=True)
+        runs[(label, rep)] = {k: d[k] for k in ("embeddings", "agent_ids", "rounds", "phq9")}
+    return runs
+
+
+def output_cosine_matrix(df: pd.DataFrame, labels: list,
+                         agg: str = "mean") -> np.ndarray:
+    """N×N generated-output cosine matrix from a prompt-reps ``neighbor_cosines``
+    frame: diagonal = within-prompt (LLM-noise floor), off-diagonal = cross-prompt.
+
+    ``agg`` is the reducer over the per-(agent, round) pairwise cosines in each
+    cell — "mean" (default) or "median". The standalone prompt-reps heatmap CLI
+    (``prompt_reps_main``) uses the median; the paired figure defaults to the mean
+    so it matches the mean-based convention of the other experiment.ipynb SA
+    figures. ``labels`` fixes the row/column order (and which prompts are included).
+    """
+    reducer = {"mean": np.mean, "median": np.median}[agg]
+    within = {lab: float(reducer(g.cosine.values))
+              for lab, g in df[df.pair_type == "within"].groupby("setting_a")}
+    cross = {frozenset((a, b)): float(reducer(g.cosine.values))
+             for (a, b), g in df[df.pair_type == "cross"].groupby(["setting_a", "setting_b"])}
+    n = len(labels)
+    mat = np.full((n, n), np.nan)
+    for i, a in enumerate(labels):
+        for j, b in enumerate(labels):
+            mat[i, j] = within.get(a, np.nan) if i == j \
+                else cross.get(frozenset((a, b)), np.nan)
+    return mat
+
+
+def _draw_output_sim_heatmap(ax, mat: np.ndarray, tick_labels: list, caption: str,
+                             cbar_ax=None, cmap: str = "Blues",
+                             vmin: float = None, vmax: float = None) -> None:
+    """Draw a generated-output cosine heatmap (diag = within-prompt noise floor,
+    off-diag = cross-prompt) onto ``ax``, styled like ``_draw_prompt_sim_heatmap``.
+
+    Annotation = the cosine value itself (the quantity of interest here), unlike
+    the prompt-string panel which annotates the test-score gap. ``cbar_ax`` (if
+    given) receives this panel's own colourbar; the scale is tight on this
+    panel's values so it stays readable next to the wider-ranged prompt panel.
+    """
+    vals = mat[~np.isnan(mat)]
+    if vmin is None:
+        vmin = max(0.0, float(vals.min()) - 0.005)
+    if vmax is None:
+        vmax = min(1.0, float(vals.max()) + 0.005)
+    sns.heatmap(
+        mat, ax=ax,
+        xticklabels=tick_labels, yticklabels=tick_labels,
+        vmin=vmin, vmax=vmax,
+        annot=True, fmt=".3f", annot_kws={"fontsize": 8},
+        cmap=cmap, linewidths=0.4, linecolor="white",
+        cbar=cbar_ax is not None, cbar_ax=cbar_ax,
+        square=True,
+    )
+    ax.tick_params(axis="x", rotation=45, labelsize=8)
+    ax.tick_params(axis="y", rotation=0, labelsize=8)
+    ax.set_xlabel(caption, fontsize=10, labelpad=12)
+
+
+def plot_prompt_output_string_pair(
+        robustness_post_gen: dict,
+        reps_labels: list,
+        model_name: str = "Qwen3.5-27B",
+        reps_root: str = "data/prompt_optimization_h/qwen27_baseline/prompt_sa_reps",
+        agg: str = "mean",
+        left_caption: str = "(a) Generated-output cosine",
+        right_caption: str = "(b) Post-generation prompt",
+        output_dir: str = None,
+        cell: float = 0.55) -> str:
+    """Companion to ``plot_prompt_sensitivity_pair`` with the LEFT panel switched.
+
+    Left  panel: GENERATED-OUTPUT cosine for the post-gen prompts — within-prompt
+                 (diagonal = LLM-noise floor) vs cross-prompt, aggregated with
+                 ``agg`` ("mean" by default) over per-(agent, round) post pairs,
+                 built from the replicate tree under ``reps_root``.
+    Right panel: the existing post-generation PROMPT-STRING cosine heatmap,
+                 unchanged (cosine of prompt embeddings; annotation = |Δ score|).
+
+    Both panels show the SAME prompts in the SAME order, so the two similarity
+    views line up row-for-row. ``reps_labels`` gives each non-baseline
+    ``robustness_post_gen`` row its replicate-tree directory label (e.g.
+    ``textgrad_seed24`` or ``iter_10`` — all optimized prompts are treated alike),
+    in order; "minimal" is appended automatically when a baseline is present.
+    Display tick labels come straight from ``robustness_post_gen["labels"]``.
+
+    Each panel gets its OWN tight colour scale + colourbar: the output cosines
+    (~0.86–0.92) and prompt-string cosines (~0.6–1.0) live on different ranges,
+    so one shared bar would wash the left panel out.
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    has_baseline = bool(robustness_post_gen.get("has_baseline"))
+    tick_labels = list(robustness_post_gen["labels"])
+
+    # Replicate-tree label per row (+ minimal baseline), matching the robustness rows.
+    order = list(reps_labels)
+    if has_baseline:
+        order.append("minimal")
+    if len(order) != len(tick_labels):
+        raise ValueError(
+            f"{len(order)} replicate labels but {len(tick_labels)} robustness "
+            "labels — reps_labels must match robustness_post_gen (minus 'minimal').")
+
+    runs = load_prompt_reps(reps_root)
+    have = {lab for (lab, _) in runs}
+    missing = [lab for lab in order if lab not in have]
+    if missing:
+        raise SystemExit(f"no replicate embeddings for {missing} under {reps_root} "
+                         "(run sa_prompt_baseline_run.sh + sa_embed first).")
+    df = neighbor_cosines(runs)
+    mat = output_cosine_matrix(df, order, agg=agg)
+
+    # ── Layout: two square panels, each with its own docked colourbar. ──
+    n_left, n_right = len(order), len(tick_labels)
+    panel_w = lambda n: max(3.0, n * 0.8 * cell)
+    fig_w = panel_w(n_left) + panel_w(n_right) + 1.4
+    fig_h = max(3.0, max(n_left, n_right) * cell * 0.8 + 1.0)
+    fig, (ax_left, ax_right) = plt.subplots(
+        1, 2, figsize=(fig_w, fig_h),
+        gridspec_kw={"width_ratios": [panel_w(n_left), panel_w(n_right)],
+                     "wspace": 0.55},
+    )
+
+    # LEFT: generated-output cosine (own tight colourbar). Drawn via fig.colorbar
+    # (not seaborn's) so it gets the same black outline as the right panel's bar.
+    vals_l = mat[~np.isnan(mat)]
+    vmin_l = max(0.0, float(vals_l.min()) - 0.005)
+    vmax_l = min(1.0, float(vals_l.max()) + 0.005)
+    cax_l = make_axes_locatable(ax_left).append_axes("right", size="5%", pad=0.08)
+    _draw_output_sim_heatmap(ax_left, mat, tick_labels, left_caption,
+                             vmin=vmin_l, vmax=vmax_l)
+    fig.colorbar(ScalarMappable(norm=Normalize(vmin=vmin_l, vmax=vmax_l), cmap="Blues"),
+                 cax=cax_l)
+    cax_l.set_ylabel("cosine similarity", fontsize=8)
+    cax_l.tick_params(labelsize=7)
+
+    # RIGHT: existing post-gen prompt-string heatmap, unchanged styling.
+    sim_r = np.array(robustness_post_gen["sim_matrix"])
+    vmin_r = float(np.min(sim_r[sim_r < 1.0])) if (sim_r < 1.0).any() else 0.0
+    vmin_r = max(0.0, vmin_r - 0.02)
+    cax_r = make_axes_locatable(ax_right).append_axes("right", size="5%", pad=0.08)
+    _draw_prompt_sim_heatmap(ax_right, robustness_post_gen, right_caption, vmin=vmin_r)
+    fig.colorbar(ScalarMappable(norm=Normalize(vmin=vmin_r, vmax=1.0), cmap="Blues"),
+                 cax=cax_r)
+    cax_r.set_ylabel("cosine similarity", fontsize=8)
+    cax_r.tick_params(labelsize=7)
+
+    if output_dir is None:
+        # These are the post-generation (tweet) prompts, so default under
+        # optimized_tweets rather than optimized_phq9.
+        output_dir = os.path.join(_PROMPT_TYPE_META["post_gen"]["base_dir"],
+                                  f"{model_name}_sensitivity")
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(output_dir, "prompt_output_string_pair.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Output/string pair plot → {out}")
+    return out
+
+
+# =====================================================================
+# Standalone prompt-reps heatmap (merged from the old sa_prompt_baseline.py):
+# within/cross MEDIAN cosine heatmap + CLI. Each prompt is drawn several times
+# (unseeded) with personas/neighbours/PHQ-9 fixed, so the diagonal is the real
+# within-prompt LLM-noise floor and the off-diagonal is the cross-prompt median.
+# Built by sa_prompt_baseline_run.sh (+ sa_embed); run via:
+#   PYTHONPATH=src python -m utils.sensitivity.sa_analyze --prompt-reps --root <reps_root>
+# =====================================================================
+
+def plot_prompt_reps_heatmap(mat: np.ndarray, labels: list, out_path: str) -> None:
+    """N×N heatmap with a TIGHT colour scale so the diagonal (within-prompt floor)
+    and off-diagonals (cross-prompt) are visually comparable."""
+    n = mat.shape[0]
+    vals = mat[~np.isnan(mat)]
+    vmin, vmax = float(vals.min()), float(vals.max())
+    pad = max(0.003, (vmax - vmin) * 0.05)
+    fig, ax = plt.subplots(figsize=(max(5.0, 0.9 * n + 2), max(4.5, 0.9 * n + 1.5)))
+    sns.heatmap(mat, ax=ax, xticklabels=labels, yticklabels=labels,
+                vmin=vmin - pad, vmax=vmax + pad, annot=True, fmt=".3f",
+                annot_kws={"fontsize": 9}, cmap="Blues",
+                linewidths=0.4, linecolor="white", square=True,
+                cbar_kws={"label": "median per-anchor cosine"})
+    ax.set_title("Prompt sensitivity — within-prompt (diagonal) vs cross-prompt\n"
+                 "(median per-(agent, round) cosine; diagonal = LLM-noise floor)")
+    ax.tick_params(axis="x", rotation=30)
+    ax.tick_params(axis="y", rotation=0)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+
+
+def prompt_reps_main(argv=None) -> None:
+    """CLI: per-prompt within/cross MEDIAN cosine heatmap from a replicate tree."""
+    ap = argparse.ArgumentParser(
+        description=prompt_reps_main.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--root",
+        default="data/prompt_optimization_h/qwen27_baseline/prompt_sa_reps",
+        help="Dir holding <label>/rep_*/embeddings.npz (run sa_embed first).")
+    ap.add_argument("--out-dir", default=None,
+                    help="Where to write CSVs/PNG (default: <root>/prompt_cosine_reps).")
+    args = ap.parse_args(argv)
+
+    out_dir = args.out_dir or os.path.join(args.root, "prompt_cosine_reps")
+    os.makedirs(out_dir, exist_ok=True)
+
+    runs = load_prompt_reps(args.root)
+    if not runs:
+        raise SystemExit(
+            f"no embeddings.npz under {args.root}/<label>/rep_* — "
+            "run `python -m utils.sensitivity.sa_embed --root <root>` first.")
+    labels = sorted({lab for (lab, _) in runs})
+    reps_per = {lab: sorted(r for (l, r) in runs if l == lab) for lab in labels}
+    print(f"[prompt-reps] {len(runs)} runs across {len(labels)} prompts")
+    for lab in labels:
+        print(f"  {lab}: reps {reps_per[lab]}")
+    if max(len(v) for v in reps_per.values()) < 2:
+        raise SystemExit("no prompt has >=2 reps — cannot compute a within-prompt floor.")
+
+    df = neighbor_cosines(runs)
+    df.to_csv(os.path.join(out_dir, "prompt_rep_cosines.csv"), index=False)
+
+    within = df[df.pair_type == "within"]
+    cross = df[df.pair_type == "cross"]
+    print("\n[prompt-reps] WITHIN-prompt (LLM-noise floor) median cosine per prompt:")
+    print(within.groupby("setting_a").cosine.median().round(4).to_string())
+    print(f"  pooled within (floor) median = {within.cosine.median():.4f}")
+    if not cross.empty:
+        print(f"[prompt-reps] CROSS-prompt median cosine        = {cross.cosine.median():.4f}")
+
+    mat = output_cosine_matrix(df, labels, agg="median")
+    pd.DataFrame(mat, index=labels, columns=labels).to_csv(
+        os.path.join(out_dir, "prompt_rep_heatmap_matrix.csv"))
+    if len(labels) >= 2:
+        plot_prompt_reps_heatmap(mat, labels, os.path.join(out_dir, "prompt_rep_heatmap.png"))
+    else:
+        print("[prompt-reps] <2 prompts — skipping heatmap (floor only).")
+
+    print(f"\n[done] outputs under {out_dir}/")
+    print("       diagonal = within-prompt noise floor; off-diagonal = cross-prompt median.")
+    print("       Off-diagonal well below its row/col diagonal => prompt shifts output beyond noise.")
 
 
 # =====================================================================
@@ -1409,4 +1727,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--prompt-reps" in sys.argv[1:]:
+        prompt_reps_main([a for a in sys.argv[1:] if a != "--prompt-reps"])
+    else:
+        main()

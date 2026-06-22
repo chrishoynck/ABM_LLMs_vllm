@@ -1,5 +1,23 @@
+import os
 from pathlib import Path
 from utils.tools.format_config import FC
+
+
+def _bias_on_from_path(bias_table_path):
+    """Decide whether a run is bias-corrected ("debiased") from a bias_table_path.
+
+    Mirrors the gate in classes/network.py: a missing / "none" / "off" / empty
+    value (or a path that doesn't point at an existing file) means the run is
+    UNcorrected, so it lands under non_debiased/. Anything pointing at a real
+    table is debiased/. Kept in sync with network.py so the read path (args) and
+    the write path (network) resolve to the same directory.
+    """
+    if bias_table_path is None:
+        return False
+    if isinstance(bias_table_path, str) and bias_table_path.strip().lower() in ("none", "off", ""):
+        return False
+    return os.path.isfile(bias_table_path)
+
 
 class PathManager:
     def __init__(self, args=None, network=None):
@@ -20,6 +38,9 @@ class PathManager:
             self.sample_phq9 = getattr(args, 'sample_phq9', None)
             self.cap_phq9 = getattr(args, 'cap_phq9', False)
             self.phq9_threshold = getattr(args, 'phq9_threshold', 0)
+            self.init_phq9_zero = getattr(args, 'init_phq9_zero', False)
+            # Bias correction is requested via the bias_table_path flag.
+            self.bias_corrected = _bias_on_from_path(getattr(args, 'bias_table_path', None))
 
         elif network:
             self.net_type = self._infer_net_type(network)
@@ -32,8 +53,12 @@ class PathManager:
             self.sample_phq9 = getattr(network, 'sample_phq9', None)
             self.cap_phq9 = getattr(network, 'cap_phq9', False)
             self.phq9_threshold = getattr(network, 'phq9_threshold', 0)
-        
+            self.init_phq9_zero = getattr(network, 'init_phq9_zero', False)
+            # A loaded bias table on the network means the run was debiased.
+            self.bias_corrected = getattr(network, '_phq9_bias_table', None) is not None
+
         self.subparams = self._get_subparams()
+        self.debias_dir = "debiased" if self.bias_corrected else "non_debiased"
         self.phq9_mode = self._get_phq9_mode()
         
     def _get_state(self, enforce_ngrams, depressed):
@@ -44,8 +69,10 @@ class PathManager:
     def _get_params_from_args(self, args):
         if args.net == "sf": return f"{args.m}"
         if args.net == "r": return f"{str(args.p).replace('.', '_')}"
-        if args.net in ["sda", "sdc"]: 
-            return f"{str(args.alpha).replace('.', '_')}_d{args.degree}_dim{args.dim}"
+        if args.net in ["sda", "sdc"]:
+            # {:g} drops trailing .0 so integer degrees keep their old dirnames (d6, not d6.0)
+            deg = f"{args.degree:g}".replace('.', '_')
+            return f"{str(args.alpha).replace('.', '_')}_d{deg}_dim{args.dim}"
         return "unknown"
 
 
@@ -63,6 +90,8 @@ class PathManager:
             parts.append("cap")
         if self.phq9_threshold and self.phq9_threshold > 0:
             parts.append(f"thr{str(self.phq9_threshold).replace('.', '_')}")
+        if getattr(self, 'init_phq9_zero', False):
+            parts.append("init_0")
         return "_".join(parts) if parts else None
     
     def _get_params_from_net(self, network):
@@ -72,7 +101,8 @@ class PathManager:
         
         # Add SDA/SDC logic here if those attributes exist on network
         if hasattr(network, 'alpha') and hasattr(network, 'degree') and hasattr(network, 'dim'):
-            return f"{str(network.alpha).replace('.', '_')}_d{network.degree}_dim{network.dim}"
+            deg = f"{network.degree:g}".replace('.', '_')
+            return f"{str(network.alpha).replace('.', '_')}_d{deg}_dim{network.dim}"
         return "unknown"
 
     def _infer_net_type(self, network):
@@ -83,8 +113,13 @@ class PathManager:
         return "sda"
 
     def _get_parent_directory(self):
-        """Parent directory (parameters only, no seed): .../rounds{N}_N{agents}/[phq9_mode]/"""
-        path = self.base_data / self.state / self.net_type / self.directed / self.params / self.subparams
+        """Parent directory (parameters only, no seed):
+        .../{directed}/{debiased|non_debiased}/{params}/rounds{N}_N{agents}/[phq9_mode]/
+
+        The debiased/non_debiased level keeps bias-corrected runs from overwriting
+        the uncorrected ones at the same parameters (see _bias_on_from_path)."""
+        path = (self.base_data / self.state / self.net_type / self.directed
+                / self.debias_dir / self.params / self.subparams)
         if self.phq9_mode:
             path = path / self.phq9_mode
         return path

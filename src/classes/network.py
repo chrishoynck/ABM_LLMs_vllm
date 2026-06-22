@@ -31,6 +31,7 @@ class _Network:
                  bert_regressor=None,
                  bert_encoder=None,
                  bert_regressor_path=None,
+                 bias_table_path=None,
                  bert_mentalbert=True,
                  bert_device=None):
         """
@@ -98,12 +99,14 @@ class _Network:
                 bert_regressor=bert_regressor,
                 bert_encoder=bert_encoder,
                 bert_regressor_path=bert_regressor_path,
+                bias_table_path=bias_table_path,
                 bert_mentalbert=bert_mentalbert,
                 bert_device=bert_device,
             )
 
     def _init_bert_components(self, bert_regressor, bert_encoder,
-                              bert_regressor_path, bert_mentalbert, bert_device):
+                              bert_regressor_path, bert_mentalbert, bert_device,
+                              bias_table_path=None):
         """Lazily load the BERT regressor + sentence encoder used by phq9_mode='bert'.
 
         Heavy deps (sentence-transformers, the saved regressor module) are only
@@ -146,18 +149,28 @@ class _Network:
         # the regressor. The table is PRECOMPUTED separately (run_bias_calibration.sh
         # -> utils.tools.phq9_bias) and saved as phq9_bias_table.csv next to
         # regressor.pt; the network only loads and applies it.
+        # PHQ-9 bias correction is OPT-IN: applied only when an explicit
+        # bias_table_path is passed (e.g. a full- or interior-fit table). The old
+        # phq9_bias_table.csv that used to be auto-loaded next to the regressor is
+        # NO LONGER used by default — it over-corrected inside the feedback loop.
+        # Leave unset (or pass "none"/"off") to run the assessment UNcorrected.
         self._phq9_bias_table = None
-        table_path = (os.path.join(os.path.dirname(bert_regressor_path), "phq9_bias_table.csv")
-                      if bert_regressor_path else None)
-        if table_path and os.path.isfile(table_path):
-            self._phq9_bias_table = load_bias_table(table_path)
-            print(f"[network] loaded PHQ-9 bias-correction table from {table_path}")
+        self._bias_table_path = None
+        off = (bias_table_path is None
+               or (isinstance(bias_table_path, str)
+                   and bias_table_path.strip().lower() in ("none", "off", "")))
+        if off:
+            print("[network] PHQ-9 bias correction OFF (no bias_table_path); "
+                  "assessment runs UNcorrected.")
+        elif os.path.isfile(bias_table_path):
+            self._phq9_bias_table = load_bias_table(bias_table_path)
+            self._bias_table_path = bias_table_path
+            print(f"[network] loaded PHQ-9 bias-correction table from {bias_table_path}")
             print(f"[network]   per-level bias (pred-true): "
                   f"{np.round(self._phq9_bias_table, 2).tolist()}")
         else:
-            print(f"[network] WARNING: no precomputed bias table at {table_path}; "
-                  f"PHQ-9 assessment will be UNcorrected. Run run_bias_calibration.sh "
-                  f"(or python -m utils.tools.phq9_bias) to build it.")
+            print(f"[network] WARNING: bias_table_path {bias_table_path!r} not found; "
+                  f"PHQ-9 assessment will be UNcorrected.")
 
 
     def add_connection(self, agent1, agent2):
@@ -620,6 +633,7 @@ class SocialDistanceAttachment(_Network):
                  alpha,
                  dim,
                  degree,
+                 gamma=2.5,
                  sdc=False,
                  plot=False,
                  depressed_personas=None,
@@ -641,6 +655,7 @@ class SocialDistanceAttachment(_Network):
         self.b = 0.0
         self.agent_positions = None
         self.degree = degree
+        self.gamma = gamma
         self.sdc = sdc
         self.age_weight = age_weight
         self.use_phq9 = use_phq9
@@ -859,7 +874,7 @@ class SocialDistanceAttachment(_Network):
         total_degree = 0
         n = len(self.all_agents)
         if self.sdc:
-            stud_list = self.generate_stub_list(n, gamma=2.5, degree=self.degree)
+            stud_list = self.generate_stub_list(n, gamma=self.gamma, degree=self.degree)
             print(f"Generated stub list with mean degree {np.mean(stud_list):.2f}")
             P, _ = self.sda_graph(n)
             adjacency = self.network_powerlaw(P, stud_list)
@@ -883,15 +898,21 @@ class SocialDistanceAttachment(_Network):
     def generate_stub_list(self, N, gamma, degree):
         """ Generate a list of stubs for each node based on desired degree.
 
+        The degree *shape* is drawn from a bounded power-law P(k) ∝ k^-gamma on
+        support k ∈ [1, N-1]. Bounded support is normalisable for ANY exponent,
+        so gamma may be ≤ 1 (heavier tails) — unlike numpy's zipf, which requires
+        gamma > 1. The mean is rescaled to the target `degree` below regardless,
+        so gamma controls only the tail heaviness, not the mean.
+
         Returns:
             stud_list (list): list of remaining stubs for each node
         """
 
-        # generate degrees from powerlaw (scaled later)
-        stud_list = self.rng.zipf(gamma, size=N)
-
-        # consider to clip at 0
-        stud_list = np.clip(stud_list, a_min=1, a_max=N-1)
+        # generate degrees from a bounded power-law (mean rescaled later)
+        k  = np.arange(1, N)                       # possible degrees 1 .. N-1
+        pk = k.astype(float) ** (-float(gamma))
+        pk /= pk.sum()
+        stud_list = self.rng.choice(k, size=N, p=pk)
 
         mean_degree = np.mean(stud_list)
         if mean_degree == 0:
@@ -1001,192 +1022,3 @@ class SocialDistanceAttachment(_Network):
         # assert fit.power_law.alpha < 7, f"Power-law exponent is too high; {fit.power_law.alpha}"
 
         
-
-
-
-        
-
-# class ScaleFreeNetwork(_Network):
-#     """
-#     This class represents a scale-free network of agents.
-#     It inherits from the _Network class and initializes the network by connecting agents in a scale-free manner.
-#     """
-#     def __init__(self, m=2, plot=False, depressed_personas=None, form_connections=True, **kwargs):
-#         """
-#         Initialize the network by connecting agents in a scale-free manner.
-#         The network is initialized with `m` connections for each new agent.
-
-#         Args:
-#             m (int): The number of connections for each new agent.
-#             plot (bool): Boolean flag to indicate whether to plot the degree distribution.
-#         """
-#         super().__init__(**kwargs)
-#         self.m = m
-#         self.plot = plot
-#         self.degree_distribution = {} 
-#         self.total_degree = 0
-#         self.cumulative_degree_list = []
-
-#         if form_connections:
-#             self.initialize_network(depressed_personas=depressed_personas)
-
-#     def initialize_network(self, depressed_personas=None):
-#         """
-#         1) Select m initial agents, fully connect them (seed network).
-#         2) For each remaining agent, connect it to m existing agents with probability
-#         = (agent_degree / total_degree) using _pick_agent_by_degree_global().
-#         3) Assertions ensure total_degree > 0 for valid probability-based sampling.
-#         MAYBE REQUIRES WORK: some checks to ensure no agents gets stuck with degree < m
-#         """
-#         # Basic checks
-#         n = len(self.all_agents)
-#         assert self.m > 0, "m must be positive."
-#         assert self.m < n, "Number of connections 'm' must be less than number of agents."
-
-#         # Initialize degree_distribution to 0 for all agents
-#         for agent in self.all_agents:
-#             self.degree_distribution[agent] = 0
-
-#         # Step 1: Pick m initial agents and fully connect them
-#         #m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)  # Use self.rng.choice for reproducibility
-
-#         # balanced out hubs
-#         m0_agents = self.rng.choice(self.all_agents, self.m, replace=False)
-
-
-#         if self.m > 1:  # Fully connect seed agents only if m > 1
-#             for i in range(len(m0_agents)):
-#                 for j in range(i + 1, len(m0_agents)):
-#                     self.add_connection(m0_agents[i], m0_agents[j])
-
-#                     # if directed, enforce bidirection
-#                     if self.directed:
-#                         self.add_connection(m0_agents[j], m0_agents[i])
-
-#         else:  # Handle the case for m=1
-#             # If m=1, connect the seed agent to another random agent
-#             random_agent = self.rng.choice([agent for agent in self.all_agents if agent not in m0_agents])
-#             self.add_connection(m0_agents[0], random_agent)
-
-#         # Ensure total_degree is initialized properly
-#         assert self.total_degree > 0, "Seed network must have edges, so total_degree > 0."
-
-#         # Step 2: For the remaining agents, attach each with m edges via scale-free selection
-#         remaining_agents = [agent for agent in self.all_agents if agent not in m0_agents]
-#         for new_agent in remaining_agents:
-#             assert self.total_degree > 0, "Cannot do preferential attachment if total_degree = 0."
-
-#             # Use a set to track which agents have already been chosen
-#             chosen = set()
-#             forbidden = {new_agent}  # Prevent self-loops
-
-#             while len(chosen) < self.m:
-#                 candidate = self._pick_agent_by_degree_global(forbidden=forbidden, max_tries=500)
-#                 assert candidate is not None, "Initialization failed as no candidate for connection is found"
-#                 chosen.add(candidate)
-#                 forbidden.add(candidate)  # Ensure unique connections
-
-#             # Add edges to the chosen agents
-#             for target_agent in chosen:
-#                 self.add_connection(new_agent, target_agent)
-        
-#         assert all(self.degree_distribution[agent] >= self.m for agent in remaining_agents), (
-#             f"Some later added agents have degree less than m={self.m}. Check initialization logic."
-#         )
-
-#         self.agent_w_highest_deg = max(self.all_agents, key=lambda a: len(a.agent_connections))
-#         if depressed_personas is not None:
-#             # currently one persona in data 
-#             self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
-#             print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
-
-
-#     def _pick_agent_by_degree_global(self, forbidden=set(), max_tries=100):
-#         """
-#         Pick an agent (not in 'forbidden') by sampling from self.cumulative_degree_list.
-#         Returns the chosen agent or None if we fail after max_tries.
-#         """
-#         assert len(self.cumulative_degree_list) == len(self.degree_distribution), (
-#             "Cumulative degree list and degree distribution lengths do not match."
-#         )
-#         assert self.total_degree > 0, "Total degree must be positive for preferential sampling."
-
-#         for _ in range(max_tries):
-#             target_sum = self.rng.random() * self.total_degree
-    
-#             # Use binary search to find the index of the selected agent
-#             idx = bs_norm.bisect_left(self.cumulative_degree_list, target_sum)
-#             if idx >= len(self.all_agents):
-#                 idx = len(self.all_agents) - 1  # Safeguard against index overflow
-
-#             candidate = self.all_agents[idx]
-            
-#             # Check if the candidate is not in the forbidden set
-#             if candidate not in forbidden:
-#                 return candidate
-
-#         # If we fail after max_tries, return None
-#         assert candidate is None, "Failed to pick a agent after max_tries."
-#         return None
-
-#     def add_connection(self, agent1, agent2):
-#         """
-#         Add an undirected connection between two agents, updating:
-#             - self.connections
-#             - self.degree_distribution
-#             - self.total_degree
-#             - self.cumulative_degree_list
-#         """
-#         if agent1 != agent2 and (agent1, agent2) not in self.connections:
-#             agent1.add_edge(agent2)
-#             self.connections.add((agent1, agent2))
-#             self.degree_distribution[agent1] = self.degree_distribution.get(agent1, 0) + 1
-#             self.total_degree += 1 
-
-#             if not self.directed:
-#                 agent2.add_edge(agent1)
-#                 self.connections.add((agent2, agent1))
-#                 # Update degree distribution
-#                 self.degree_distribution[agent2] = self.degree_distribution.get(agent2, 0) + 1
-#                 self.total_degree += 1  # 2 'ends' of edges
-
-#             # Rebuild the cumulative sums for probability sampling
-#             self._rebuild_cumulative_list()
-
-#     def remove_connection(self, agent1, agent2):
-#         """
-#         Remove an undirected connection between two agents (if it exists), updating:
-#             - self.connections
-#             - self.degree_distribution
-#             - self.total_degree
-#             - self.cumulative_degree_list
-#         """
-#         if agent1 != agent2 and (agent1, agent2) in self.connections:
-#             agent1.remove_edge(agent2)
-#             self.connections.remove((agent1, agent2))
-
-#             # Update degree distribution
-#             self.total_degree -= 1
-#             self.degree_distribution[agent1] -= 1
-
-#             if not self.directed:
-#                 agent2.remove_edge(agent1)
-#                 self.connections.remove((agent2, agent1))
-
-#                 # update degree distribution
-#                 self.total_degree -= 1
-#                 self.degree_distribution[agent2] -= 1
-
-#             self._rebuild_cumulative_list()
-
-#     def _rebuild_cumulative_list(self):
-#         """
-#         Rebuild 'cumulative_degree_list' from 'degree_distribution'.
-#         cumulative_degree_list[i] = sum of degrees up to the i-th agent in iteration order.
-#         This is used for efficient probability-based agent selection via bisect.
-#         """
-#         self.cumulative_degree_list.clear()
-#         running_sum = 0
-#         for deg in self.degree_distribution.values(): # IMPORTANT THIS MAINTANS ORDER
-#             running_sum += deg
-#             self.cumulative_degree_list.append(running_sum)
