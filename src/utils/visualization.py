@@ -1974,6 +1974,16 @@ def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
 #   Figure 1: BERT non-FT (human-opt) | fine-tuned (human-opt) | non-FT (synthetic)
 #   Figure 2: BERT vs post-assessment prompt, each on {synthetic, human-opt} test
 #
+# Test-set alignment (figure 2): both methods are scored on the SAME data sources
+# so the synthetic-vs-human gap is the distribution shift, not a change of test
+# set. The "synthetic" (in-distribution) side is the BERT regression test blocks:
+# BERT is its own 5-seed average (each seed on its held-out split, one of which is
+# test_blocks_seed35.csv), and the prompt is scored on test_blocks_seed35.csv via
+# the eval_on_test_blocks_seed35[/_minimal] subdirs — NOT the prompt's own
+# optimisation split. The "human-opt" side is the 300-block data/finetune/
+# test_posts.csv for every bar (BERT eval_baseline, prompt eval_on_human300,
+# minimal minimal_human300).
+#
 # Run via the shell wrapper run_eval_comparison.sh, or directly:
 #   PYTHONPATH=src python -m utils.visualization --out-dir data/test_post/method_comparison
 # =========================================================================== #
@@ -1983,6 +1993,23 @@ _EVAL_MODEL_SHORT = "Qwen3.5-27B"
 _EVAL_C_SYNTH = "#2e7ebc"   # synthetic (in-distribution) test  (SA "Agent" blue)
 _EVAL_C_HUMAN = "#d96907"   # human-optimized-prompt test       (SA "Joint" orange)
 _EVAL_C_FT = "#8d2c03"      # fine-tuned bar in figure 1         (SA "Neighbour" dark-red)
+
+# Subdir under each prompt seed dir holding the OPTIMISED prompt scored on the
+# aligned synthetic test (the BERT regression test blocks, test_blocks_seed35.csv),
+# rather than the prompt's own optimisation split — see the alignment note above.
+_EVAL_PROMPT_SYNTH_SUBDIR = "eval_on_test_blocks_seed35"
+
+# Optional minimal-prompt bars in figure 2 (added only if scored on disk).
+# Generated with prompt_optimizer.py --mode phq9-rerun-test --instruction-filename
+# minimal_instruction.txt --result-subdir <name>, per seed under prompt_dir. Only
+# the seed23 minimal run exists on disk, so this group is a single run (no seed
+# error bar); both bars must come from the SAME seed for the shift to be valid.
+# Synthetic uses the same test_blocks_seed35 set as the optimised-prompt synthetic
+# bar; human-opt uses the 300-block data/finetune/test_posts.csv so that BERT
+# (eval_baseline), the optimised prompt (eval_on_human300) and the minimal prompt
+# (minimal_human300) are all scored on the SAME 300 human-opt blocks.
+_EVAL_MINIMAL_SYNTH_SUBDIR = "eval_on_test_blocks_seed35_minimal"  # minimal prompt on test_blocks_seed35
+_EVAL_MINIMAL_HUMAN_SUBDIR = "minimal_human300"                    # minimal prompt on the 300-block human-opt set
 
 
 def _eval_per_seed_stats(raw_csv: str) -> dict:
@@ -2017,6 +2044,14 @@ def _eval_aggregate(raw_csvs: list, label: str) -> dict:
     }
 
 
+def _eval_aggregate_optional(raw_csvs: list, label: str):
+    """Like _eval_aggregate but returns None (instead of raising) when no CSVs
+    are present — used for optional bars whose data may not be on disk yet."""
+    if not raw_csvs:
+        return None
+    return _eval_aggregate(raw_csvs, label)
+
+
 def _eval_seed_csvs(eval_dir: str, seeds: list) -> list:
     """Per-sample seed<seed>.csv files in an eval dir (skip *_summary / aggregate)."""
     out = []
@@ -2038,23 +2073,44 @@ def _eval_perseed_dir_csvs(base: str, seeds: list, rel: str) -> list:
 
 
 def collect_eval_comparison(bert_dir: str, bert_ft_dir: str, prompt_dir: str,
-                            prompt_eval_subdir: str, bert_seeds: list, prompt_seeds: list) -> dict:
+                            prompt_eval_subdir: str, bert_seeds: list, prompt_seeds: list,
+                            prompt_synth_subdir: str = _EVAL_PROMPT_SYNTH_SUBDIR) -> dict:
     """Resolve every bar's raw-score files and aggregate them into a stats dict."""
     eval_baseline = os.path.join(bert_dir, "eval_baseline")
     eval_finetuned = os.path.join(bert_ft_dir, "eval_finetuned")
-    return {
+    stats = {
         "bert_nonft_human": _eval_aggregate(
             _eval_seed_csvs(eval_baseline, bert_seeds), "BERT non-FT / human-opt"),
         "bert_ft_human": _eval_aggregate(
             _eval_seed_csvs(eval_finetuned, bert_seeds), "BERT fine-tuned / human-opt"),
         "bert_nonft_synth": _eval_aggregate(
             _eval_perseed_dir_csvs(bert_dir, bert_seeds, "test_raw_scores.csv"), "BERT non-FT / synthetic"),
+        # Prompt synthetic = optimised prompt on the BERT test blocks (aligned),
+        # NOT prompt_dir/{seed}/test_raw_scores.csv (the prompt's own opt split).
         "prompt_synth": _eval_aggregate(
-            _eval_perseed_dir_csvs(prompt_dir, prompt_seeds, "test_raw_scores.csv"), "Prompt / synthetic"),
+            _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
+                                   os.path.join(prompt_synth_subdir, "test_raw_scores.csv")), "Prompt(opt) / synthetic"),
         "prompt_human": _eval_aggregate(
             _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
-                                   os.path.join(prompt_eval_subdir, "test_raw_scores.csv")), "Prompt / human-opt"),
+                                   os.path.join(prompt_eval_subdir, "test_raw_scores.csv")), "Prompt(opt) / human-opt"),
     }
+    # Optional minimal-prompt group — added to figure 2 only if scored on disk.
+    minimal_synth = _eval_aggregate_optional(
+        _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
+                               os.path.join(_EVAL_MINIMAL_SYNTH_SUBDIR, "test_raw_scores.csv")),
+        "Prompt(min) / synthetic")
+    minimal_human = _eval_aggregate_optional(
+        _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
+                               os.path.join(_EVAL_MINIMAL_HUMAN_SUBDIR, "test_raw_scores.csv")),
+        "Prompt(min) / human-opt")
+    if minimal_synth is not None and minimal_human is not None:
+        stats["minimal_synth"] = minimal_synth
+        stats["minimal_human"] = minimal_human
+    elif minimal_synth is not None or minimal_human is not None:
+        print("[eval] minimal-prompt group skipped: need BOTH "
+              f"{_EVAL_MINIMAL_SYNTH_SUBDIR}/ and {_EVAL_MINIMAL_HUMAN_SUBDIR}/ "
+              "test_raw_scores.csv under the prompt seed dirs.")
+    return stats
 
 
 def _eval_annotate(ax, x, height, err, pad, fmt="{:.2f}", fontsize=8):
@@ -2127,13 +2183,19 @@ def plot_eval_bert_vs_prompt(stats: dict, out_path: str, err_mode: str = "seed")
     err_mode: "seed" (between-seed SD) or "sample" (SD of per-sample errors)."""
     from matplotlib.patches import Patch
 
+    has_minimal = "minimal_synth" in stats and "minimal_human" in stats
+    # Relabel the optimized prompt group when a minimal-prompt group is present,
+    # so the two PHQ-9 prompts are distinguishable on the x-axis.
+    prompt_label = "Optimized\nprompt" if has_minimal else "PHQ-9 prompt"
     methods = [("BERT+MLP", "bert_nonft_synth", "bert_nonft_human"),
-               ("PHQ-9 prompt", "prompt_synth", "prompt_human")]
+               (prompt_label, "prompt_synth", "prompt_human")]
+    if has_minimal:
+        methods.append(("Minimal\nprompt", "minimal_synth", "minimal_human"))
     x = np.arange(len(methods))
     w = 0.38
     sfx = "seed" if err_mode == "seed" else "sample"
 
-    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(6, 2.8))
+    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(7.2 if has_minimal else 6, 2.8))
     for ax, key, ekey, ylab, cap in [
         (ax_mae, "mae", f"mae_err_{sfx}", "MAE", "(a)"),
         (ax_bias, "bias", f"bias_err_{sfx}", "Bias", "(b)"),
@@ -2180,15 +2242,20 @@ def run_eval_comparison(argv=None):
                    help="Holds eval_finetuned/ (fine-tuned regressor on the human-opt test set).")
     p.add_argument("--prompt-dir", default="data/test_post/optimized_phq9",
                    help="Holds {MODEL}_seed*/ (synthetic test) and the eval-on-prompt subdir (human-opt).")
-    p.add_argument("--prompt-eval-subdir", default="eval_on_prompt_Qwen_Qwen3.5-27B",
-                   help="Subdir under each prompt seed dir holding the human-opt-test raw scores.")
+    p.add_argument("--prompt-eval-subdir", default="eval_on_human300",
+                   help="Subdir under each prompt seed dir holding the human-opt-test raw scores "
+                        "(the 300-block data/finetune/test_posts.csv eval, paired with BERT's eval_baseline).")
+    p.add_argument("--prompt-synth-subdir", default=_EVAL_PROMPT_SYNTH_SUBDIR,
+                   help="Subdir under each prompt seed dir holding the aligned synthetic-test raw scores "
+                        "(the prompt scored on the BERT test blocks, test_blocks_seed35.csv).")
     p.add_argument("--bert-seeds", type=int, nargs="+", default=[34, 35, 36, 37, 38])
     p.add_argument("--prompt-seeds", type=int, nargs="+", default=[23, 24, 25, 32, 33])
     p.add_argument("--out-dir", default="data/test_post/method_comparison")
     args = p.parse_args(argv)
 
     stats = collect_eval_comparison(args.bert_dir, args.bert_ft_dir, args.prompt_dir,
-                                    args.prompt_eval_subdir, args.bert_seeds, args.prompt_seeds)
+                                    args.prompt_eval_subdir, args.bert_seeds, args.prompt_seeds,
+                                    prompt_synth_subdir=args.prompt_synth_subdir)
     _print_eval_table(stats)
 
     os.makedirs(args.out_dir, exist_ok=True)

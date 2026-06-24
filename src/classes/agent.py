@@ -37,6 +37,10 @@ class Agent:
         self.phq9_score = well_being.get("phq9_sumscore") if well_being else None
         self.age = well_being.get("age") if well_being else None
         self.all_phq9_sumscores = []
+        # When True the agent is excluded from PHQ-9 questionnaire updates so its
+        # score stays pinned at its current value for the whole run. Used for the
+        # enforced happy hub, whose PHQ-9 is held fixed at 0 (see network.py).
+        self.phq9_fixed = False
 
         with open(FC.PROMPTS_FILE, 'r') as f:
            self._PROMPTS = json.load(f)

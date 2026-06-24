@@ -1162,6 +1162,7 @@ def rerun_test_phq9(
     test_fraction: float = 0.10,
     max_model_len: int = 32768,
     posts_file: str | None = None,
+    result_subdir: str | None = None,
     **vllm_kwargs,
 ):
     """Reload a saved instruction and re-run only the PHQ-9 test phase.
@@ -1188,6 +1189,12 @@ def rerun_test_phq9(
             output dir still gets its own per-seed result CSVs, but the
             ``trajectory.csv`` test row is NOT overwritten (the original
             in-distribution test number is preserved).
+        result_subdir: optional name of a subdir under ``output_dir`` to write
+            results into (e.g. ``"minimal_synth"``). When set, results go to
+            ``<output_dir>/<result_subdir>/`` and ``training_trajectory.csv`` is
+            left untouched — use this to score a DIFFERENT instruction (e.g. the
+            minimal prompt) on the same split/posts without clobbering the
+            optimized prompt's ``test_raw_scores.csv`` / ``eval_on_*`` dirs.
         **vllm_kwargs: forwarded to ChatVLLM.
 
     Returns:
@@ -1240,11 +1247,18 @@ def rerun_test_phq9(
     print(f"[rerun-test seed {seed}] Test MAE (n={len(test_blocks)}): "
           f"{test_mae:.2f} ± {test_std:.2f}")
 
-    # Output paths: when posts_file is set, redirect to a subdir so the
-    # original in-distribution test files / trajectory row are preserved.
-    if posts_file is not None:
+    # Output paths: redirect to a subdir (explicit result_subdir, or the
+    # auto eval_on_<stem> when scoring a custom posts_file) so the original
+    # in-distribution test files / trajectory row are preserved.
+    if result_subdir is not None:
+        write_dir = os.path.join(output_dir, result_subdir)
+    elif posts_file is not None:
         posts_stem = os.path.splitext(os.path.basename(posts_file))[0]
         write_dir = os.path.join(output_dir, f"eval_on_{posts_stem}")
+    else:
+        write_dir = None
+
+    if write_dir is not None:
         os.makedirs(write_dir, exist_ok=True)
         # Stamp source for reproducibility (small text file).
         with open(os.path.join(write_dir, "eval_meta.txt"), "w", encoding="utf-8") as fh:
@@ -1253,7 +1267,7 @@ def rerun_test_phq9(
                 f"model:            {model_name}\n"
                 f"opt_seed:         {seed}\n"
                 f"instruction:      {os.path.relpath(instr_path)}\n"
-                f"posts_file:       {os.path.relpath(posts_file)}\n"
+                f"posts_file:       {os.path.relpath(posts_file) if posts_file else '(deterministic test split)'}\n"
                 f"n_blocks:         {len(test_blocks)}\n"
                 f"\n"
                 f"test_mae:         {test_mae:.4f}\n"
@@ -3295,6 +3309,13 @@ if __name__ == "__main__":
     parser.add_argument("--instruction-file", type=str, default=None,
                         help="(--mode tweets-rerun-test only) full path to the instruction "
                              "txt to evaluate (e.g. data/prompt_optimization_h/<run>/iter_N/prompt.txt).")
+    parser.add_argument("--result-subdir", type=str, default=None,
+                        help="(--mode phq9-rerun-test only) write results into "
+                             "<seed_dir>/<result-subdir>/ instead of the default location, "
+                             "leaving training_trajectory.csv and the optimized prompt's "
+                             "test_raw_scores.csv / eval_on_* dirs untouched. Use when scoring "
+                             "a different instruction (e.g. minimal_instruction.txt) on the "
+                             "same split/posts.")
     parser.add_argument("--posts-file", type=str, default=None,
                         help="(--mode phq9-rerun-test only) override: use this entire "
                              "tweets_with_phq9 CSV as the test set, skipping the "
@@ -3390,6 +3411,7 @@ if __name__ == "__main__":
                 model_name=model_name,
                 instruction_filename=args.instruction_filename,
                 posts_file=args.posts_file,
+                result_subdir=args.result_subdir,
             )
     elif run_mode == "tweets":
         for seed in args.seeds:

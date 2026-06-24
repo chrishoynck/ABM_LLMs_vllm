@@ -63,7 +63,8 @@ class TestLLMs:
                  phq9_assignments: list = None,
                  neighbor_pool: list = None, num_neighbors: int = 5,
                  neighbor_seed: int = None,
-                 nondeterministic_sampling: bool = False):
+                 nondeterministic_sampling: bool = False,
+                 gen_temp: float = 0.7, gen_top_p: float = 0.9):
         self.rng = np.random.default_rng(seed)
         # Honour an explicit phq9_assignments by keeping persona order aligned to
         # it (no permutation), so personas[i] still pairs with phq9_assignments[i]
@@ -133,6 +134,12 @@ class TestLLMs:
         # samples fresh each invocation. Neighbour-pool RNGs above stay
         # seeded so the per-(agent, round) neighbour set remains reproducible.
         self.nondeterministic_sampling = bool(nondeterministic_sampling)
+        # Tweet-generation sampling. Defaults to the optimizer student values
+        # (0.7 / 0.9) so every existing caller is byte-identical; the decoding
+        # sensitivity sweep overrides these per setting (via generate_test_data
+        # --temp/--top_p) to measure output sensitivity to temperature/top_p.
+        self.gen_temp = float(gen_temp)
+        self.gen_top_p = float(gen_top_p)
 
     def _build_aligned_tweet_messages(self, agent):
         """Mirror prompt_optimizer._build_user_message_tweet + optimizer student sys prompt.
@@ -257,9 +264,11 @@ class TestLLMs:
                 temperature=temp, top_p=top_p, max_tokens=1600, seed=None,
             )
         elif self.tweet_instruction is not None:
-            # Optimizer student (tweet) sampling: matches _batch_student_generate.
+            # Optimizer student (tweet) sampling: defaults to _batch_student_generate
+            # (temp 0.7, top_p 0.9); overridable via gen_temp/gen_top_p for the
+            # decoding-parameter sensitivity sweep.
             params = SamplingParams(
-                temperature=0.7, top_p=0.9, max_tokens=512,
+                temperature=self.gen_temp, top_p=self.gen_top_p, max_tokens=512,
                 seed=sp_seed,
             )
         else:

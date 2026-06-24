@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full ABM simulation — optimal SDC (stub-matched, scale-free) parameters, 5 seeds.
+# Full ABM simulation — calibrated SDA, undirected, debiased, HAPPY hub, 5 seeds.
+# (run_simulation2.sh is the SDC counterpart with the same settings.)
 #
 # Optimal SDC network parameters (sa_network --net sdc, averaged_best.csv, N=200, 5 seeds):
 #   alpha=4.9429  stub_gamma=1.6187  degree=8.2539  dim=3  n_clusters=2
@@ -62,7 +63,7 @@ NET="sda"                # sdc = stub-matched scale-free; sda = SocialDistanceAt
 
 
 # # NET="sda" (low degree)
-DEGREE=0
+DEGREE=4.5
 ALPHA=2.1655
 LATENT_WEIGHT=7.9839 #1
 DIM=5       #3
@@ -98,7 +99,7 @@ INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real d
 # N_CLUSTERS=2
 # STUB_GAMMA=2.5          # ignored for sda (sdc-only); kept bound so the shared run command works
 INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
-DIRECTED=0             # directed graph -> saved under data/networks_post/basis/sda/directed/...
+DIRECTED=0             # undirected graph -> saved under data/networks_post/happy/sda/undirected/...
 
 
 # ── Previous parameter sets (kept for reference) ─────────────────────────────
@@ -148,6 +149,7 @@ echo "  dim           : $DIM"
 echo "  age_weight    : $AGE_WEIGHT"
 echo "  n_clusters    : $N_CLUSTERS"
 echo "  directed      : ${DIRECTED:-0}"
+echo "  happy         : on  (hub persona = data/happy_persona.csv, PHQ-9 pinned at 0)"
 echo "  check_point   : $CHECK_POINT  (PHQ-9 update cadence)"
 echo "  log every     : $LOG iterations"
 echo "  bias_table    : $BIAS_TABLE"
@@ -171,6 +173,7 @@ LLAMA_ID="Qwen/Qwen3.5-27B" PYTHONPATH=src python src/llama_activate.py "$NET" \
     --log           "$LOG" \
     "${INIT_ARGS[@]}" \
     "${DIRECTED_ARGS[@]}" \
+    --happy \
     --no-cds_dynamic \
     --phq9_mode bert \
     --bias_table_path "$BIAS_TABLE" \

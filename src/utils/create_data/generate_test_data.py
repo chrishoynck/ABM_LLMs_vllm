@@ -87,8 +87,12 @@ def _parse_args():
                              "that is derived from each instruction filename's integer).")
     parser.add_argument("--check_point", type=int, default=10,
                         help="Posts per persona block.")
-    parser.add_argument("--temp", type=float, default=0.7)
-    parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--temp", type=float, default=0.7,
+                        help="Tweet-generation sampling temperature (default 0.7, the "
+                             "optimizer-student value). Varied by the decoding SA sweep.")
+    parser.add_argument("--top_p", type=float, default=0.9,
+                        help="Tweet-generation sampling top_p (default 0.9, the "
+                             "optimizer-student value). Varied by the decoding SA sweep.")
 
     parser.add_argument("--neighbor-source-dir", action="append", default=None,
                         help="Directory containing seed_*/tweets_with_phq9.csv. "
@@ -332,6 +336,7 @@ def main():
                     num_neighbors=args.num_neighbors,
                     neighbor_seed=args.neighbor_seed,
                     nondeterministic_sampling=args.nondeterministic,
+                    gen_temp=args.temp, gen_top_p=args.top_p,
                 )
                 # phq9_assignments keeps persona order (no permutation), so all_agents[i]
                 # corresponds to personas_slice[i]; renumber ID -> global so neighbour

@@ -35,6 +35,7 @@ from collections import Counter
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.lines import Line2D
 import networkx as nx
 
 from . import metrics
@@ -361,6 +362,78 @@ def phq9_mean_and_assortativity(network, interval):
     return cols_round, mean_phq9, assort
 
 
+def phq9_dw_and_assortativity(network, interval, assort_when_constant=1.0,
+                              edgeless_assort=0.0):
+    """Degree-weighted mean PHQ-9 and PHQ-9 assortativity at each assessment.
+
+    The phase-portrait counterpart of ``phq9_mean_and_assortativity``: instead of
+    the unweighted population mean it returns the *degree-weighted* mean PHQ-9 —
+    the x-axis of ``experiment.ipynb``'s ``plot_phase_dw_phq9_homophily`` — using
+    the exact weighting of ``metrics.degree_weighted_mean`` (agent weight = its
+    connection count, normalised by ``len(network.connections)``), but evaluated
+    only at the PHQ-9 assessments (rounds 0, interval, …) rather than every round.
+
+    Assortativity is ``nx.numeric_assortativity_coefficient`` on the per-assessment
+    PHQ-9 node attribute (directed graphs are projected to undirected, as in
+    ``phq9_mean_and_assortativity``). When every agent shares the same PHQ-9 at an
+    assessment the coefficient is undefined (0/0 -> nan); these all-equal
+    assessments — notably round 0 of an ``init_phq9_zero`` run, where everyone
+    starts at PHQ-9 0 with no spread to be assortative about — are set to
+    ``assort_when_constant`` (default 1.0: treat a perfectly uniform population as
+    perfectly homophilous, so the trajectory starts at the top of the axis).
+
+    An edge-less graph (e.g. a degree-0 run) has no degree weights and no defined
+    assortativity, yet its isolated-agent PHQ-9 dynamics are topology-independent
+    (the same for every alpha / dim / direction). It is returned as a flat
+    baseline: x = the *unweighted* mean PHQ-9, y = ``edgeless_assort`` (default
+    0.0), so a single degree-0 line can be shown as a reference in every cell.
+
+    Returns:
+        cols_round (np.ndarray), dw_phq9 (np.ndarray), assort (np.ndarray).
+    """
+    graph, _ = metrics.build_network_graph(network)
+    undirected = graph.to_undirected() if network.directed else graph
+
+    # Static degree weights (topology is fixed over the run).
+    weights = np.array([len(a.agent_connections) for a in network.all_agents],
+                       dtype=float)
+    total_degree = float(len(network.connections))
+    edgeless = total_degree == 0
+
+    series = {a.ID: phq9_update_series(a, interval, network.iterations)[1]
+              for a in network.all_agents}
+    cols_round = phq9_update_series(network.all_agents[0], interval,
+                                    network.iterations)[0]
+    n_cols = len(cols_round)
+
+    dw_phq9 = np.full(n_cols, np.nan)
+    assort = np.full(n_cols, np.nan)
+    for c in range(n_cols):
+        vals = np.array([series[a.ID][c] for a in network.all_agents], dtype=float)
+        if edgeless:
+            # No edges -> weighting and assortativity undefined; fall back to the
+            # unweighted mean and a flat baseline.
+            dw_phq9[c] = float(np.nanmean(vals))
+            assort[c] = edgeless_assort
+            continue
+        dw_phq9[c] = float(np.dot(weights, vals) / total_degree)
+        if np.ptp(vals) == 0:                       # uniform population
+            assort[c] = assort_when_constant        # -> 1.0 (the only forced case)
+            continue
+        for a in network.all_agents:
+            undirected.nodes[a.ID]["phq9"] = float(series[a.ID][c])
+        try:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                r = nx.numeric_assortativity_coefficient(undirected, "phq9")
+            # An undefined coefficient here (e.g. an edge-less degree-0 graph)
+            # stays NaN so it simply doesn't plot — only the uniform-population
+            # case above is treated as perfectly assortative.
+            assort[c] = np.nan if (r is None or np.isnan(r)) else r
+        except Exception:
+            assort[c] = np.nan
+    return cols_round, dw_phq9, assort
+
+
 def plot_csd_heatmaps(network, phq9_interval=10, window=8,
                       path="", filename="default", save=False, show=True,
                       marker_size=None, overwrite=False):
@@ -560,6 +633,223 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
         sc.set_sizes([side ** 2])
 
     _save(fig, save, path, filename, f"param_grid_w{window}", show, do_tight=False)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Phase portrait — degree-weighted PHQ-9 vs PHQ-9 assortativity, gridded
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _first_finite(x, y):
+    """First (x, y) where both are finite, or (None, None)."""
+    ok = np.isfinite(x) & np.isfinite(y)
+    if not np.any(ok):
+        return None, None
+    i = int(np.argmax(ok))
+    return float(x[i]), float(y[i])
+
+
+def plot_phase_grid(cells, color_map, *, row_titles, col_titles,
+                    suptitle="", xlabel="DW PHQ-9",
+                    ylabel=r"PHQ-9$_\rho$", smooth=None, row_ylims=None,
+                    path="", filename="default", save=False, show=True,
+                    overwrite=False, prefix="phase_dw_phq9_assort"):
+    """One gridded phase-portrait figure: dw PHQ-9 (x) vs PHQ-9 assortativity (y).
+
+    Each subplot is one (row, col) cell of the grid and holds one *trajectory per
+    seed*, coloured by configuration (so a config shows as several same-coloured
+    lines). The grid layout is generic:
+
+        rows  -> ``row_titles``  (e.g. ["Directed", "Undirected"])
+        cols  -> ``col_titles``  (e.g. ["Non-debiased", "Debiased"])
+
+    Args:
+        cells:     ``{(row, col): [trajectory, ...]}`` where each trajectory is a
+                   dict ``{"label": str, "dw": 1-D array, "assort": 1-D array}``
+                   (the output of :func:`phq9_dw_and_assortativity`, plus a config
+                   label). Missing cells are drawn empty.
+        color_map: ``{label: colour}`` shared across every subplot so a config has
+                   one colour throughout, and one legend entry.
+        row_titles/col_titles: cell labels; their lengths set the grid shape.
+
+    Returns the list of labels that actually appeared (legend order), or None when
+    skipped because the PNG already exists.
+    """
+    if _skip_existing(path, filename, prefix, overwrite, save):
+        return None
+    nrow, ncol = len(row_titles), len(col_titles)
+    # y shared within a row (the two debias columns stay comparable) but not
+    # across rows, so directed/undirected can use different vertical zooms.
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.15 * ncol, 1.8 * nrow),
+                             sharex=False, sharey="row", squeeze=False)
+
+    seen = []   # labels with at least one finite trajectory, first-seen order
+    for r in range(nrow):
+        for c in range(ncol):
+            ax = axes[r][c]
+            ax.axhline(0, color="0.6", lw=0.5, ls="--", zorder=0)
+            for traj in cells.get((r, c), []):
+                x = np.asarray(traj["dw"], dtype=float)
+                y = np.asarray(traj["assort"], dtype=float)
+                if not np.any(np.isfinite(x) & np.isfinite(y)):
+                    continue
+                if smooth and smooth > 1:          # centered rolling mean
+                    x = _rolling_mean(x, smooth)
+                    y = _rolling_mean(y, smooth)
+                lab = traj["label"]
+                col = color_map.get(lab, "0.5")
+                ax.plot(x, y, color=col, lw=0.85, alpha=0.65, zorder=2)
+                xi, yi = _first_finite(x, y)       # start marker -> direction
+                if xi is not None:
+                    ax.scatter([xi], [yi], color=col, s=16, zorder=3,
+                               edgecolors="white", linewidths=0.4)
+                if lab not in seen:
+                    seen.append(lab)
+            _style_axis(ax)
+            if r == 0:
+                ax.set_title(col_titles[c], fontsize=12)
+            if c == 0:
+                ax.set_ylabel(f"{row_titles[r]}\n{ylabel}", fontsize=9)
+            if r == nrow - 1:
+                ax.set_xlabel(xlabel, fontsize=9)
+        # per-row y-limit (sharey='row' -> setting one axis covers the row)
+        if row_ylims and r < len(row_ylims) and row_ylims[r] is not None:
+            axes[r][0].set_ylim(*row_ylims[r])
+
+    top = 0.94
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight="bold")
+    else:
+        top = 0.98
+    # Reserve a small right margin so the legend sits just beside the panels;
+    # suptitle (if any) sits on top.
+    fig.tight_layout(rect=[0, 0, 0.84, top])
+
+    if seen:
+        handles = [Line2D([0], [0], color=color_map.get(l, "0.5"), lw=2.4)
+                   for l in seen]
+        # Anchor the legend's top to the top of the top-row subplots (after
+        # tight_layout has finalised their positions), just right of the last col.
+        pos = axes[0][-1].get_position()
+        fig.legend(handles, seen, loc="upper left", frameon=False, fontsize=8,
+                   title="Configuration", title_fontsize=9,
+                   bbox_to_anchor=(pos.x1 + 0.004, pos.y1), labelspacing=0.3,
+                   handlelength=1.4, handletextpad=0.5, borderaxespad=0.0)
+    _save(fig, save, path, filename, prefix, show, do_tight=False)
+    return seen
+
+
+def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
+                                     suptitle="", path="", filename="default",
+                                     save=False, show=True, overwrite=False,
+                                     prefix="ts_phq9_assort_grid",
+                                     dw_color="#d96907", mean_color="#8d2c03",
+                                     assort_color="#2e7ebc", xmax=300):
+    """Time-series grid of PHQ-9 score + assortativity, one cell per (row, col).
+
+    The temporal counterpart of :func:`plot_phase_grid`: instead of a phase
+    portrait, each cell plots, against the round number, the across-seed mean of
+
+      * degree-weighted mean PHQ-9 (``dw_color``, left axis),
+      * unweighted mean PHQ-9 (``mean_color``, left axis), and
+      * PHQ-9 assortativity (``assort_color``, twin right axis),
+
+    each with a ±SD-across-seeds spread (a shaded band for the two PHQ-9 series,
+    error bars for assortativity). Both y-axes are shared *per row* (each row is
+    one network type) and scaled to that row's data extent so the panels fill.
+
+    Args:
+        cells: ``{(row, col): agg}`` where ``agg`` is the across-seed aggregate
+            ``{"t", "dw_mean", "dw_sd", "mean_mean", "mean_sd",
+               "assort_mean", "assort_sd"}`` (all 1-D, same length as ``t``).
+            Missing cells are drawn empty.
+        row_titles/col_titles: cell labels; their lengths set the grid shape.
+        xmax: right x-limit (rounds), default 300.
+
+    Returns the (row, col) cells that were drawn, or None when skipped because the
+    PNG already exists.
+    """
+    if _skip_existing(path, filename, prefix, overwrite, save):
+        return None
+    nrow, ncol = len(row_titles), len(col_titles)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.5 * ncol, 1.95 * nrow),
+                             sharex=True, squeeze=False)
+
+    drawn = []
+    for r in range(nrow):
+        # Per-row shared limits: span every (mean ± SD) in the row so the row's
+        # panels fill vertically (left = both PHQ-9 series, right = assortativity).
+        l_lo, l_hi, a_lo, a_hi = [], [], [], []
+        for c in range(ncol):
+            d = cells.get((r, c))
+            if not d:
+                continue
+            for m, s in ((d["dw_mean"], d["dw_sd"]), (d["mean_mean"], d["mean_sd"])):
+                l_lo.append(np.nanmin(m - s)); l_hi.append(np.nanmax(m + s))
+            a_lo.append(np.nanmin(d["assort_mean"] - d["assort_sd"]))
+            a_hi.append(np.nanmax(d["assort_mean"] + d["assort_sd"]))
+        llo, lhi = (min(l_lo), max(l_hi)) if l_lo else (0.0, 1.0)
+        alo, ahi = (min(a_lo), max(a_hi)) if a_lo else (0.0, 1.0)
+        lm = (lhi - llo) * 0.06 or 0.5
+        am = (ahi - alo) * 0.06 or 0.01
+
+        for c in range(ncol):
+            ax = axes[r][c]
+            axr = ax.twinx()
+            d = cells.get((r, c))
+            if d:
+                t = d["t"]
+                ax.fill_between(t, d["dw_mean"] - d["dw_sd"], d["dw_mean"] + d["dw_sd"],
+                                color=dw_color, alpha=0.15, lw=0)
+                ax.fill_between(t, d["mean_mean"] - d["mean_sd"], d["mean_mean"] + d["mean_sd"],
+                                color=mean_color, alpha=0.12, lw=0)
+                ax.plot(t, d["dw_mean"], "-o", color=dw_color, lw=1.2, ms=2.6,
+                        zorder=4, label="DW PHQ-9")
+                ax.plot(t, d["mean_mean"], "--s", color=mean_color, lw=1.0, ms=2.4,
+                        zorder=3, label="Mean PHQ-9")
+                axr.errorbar(t, d["assort_mean"], yerr=d["assort_sd"], color=assort_color,
+                             fmt="o-", capsize=2, lw=1.2, ms=2.6, elinewidth=0.8,
+                             zorder=2, label="Assortativity ± SD")
+                drawn.append((r, c))
+
+            ax.set_xlim(0, xmax)
+            ax.set_xticks([0, 100, 200, 300])
+            ax.set_ylim(llo - lm, lhi + lm)
+            axr.set_ylim(alo - am, ahi + am)
+            ax.grid(alpha=0.3, linestyle=":")
+            ax.set_zorder(axr.get_zorder() + 1)   # PHQ-9 lines above assort
+            ax.patch.set_visible(False)
+
+            if r == 0:
+                ax.set_title(col_titles[c], fontsize=9)
+            if r == nrow - 1:
+                ax.set_xlabel("Round", fontsize=9)
+            # Left ticks/label only on the first column, right only on the last
+            # (the per-row shared scale is the same across the row).
+            if c == 0:
+                ax.set_ylabel(f"{row_titles[r]}\nPHQ-9 score", fontsize=9, color=dw_color)
+                ax.tick_params(axis="y", labelsize=7, labelcolor=dw_color, color=dw_color)
+            else:
+                ax.tick_params(axis="y", labelleft=False, length=0)
+            if c == ncol - 1:
+                axr.set_ylabel("PHQ-9 assortativity (r)", fontsize=9, color=assort_color)
+                axr.tick_params(axis="y", labelsize=7, labelcolor=assort_color, color=assort_color)
+            else:
+                axr.tick_params(axis="y", labelright=False, length=0)
+            ax.tick_params(axis="x", labelsize=7)
+            for sp in ("top",):
+                ax.spines[sp].set_visible(False); axr.spines[sp].set_visible(False)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight="bold")
+    handles = [Line2D([0], [0], color=dw_color, marker="o", lw=1.2, ms=4),
+               Line2D([0], [0], color=mean_color, marker="s", ls="--", lw=1.0, ms=4),
+               Line2D([0], [0], color=assort_color, marker="o", lw=1.2, ms=4)]
+    labels = ["DW PHQ-9", "Mean PHQ-9", "Assortativity ± SD"]
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False,
+               fontsize=8, bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout(rect=[0, 0.05, 1, 0.97 if suptitle else 1.0])
+    _save(fig, save, path, filename, prefix, show, do_tight=False)
+    return drawn
 
 
 # ──────────────────────────────────────────────────────────────────────────────

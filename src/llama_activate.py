@@ -118,13 +118,14 @@ def get_llm(model_id=None, seed=None):
     llm = LLM(**kwargs)
     return llm
 
-def build_network(args, personas, well_being, depressed_personas=None):
+def build_network(args, personas, well_being, happy_personas=None):
     '''Build network based on given arguments.
     Args:
         args: Argument namespace containing network parameters.
         personas: List of personas for agents.
         well_being: List of well-being scores for agents.
-        depressed_personas: List of depressed personas for agents.
+        happy_personas: List of happy personas; the highest-degree hub is replaced
+            by one of these and pinned at PHQ-9 = 0.
     Returns:
         network: Generated network object.
     '''
@@ -146,7 +147,7 @@ def build_network(args, personas, well_being, depressed_personas=None):
             well_being=well_being,
             personas=personas,
             sdc=(args.net == "sdc"),
-            depressed_personas=depressed_personas,
+            happy_personas=happy_personas,
             directed=args.directed,
             phq9_mode=phq9_mode,
             bert_regressor_path=bert_regressor_path,
@@ -161,7 +162,7 @@ def build_network(args, personas, well_being, depressed_personas=None):
             seed=args.seed,
             personas=personas,
             well_being=well_being,
-            depressed_personas=depressed_personas,
+            happy_personas=happy_personas,
             directed=args.directed,
             phq9_mode=phq9_mode,
             bert_regressor_path=bert_regressor_path,
@@ -200,7 +201,9 @@ def generate_parser():
                              "(only used when net=sdc; ignored for sda).")
 
     # Experiment Settings
-    parser.add_argument("--depressed", action="store_true", help="Include depressed personas")
+    parser.add_argument("--happy", action="store_true",
+                        help="Enforce a happy persona on the highest-degree hub "
+                             "(sampled from data/happy_persona.csv) and pin its PHQ-9 at 0")
     parser.add_argument("--enforce_ngrams", action="store_true", help="Enforce distorted-language n-grams in tweets")
 
     # PHQ-9 scoring mode
@@ -362,17 +365,17 @@ def run_simulation(args, pipe=None):
                 wb["phq9_sumscore"] = 0
         print(f"[init] --init_phq9_zero: initialized all {len(well_being)} agents at PHQ-9 = 0.")
 
-    # only load depressed personas if specified
-    if args.depressed:
-        depressed_personas = lp.load_depressed_personas("data/depressed.csv", personass_to_load=1, seed=args.seed)
+    # only load happy personas if specified
+    if args.happy:
+        happy_personas = lp.load_happy_personas("data/happy_persona.csv", personass_to_load=1, seed=args.seed)
     else:
-        depressed_personas = None
+        happy_personas = None
 
     # build network
-    network = build_network(args, 
-                            well_being=well_being, 
-                            personas=personas, 
-                            depressed_personas=depressed_personas)
+    network = build_network(args,
+                            well_being=well_being,
+                            personas=personas,
+                            happy_personas=happy_personas)
 
     # Store PHQ-9 options early so PathManager can read them even with 0 rounds
     network.sample_phq9 = args.sample_phq9
@@ -611,7 +614,7 @@ def main(args, pipe, states):
         # loop over all states
         for state in states:
             args.enforce_ngrams = (state == "enforced_ngrams")
-            args.depressed = (state == "depressed")
+            args.happy = (state == "happy")
 
             # load in existing network if specified
             if args.use_saved_network is not None:
@@ -642,8 +645,8 @@ if __name__ == "__main__":
 
     args = generate_parser()
 
-    if args.depressed:
-        states = ["depressed"]
+    if args.happy:
+        states = ["happy"]
     elif args.enforce_ngrams:
         states = ["enforced_ngrams"]
     else:
@@ -660,7 +663,7 @@ if __name__ == "__main__":
     start_time = time.perf_counter()
 
     #experiment
-    # states = ["basis", "depressed", "enforced_ngrams"]
+    # states = ["basis", "happy", "enforced_ngrams"]
     
     # call main simulation
     all_networks_results= main(args, pipe, states)

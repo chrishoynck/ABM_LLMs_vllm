@@ -350,6 +350,10 @@ class _Network:
         if agents is None:
             agents = self.all_agents
 
+        # Agents whose PHQ-9 is pinned (e.g. the enforced happy hub held at 0)
+        # are never re-scored by the questionnaire.
+        agents = [a for a in agents if not getattr(a, "phq9_fixed", False)]
+
         prompts = []
         for agent in agents:
             prompt = agent.phq9_questionnaire_prompt(
@@ -394,6 +398,10 @@ class _Network:
         """
         if agents is None:
             agents = self.all_agents
+
+        # Agents whose PHQ-9 is pinned (e.g. the enforced happy hub held at 0)
+        # are never re-scored by the regressor.
+        agents = [a for a in agents if not getattr(a, "phq9_fixed", False)]
 
         encoder_name = "MentalBERT" if getattr(self, "bert_mentalbert", True) else "SBERT"
         print(f"[PHQ-9 BERT] round {self.iterations}: scoring {len(agents)} agents "
@@ -553,18 +561,42 @@ class _Network:
 
         return np.mean(distorted_fracs), dist_this_step_norm
 
-        
+    def _enforce_happy_hub(self, happy_personas):
+        """Replace the highest-degree hub with a sampled happy persona and pin its
+        PHQ-9 at 0 for the whole run.
+
+        The hub becomes a constant positive/healthy influence source: its persona
+        is drawn from `happy_personas`, its PHQ-9 sumscore is set to 0, and it is
+        flagged `phq9_fixed` so the questionnaire never re-scores it. The network's
+        state is switched to "happy" so the output directory + metadata reflect the
+        run type. No-op when `happy_personas` is None (basis run).
+        """
+        if happy_personas is None:
+            return
+        hub = self.agent_w_highest_deg
+        # currently one persona in data
+        hub.persona = self.rng.choice(happy_personas)
+        if hub.well_being is None:
+            hub.well_being = {}
+        hub.well_being["phq9_sumscore"] = 0
+        hub.phq9_score = 0
+        hub.phq9_fixed = True
+        self.state = "happy"
+        print(f"Agent with highest degree is assigned happy persona: "
+              f"{hub.persona['name']}, ID: {hub.ID} (PHQ-9 fixed at 0)")
+
+
 class RandomNetwork(_Network):
     """
     This class represents a random network of agents.
     It inherits from the _Network class and initializes the network by connecting all agents with a probability `p`.
     """
 
-    def __init__(self, 
-                 p=0.1, 
-                 k=0, 
-                 depressed_personas=None,
-                 form_connections=True, 
+    def __init__(self,
+                 p=0.1,
+                 k=0,
+                 happy_personas=None,
+                 form_connections=True,
                  **kwargs):
         """
         Initialize the network by connecting all agents with a probability `p`.
@@ -580,9 +612,9 @@ class RandomNetwork(_Network):
         self.k = k
         
         if form_connections:
-            self.initialize_network(depressed_personas=depressed_personas)
+            self.initialize_network(happy_personas=happy_personas)
 
-    def initialize_network(self, depressed_personas=None):
+    def initialize_network(self, happy_personas=None):
         """
         Initialize the network
         """
@@ -618,10 +650,7 @@ class RandomNetwork(_Network):
                         if self.rng.random() < self.p:
                             self.add_connection(agent1, agent2)
         self.agent_w_highest_deg = max(self.all_agents, key=lambda a: len(a.agent_connections))
-        if depressed_personas is not None:
-            # currently one persona in data 
-            self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
-            print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
+        self._enforce_happy_hub(happy_personas)
 
 
 class SocialDistanceAttachment(_Network):
@@ -636,7 +665,7 @@ class SocialDistanceAttachment(_Network):
                  gamma=2.5,
                  sdc=False,
                  plot=False,
-                 depressed_personas=None,
+                 happy_personas=None,
                  dist_type= "gaussian_clusters",
                  form_connections=True,
                  age_weight=1.0,
@@ -663,9 +692,9 @@ class SocialDistanceAttachment(_Network):
         self.n_clusters = n_clusters
         
         if form_connections:
-            self.initialize_network(depressed_personas=depressed_personas, plot=plot)
+            self.initialize_network(happy_personas=happy_personas, plot=plot)
 
-    def initialize_network(self, depressed_personas=None, plot=False):
+    def initialize_network(self, happy_personas=None, plot=False):
         """
         Initialize the network based on social distance attachment.
         """
@@ -697,10 +726,7 @@ class SocialDistanceAttachment(_Network):
         self.b = self.find_b_for_target_Ek()
         self.generate_connections()
 
-        if depressed_personas is not None:
-            # currently one persona in data 
-            self.agent_w_highest_deg.persona = self.rng.choice(depressed_personas)
-            print(f"Agent with highest degree is assigned depressed persona: {self.agent_w_highest_deg.persona['name']}, ID: {self.agent_w_highest_deg.ID}")
+        self._enforce_happy_hub(happy_personas)
 
         self.verify_scale_free_distribution(plot)
 

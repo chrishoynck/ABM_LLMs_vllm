@@ -99,42 +99,52 @@ done
 # Tests how the PHQ-9 input (a DESIGNED input variable, not a nuisance) shapes
 # the output distribution. Every agent visits every band exactly once across
 # the 5 settings; within each band-setting, agents are spread uniformly over
-# the band's PHQ-9 values (not all pinned to one value). 1 rep per setting,
-# no LLM-noise baseline (per design — PHQ-9 effect dwarfs LLM noise).
+# the band's PHQ-9 values (not all pinned to one value).
+#
+# NUM_PHQ9_REPS unseeded replicates per band: agent/neighbour seeds are FIXED so
+# the personas and neighbour inputs are identical across reps — only the LLM
+# sampling varies. The within-band rep-to-rep cosine is therefore a PHQ-9-native
+# LLM-noise floor (the heatmap diagonal in sa_analyze.phq9_conditioning_heatmap),
+# no longer borrowed from the agent axis. Existing single-rep band data can be
+# migrated to rep_1 (see sa_analyze docs) so only the extra reps are generated;
+# the [[ -f ]] guard then skips rep_1.
 PHQ9_BAND_LABELS=("minimal" "mild" "moderate" "modsevere" "severe")
 PHQ9_BAND_LOS=(0  5  10 15 20)
 PHQ9_BAND_HIS=(4  9  14 19 27)
+NUM_PHQ9_REPS=3
 echo "================================================================"
-echo "PHQ-9 conditioning: ${#PHQ9_BAND_LABELS[@]} band settings × 1 rep"
+echo "PHQ-9 conditioning: ${#PHQ9_BAND_LABELS[@]} band settings × ${NUM_PHQ9_REPS} reps"
 echo "================================================================"
 for i in "${!PHQ9_BAND_LABELS[@]}"; do
     label=${PHQ9_BAND_LABELS[$i]}
     lo=${PHQ9_BAND_LOS[$i]}
     hi=${PHQ9_BAND_HIS[$i]}
-    out_dir="${SA_ROOT}/phq9/${label}"
-    out_csv="${out_dir}/posts.csv"
-    if [[ -f "${out_csv}" ]]; then
-        echo "[skip] ${out_csv} exists"
-        continue
-    fi
-    mkdir -p "${out_dir}"
-    echo "[run] phq9-conditioning band=${label} range=[${lo},${hi}]  (agent_seed=${FIXED_AGENT_SEED}, neighbor_seed=${FIXED_NEIGHBOR_SEED})"
+    for rep in $(seq 1 ${NUM_PHQ9_REPS}); do
+        out_dir="${SA_ROOT}/phq9/${label}/rep_${rep}"
+        out_csv="${out_dir}/posts.csv"
+        if [[ -f "${out_csv}" ]]; then
+            echo "[skip] ${out_csv} exists"
+            continue
+        fi
+        mkdir -p "${out_dir}"
+        echo "[run] phq9 band=${label} rep=${rep}/${NUM_PHQ9_REPS} range=[${lo},${hi}]  (agent_seed=${FIXED_AGENT_SEED}, neighbor_seed=${FIXED_NEIGHBOR_SEED})"
 
-    PYTHONPATH=src python -m utils.create_data.generate_test_data \
-        --instruction-file "${PROMPT}" \
-        --persona-phq9-file "${PERSONA_FILE}" \
-        --model "${MODEL}" \
-        --num_agents "${NUM_AGENTS}" \
-        --check_point "${CHECK_POINT}" \
-        --agent-seed "${FIXED_AGENT_SEED}" \
-        --neighbor-seed "${FIXED_NEIGHBOR_SEED}" \
-        --phq9-band-range "${lo}" "${hi}" \
-        --output-csv "${out_csv}" \
-        --nondeterministic
+        PYTHONPATH=src python -m utils.create_data.generate_test_data \
+            --instruction-file "${PROMPT}" \
+            --persona-phq9-file "${PERSONA_FILE}" \
+            --model "${MODEL}" \
+            --num_agents "${NUM_AGENTS}" \
+            --check_point "${CHECK_POINT}" \
+            --agent-seed "${FIXED_AGENT_SEED}" \
+            --neighbor-seed "${FIXED_NEIGHBOR_SEED}" \
+            --phq9-band-range "${lo}" "${hi}" \
+            --output-csv "${out_csv}" \
+            --nondeterministic
+    done
 done
 
 echo
 N_AXIS_RUNS=$((${#AXIS_SEEDS[@]} * NUM_REPS * 3))
-N_PHQ9_RUNS=${#PHQ9_BAND_LABELS[@]}
+N_PHQ9_RUNS=$((${#PHQ9_BAND_LABELS[@]} * NUM_PHQ9_REPS))
 echo "[done] ${N_AXIS_RUNS} axis runs + ${N_PHQ9_RUNS} PHQ-9 conditioning runs; output under ${SA_ROOT}/"
 echo "       next: python -m utils.sensitivity.sa_embed"

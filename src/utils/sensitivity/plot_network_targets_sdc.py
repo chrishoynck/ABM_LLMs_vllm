@@ -197,12 +197,11 @@ def plot_network_targets_sdc(out: str) -> None:
             frag = np.array([f for _, f in points[metric]], dtype=bool)
             if vals.size == 0:
                 continue
-            jitter = np.linspace(-0.13, 0.13, len(vals))
-            ax.scatter(x + jitter[~frag], vals[~frag], s=9, color="#7f7f7f",
+            ax.scatter(np.full(vals[~frag].shape, x), vals[~frag], s=9, color="#7f7f7f",
                        alpha=0.8, linewidths=0, zorder=3,
                        label="realization" if (k == 0 and x == 0) else None)
             if frag.any():
-                ax.scatter(x + jitter[frag], vals[frag], s=12, facecolors="none",
+                ax.scatter(np.full(vals[frag].shape, x), vals[frag], s=12, facecolors="none",
                            edgecolors="#7f7f7f", linewidths=0.9, zorder=3,
                            label=None if frag_seen else f"lcc $<$ {san.LCC_WARN}")
                 frag_seen = True
@@ -215,8 +214,7 @@ def plot_network_targets_sdc(out: str) -> None:
             dvals = dvals[~np.isnan(dvals)]
             if dvals.size == 0:
                 continue
-            djit = np.linspace(-0.10, 0.10, len(dvals))
-            ax.scatter(x + 0.24 + djit, dvals, s=9, color=_COL_DIR,
+            ax.scatter(np.full(dvals.shape, x + 0.24), dvals, s=9, color=_COL_DIR,
                        alpha=0.8, linewidths=0, zorder=3)
             ax.errorbar(x + 0.24, dvals.mean(), yerr=dvals.std(), fmt="D",
                         markersize=4, color=_COL_DIR, capsize=3, elinewidth=1.0,

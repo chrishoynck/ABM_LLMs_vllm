@@ -69,29 +69,44 @@ echo "========================================================"
 # the 10-panel PHQ-9 network sequence. Self-maintaining: new parameter sets are
 # picked up automatically — no CONFIGS list to keep in sync. Directed vs
 # undirected is read from each saved net.json, so both sub-trees are covered.
-echo
-echo "### Phase 1: per-seed figures"
-PYTHONPATH=src "$PY" -m utils.tools.plot_network_evolution \
-    --scan        "$GRID_ROOT" \
-    --scan_rounds "$ROUNDS" \
-    --check_point "$CHECK_POINT" \
-    --csd_window  "$CSD_WINDOW" \
-    "${EXCLUDE_FLAG[@]}" \
-    "${OVERWRITE_FLAG[@]}"
+# echo
+# echo "### Phase 1: per-seed figures"
+# PYTHONPATH=src "$PY" -m utils.tools.plot_network_evolution \
+#     --scan        "$GRID_ROOT" \
+#     --scan_rounds "$ROUNDS" \
+#     --check_point "$CHECK_POINT" \
+#     --csd_window  "$CSD_WINDOW" \
+#     "${EXCLUDE_FLAG[@]}" \
+#     "${OVERWRITE_FLAG[@]}"
 
 # ── Phase 2: per-combination grids (all rounds=$ROUNDS combos under GRID_ROOT) ─
+# echo
+# echo "### Phase 2: per-combination grids"
+# PYTHONPATH=src "$PY" -m utils.tools.plot_network_evolution \
+#     --grid \
+#     --scan        "$GRID_ROOT" \
+#     --grid_rounds "$ROUNDS" \
+#     --check_point "$CHECK_POINT" \
+#     --csd_window  "$CSD_WINDOW" \
+#     "${EXCLUDE_FLAG[@]}" \
+#     "${OVERWRITE_FLAG[@]}"
+
+# ── Phase 3: phase portraits (dw PHQ-9 vs PHQ-9 assortativity) per net type ───
+# One 2x2 grid per network type (sda / sdc): rows directed/undirected, cols
+# non_debiased/debiased, one line per seed coloured by configuration. Written to
+# data/networks_post/basis/<net>/plots/phase_dw_phq9_assort_<net>.png. Same scan
+# universe (rounds=$ROUNDS, EXCLUDE applied) as the other phases.
 echo
-echo "### Phase 2: per-combination grids"
+echo "### Phase 3: phase portraits per network type"
 PYTHONPATH=src "$PY" -m utils.tools.plot_network_evolution \
-    --grid \
+    --phase \
     --scan        "$GRID_ROOT" \
     --grid_rounds "$ROUNDS" \
     --check_point "$CHECK_POINT" \
-    --csd_window  "$CSD_WINDOW" \
     "${EXCLUDE_FLAG[@]}" \
     "${OVERWRITE_FLAG[@]}"
 
 echo
 echo "========================================================"
-echo "All done (per-seed figures + per-combination grids)."
+echo "All done (per-seed figures + per-combination grids + phase portraits)."
 echo "========================================================"

@@ -30,7 +30,7 @@ class PathManager:
         if args:
             self.net_type = args.net
             self.params = self._get_params_from_args(args)
-            self.state = self._get_state(args.enforce_ngrams, args.depressed)
+            self.state = self._get_state(args.enforce_ngrams, args.happy)
             self.num_agents = args.num_agents
             self.seed = args.seed
             self.directed = "directed" if args.directed else "undirected"
@@ -61,9 +61,9 @@ class PathManager:
         self.debias_dir = "debiased" if self.bias_corrected else "non_debiased"
         self.phq9_mode = self._get_phq9_mode()
         
-    def _get_state(self, enforce_ngrams, depressed):
+    def _get_state(self, enforce_ngrams, happy):
         if enforce_ngrams: return "enforced_ngrams"
-        if depressed: return "depressed"
+        if happy: return "happy"
         return "basis"
 
     def _get_params_from_args(self, args):

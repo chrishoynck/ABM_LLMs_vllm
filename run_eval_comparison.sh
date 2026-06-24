@@ -12,8 +12,9 @@ set -euo pipefail
 OUT_DIR="data/test_post/method_comparison"
 BERT_DIR="data/test_post/bert_regression"               # {MODEL}_seed*/ (synthetic) + eval_baseline/ (human-opt)
 BERT_FT_DIR="data/test_post/bert_regression_finetuned"  # eval_finetuned/ (human-opt)
-PROMPT_DIR="data/test_post/optimized_phq9"              # {MODEL}_seed*/ (synthetic) + eval-on-prompt subdir (human-opt)
-PROMPT_EVAL_SUBDIR="eval_on_prompt_Qwen_Qwen3.5-27B"
+PROMPT_DIR="data/test_post/optimized_phq9"              # {MODEL}_seed*/ + eval-on-* subdirs (aligned tests)
+PROMPT_EVAL_SUBDIR="eval_on_human300"                   # optimized prompt on the 300-block human-opt set (paired with BERT eval_baseline)
+PROMPT_SYNTH_SUBDIR="eval_on_test_blocks_seed35"        # optimized prompt on the BERT test blocks (aligned synthetic, paired with BERT synthetic)
 BERT_SEEDS="34 35 36 37 38"
 PROMPT_SEEDS="23 24 25 32 33"
 
@@ -24,6 +25,7 @@ PYTHONPATH=src python -m utils.visualization \
     --bert-ft-dir "${BERT_FT_DIR}" \
     --prompt-dir "${PROMPT_DIR}" \
     --prompt-eval-subdir "${PROMPT_EVAL_SUBDIR}" \
+    --prompt-synth-subdir "${PROMPT_SYNTH_SUBDIR}" \
     --bert-seeds ${BERT_SEEDS} \
     --prompt-seeds ${PROMPT_SEEDS}
 

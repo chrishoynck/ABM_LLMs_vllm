@@ -227,6 +227,7 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, a
             "phq9": agent.all_phq9_sumscores,
             "wb": parse_well_being(agent.well_being),
             "persona": agent.persona,
+            "phq9_fixed": getattr(agent, "phq9_fixed", False),
             "act_state": agent.activation_state,
             "history": agent.tweethistory,
             "active_hist": agent.active_tweethistory,
@@ -416,6 +417,7 @@ def generate_network(args, pipe, file_path=None):
         ag.all_phq9_sumscores = [int(score) for score in agent_data.get("phq9", [])]
         ag.well_being = agent_data.get("wb", {})
         ag.persona = agent_data.get("persona", "")
+        ag.phq9_fixed = agent_data.get("phq9_fixed", False)
         ag.activation_state = agent_data.get("act_state", False)
         ag.tweethistory = list(agent_data.get("history", []))
         ag.active_tweethistory = list(agent_data.get("active_hist", []))

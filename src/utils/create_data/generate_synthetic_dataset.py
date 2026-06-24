@@ -48,7 +48,7 @@ from utils.create_data.tools import (
 )
 
 
-def _build_network(args, personas, well_being, depressed_personas=None):
+def _build_network(args, personas, well_being, happy_personas=None):
     """Same network-builder as llama_activate, duplicated to avoid the heavy import."""
     if args.net in {"sda", "sdc"}:
         return SocialDistanceAttachment(
@@ -56,12 +56,12 @@ def _build_network(args, personas, well_being, depressed_personas=None):
             num_agents=args.num_agents, seed=args.seed, plot=False,
             well_being=well_being, personas=personas,
             sdc=(args.net == "sdc"),
-            depressed_personas=depressed_personas, directed=args.directed,
+            happy_personas=happy_personas, directed=args.directed,
         )
     return RandomNetwork(
         p=args.p, k=args.k, num_agents=args.num_agents, seed=args.seed,
         personas=personas, well_being=well_being,
-        depressed_personas=depressed_personas, directed=args.directed,
+        happy_personas=happy_personas, directed=args.directed,
     )
 
 
@@ -93,7 +93,7 @@ def _parse_args():
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--degree", type=int, default=2)
     parser.add_argument("--dim", type=int, default=2)
-    parser.add_argument("--depressed", action="store_true")
+    parser.add_argument("--happy", action="store_true")
 
     # Persona source: at most one.
     parser.add_argument("--persona-pool", default="",
@@ -142,17 +142,17 @@ def _run_one(args, model_id: str):
             personas, phq9_assignments, rounds = _resolve_personas(args, seed)
             well_being = load_well_being_zeros(args.num_agents, seed=seed)
 
-            if args.depressed:
-                depressed = lp.load_depressed_personas(
-                    "data/depressed.csv", personass_to_load=1, seed=seed,
+            if args.happy:
+                happy = lp.load_happy_personas(
+                    "data/happy_persona.csv", personass_to_load=1, seed=seed,
                 )
             else:
-                depressed = None
+                happy = None
 
             if args.interaction:
                 network = _build_network(args, personas=personas,
                                          well_being=well_being,
-                                         depressed_personas=depressed)
+                                         happy_personas=happy)
                 agents = network.all_agents
             else:
                 agents = None

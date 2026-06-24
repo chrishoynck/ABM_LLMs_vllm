@@ -19,6 +19,9 @@ Usage::
     PYTHONPATH=src python -m utils.sensitivity.sa_embed
     PYTHONPATH=src python -m utils.sensitivity.sa_embed --sbert     # use MiniLM-L6 instead
     PYTHONPATH=src python -m utils.sensitivity.sa_embed --force     # re-encode existing
+    # PHQ-9 minimal-prompt baseline (one rep per band), forced onto the GPU:
+    PYTHONPATH=src python -m utils.sensitivity.sa_embed \
+        --root data/sensitivity/phq9_minimal_prompt --device cuda
 """
 
 from __future__ import annotations
@@ -69,11 +72,20 @@ def main():
                         help="Use SBERT all-MiniLM-L6-v2 (384-dim) instead of MentalBERT (768-dim, default).")
     parser.add_argument("--force", action="store_true",
                         help="Re-encode runs whose embeddings.npz already exists.")
+    parser.add_argument("--device", default=None,
+                        help="Torch device for the encoder, e.g. 'cuda' or 'cpu'. "
+                             "Default: CUDA if available, else CPU. Pass 'cuda' to fail "
+                             "loudly instead of silently falling back to CPU.")
     args = parser.parse_args()
 
     mentalbert = not args.sbert
     encoder_name = "MentalBERT" if mentalbert else "SBERT-MiniLM-L6-v2"
-    print(f"[embed] encoder = {encoder_name}")
+    # Keep the two encoders' outputs side by side so neither clobbers the other:
+    # MentalBERT -> embeddings.npz / meta.json   (default; consumed by the PHQ-9 MLP)
+    # SBERT      -> embeddings_sbert.npz / meta_sbert.json  (content / topic axis)
+    emb_name = "embeddings.npz" if mentalbert else "embeddings_sbert.npz"
+    meta_name = "meta.json" if mentalbert else "meta_sbert.json"
+    print(f"[embed] encoder = {encoder_name}  ->  {emb_name}")
 
     posts_csvs = find_runs(args.root)
     if not posts_csvs:
@@ -81,12 +93,13 @@ def main():
     print(f"[embed] found {len(posts_csvs)} runs")
 
     # Load model once.
-    model = generate_sbert_model(mentalbert=mentalbert)
+    model = generate_sbert_model(mentalbert=mentalbert, device=args.device)
+    print(f"[embed] model on device: {model.device}")
 
     for i, csv_path in enumerate(posts_csvs, 1):
         run_dir = os.path.dirname(csv_path)
-        out_npz = os.path.join(run_dir, "embeddings.npz")
-        meta_path = os.path.join(run_dir, "meta.json")
+        out_npz = os.path.join(run_dir, emb_name)
+        meta_path = os.path.join(run_dir, meta_name)
         if os.path.exists(out_npz) and not args.force:
             print(f"  ({i:2d}/{len(posts_csvs)}) [skip] {out_npz}")
             continue
