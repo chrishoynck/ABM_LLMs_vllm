@@ -244,26 +244,26 @@ def _run_grids(opts):
 
 PHASE_LABELS = {
     # SDA (alpha_degree_dim folder -> label)
-    ("sda", "2_1655_d4_5_dim5"): "calibrated (main)",
+    ("sda", "2_1655_d4_5_dim5"): "calibrated",
     ("sda", "2_1655_d6_dim5"):   "high degree",
     ("sda", "1_1655_d4_5_dim5"): "low C",
-    ("sda", "1_1655_d3_dim5"):   "low C + low degree",
-    ("sda", "2_1655_d0_dim5"):   "degree 0",
+    ("sda", "1_1655_d3_dim5"):   "low degree (low C)",
+    ("sda", "2_1655_d0_dim5"):   "Baseline (isolated)",
     # SDC. The high-PHQ-9 probe is the high PHQ-9 *assortativity* config; ρ is the
     # assortativity coefficient, so it's labelled "high PHQ-9$_\rho$".
-    ("sdc", "4_9429_d8_2539_dim3"): "calibrated (main)",
+    ("sdc", "4_9429_d8_2539_dim3"): "calibrated",
     ("sdc", "4_9429_d10_dim3"):     "high degree",
     ("sdc", "8_0_d8_2539_dim2"):    r"high PHQ-9$_\rho$",
 }
 
 PHASE_LABEL_ORDER = [
-    "calibrated (main)",
-    "calibrated (main) (PHQ-9=0)",
+    "calibrated",
+    "calibrated (PHQ-9=0)",
     "high degree",
     r"high PHQ-9$_\rho$",
     "low C",
-    "low C + low degree",
-    "degree 0",
+    "low degree (low C)",
+    "Baseline (isolated)",
 ]
 
 # Combos to keep OUT of the phase portraits (matched as path segments, so they
@@ -305,17 +305,17 @@ def _phase_label(net, combo_dir, leaf):
 
 
 # Configuration colours, taken from the sa_analyze.py palette (blue / orange /
-# sea green / deep brown). "low C + low degree" gets the sea green that replaces
+# sea green / deep brown). "low degree (low C)" gets the sea green that replaces
 # the old tab10 green.
 PHASE_PALETTE = ["#2e7ebc", "#d96907", "#2e8b57", "#8d2c03"]
 PHASE_LABEL_COLORS = {
-    "calibrated (main)":           "#2e7ebc",  # blue
-    "calibrated (main) (PHQ-9=0)": "#2e7ebc",  # blue
-    "high degree":                 "#d96907",  # orange
-    "low C":                       "#2e8b57",  # sea green
-    "low C + low degree":          "#2e8b57",  # sea green (SDA)
-    r"high PHQ-9$_\rho$":          "#2e8b57",  # sea green (SDC)
-    "degree 0":                    "#8d2c03",  # deep brown
+    "calibrated":            "#2e7ebc",  # blue
+    "calibrated (PHQ-9=0)":  "#2e7ebc",  # blue
+    "high degree":           "#d96907",  # orange
+    "low C":                 "#2e8b57",  # sea green
+    "low degree (low C)":    "#2e8b57",  # sea green (SDA)
+    r"high PHQ-9$_\rho$":    "#2e8b57",  # sea green (SDC)
+    "Baseline (isolated)":   "#8d2c03",  # deep brown
 }
 
 
@@ -457,13 +457,13 @@ def _run_phase(opts):
 # --phase_ts time-series grid uses only these.
 PHASE_TS_CALIBRATED = {"sda": "2_1655_d4_5_dim5", "sdc": "4_9429_d8_2539_dim3"}
 
-# The four columns of the --phase_ts grid: (directed?, debias-folder, title). The
-# rounds=300 runs carry the full 0..300 trajectory, so one folder gives the whole
-# time series; "unbiased" == debiased, "biased" == non_debiased.
-PHASE_TS_COLS = [("directed",   "debiased",     "Directed\nunbiased"),
-                 ("directed",   "non_debiased", "Directed\nbiased"),
-                 ("undirected", "debiased",     "Undirected\nunbiased"),
-                 ("undirected", "non_debiased", "Undirected\nbiased")]
+# The --phase_ts grid is split into two figures, one per direction (a "directed"
+# and a "non directed" plot). Each figure is a 2x2 grid: rows SDA/SDC, the two
+# columns below. The rounds=300 runs carry the full 0..300 trajectory, so one
+# folder gives the whole time series. The column titles label the bias-correction
+# condition: the debiased runs -> "Debiased", the non_debiased runs -> "Non-debiased".
+PHASE_TS_DIRECTIONS = [("directed", "Directed"), ("undirected", "Undirected")]
+PHASE_TS_DEBIAS_COLS = [("debiased", "Debiased"), ("non_debiased", "Non-debiased")]
 
 
 def _aggregate_ts_cell(leaf, cfg, check_point):
@@ -506,43 +506,46 @@ def _aggregate_ts_cell(leaf, cfg, check_point):
 
 
 def _run_phase_ts(opts):
-    """Phase time-series mode: one combined 2x4 grid for the calibrated configs.
+    """Phase time-series mode: two 2x2 grids for the calibrated configs.
 
-    Rows are the network types (SDA, SDC); columns are the four
-    directed/undirected x debias conditions (see ``PHASE_TS_COLS``). Each cell is
-    the across-seed PHQ-9 score + assortativity time series of that network's
-    calibrated ("main") config.
+    One figure per direction -- a "directed" and a "non directed" plot. Each is a
+    2x2 grid: rows are the network types (SDA, SDC), columns are the debiased /
+    non-debiased conditions (see ``PHASE_TS_DEBIAS_COLS``). Each cell is the across-seed
+    PHQ-9 score + assortativity time series of that network's calibrated ("main")
+    config.
     """
     root = opts.scan or "data/networks_post/basis"
     nets = opts.phase_net or ["sda", "sdc"]
-
     plot_dir = os.path.join(root, "plots")
-    out = nev.figure_path(plot_dir, "calibrated", "ts_phq9_assort_grid")
-    if not opts.overwrite and out and os.path.exists(out):
-        print(f"[skip] phase-ts grid exists: {out}")
-        return
 
-    cells = {}
-    for r, net in enumerate(nets):
-        cfg = PHASE_TS_CALIBRATED.get(net)
-        if cfg is None:
-            print(f"[skip] no calibrated config for {net}")
+    for ddir, _dtitle in PHASE_TS_DIRECTIONS:
+        filename = f"calibrated_{ddir}"
+        out = nev.figure_path(plot_dir, filename, "ts_phq9_assort_grid")
+        if not opts.overwrite and out and os.path.exists(out):
+            print(f"[skip] phase-ts grid exists: {out}")
             continue
-        for c, (ddir, db, _ct) in enumerate(PHASE_TS_COLS):
-            leaf = os.path.join(root, net, ddir, db)
-            agg = _aggregate_ts_cell(leaf, cfg, opts.check_point)
-            if agg is not None:
-                cells[(r, c)] = agg
-            print(f"  {net} {ddir}/{db}: {'ok' if agg is not None else 'MISSING'}")
 
-    if not cells:
-        print(f"[skip] no calibrated runs found under {root}")
-        return
-    nev.plot_phq9_assort_timeseries_grid(
-        cells, row_titles=[n.upper() for n in nets],
-        col_titles=[ct for *_, ct in PHASE_TS_COLS],
-        path=plot_dir, filename="calibrated", save=True, show=False,
-        overwrite=opts.overwrite)
+        cells = {}
+        for r, net in enumerate(nets):
+            cfg = PHASE_TS_CALIBRATED.get(net)
+            if cfg is None:
+                print(f"[skip] no calibrated config for {net}")
+                continue
+            for c, (db, _ct) in enumerate(PHASE_TS_DEBIAS_COLS):
+                leaf = os.path.join(root, net, ddir, db)
+                agg = _aggregate_ts_cell(leaf, cfg, opts.check_point)
+                if agg is not None:
+                    cells[(r, c)] = agg
+                print(f"  {net} {ddir}/{db}: {'ok' if agg is not None else 'MISSING'}")
+
+        if not cells:
+            print(f"[skip] no calibrated {ddir} runs found under {root}")
+            continue
+        nev.plot_phq9_assort_timeseries_grid(
+            cells, row_titles=[n.upper() for n in nets],
+            col_titles=[ct for _, ct in PHASE_TS_DEBIAS_COLS],
+            suptitle="", path=plot_dir, filename=filename,
+            save=True, show=False, overwrite=opts.overwrite)
 
 
 def main():
@@ -566,12 +569,13 @@ def main():
                              "line per seed coloured by configuration). Scans "
                              "--scan (default data/networks_post/basis).")
     parser.add_argument("--phase_ts", action="store_true",
-                        help="One combined 2x4 time-series grid for the calibrated "
-                             "configs (rows SDA/SDC; cols directed/undirected x "
-                             "unbiased/biased): degree-weighted & unweighted mean "
-                             "PHQ-9 (left axis) and PHQ-9 assortativity (right "
-                             "axis) vs round, across-seed mean +/- SD. Scans "
-                             "--scan (default data/networks_post/basis).")
+                        help="Two 2x2 time-series grids for the calibrated configs "
+                             "(a directed and a non-directed plot; rows SDA/SDC; "
+                             "cols unbiased/biased): degree-weighted & unweighted "
+                             "mean PHQ-9 (left axis) and PHQ-9 assortativity (right "
+                             "axis) vs round, across-seed mean +/- SD, one point "
+                             "every 5 assessments. Scans --scan (default "
+                             "data/networks_post/basis).")
     parser.add_argument("--phase_net", nargs="*", choices=["sda", "sdc"],
                         default=None,
                         help="Phase mode: restrict to these network types "

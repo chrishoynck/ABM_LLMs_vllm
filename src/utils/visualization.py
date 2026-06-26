@@ -546,6 +546,348 @@ def plot_embedding_PCA_runs(mean_traj,
     plt.show()
     plt.close()
 
+
+def plot_entrainment_grid(cell_trajs, cell_phq9, row_titles, col_titles,
+                          reduction="PCA", embedding="MentalBERT",
+                          phq9_vmin=None, phq9_vmax=None,
+                          path="", filename="", save=False, show_fig=False):
+    """Small-multiple grid of per-seed embedding-entrainment trajectories.
+
+    Each cell is ONE run's mean-embedding trajectory traced over sliding time
+    windows in a 2D reduced space — the "entrainment plot" (panel (a) of
+    :func:`plot_embedding_PCA_runs`, no assortativity panel) — with every window
+    a dot coloured by that window's mean PHQ-9 (green→red, ``RdYlGn_r``, the same
+    map as :func:`print_network_phq9`). Runs are NOT averaged: each seed keeps its
+    own trajectory.
+
+    The caller fits the reduction once per row (topology) on that row's pooled
+    seeds, so the seed panels within a row share one coordinate system and are
+    directly comparable; each row also gets its OWN PHQ-9 colour scale and
+    colourbar, so colour is comparable across seeds within a row (read each row's
+    own bar) but not across rows.
+
+    Args:
+        cell_trajs: ``{(row, col): (T, 2) array}`` — reduced trajectory per cell.
+        cell_phq9:  ``{(row, col): (T,) array}`` — per-window mean PHQ-9 per cell.
+            A cell absent from either dict is drawn empty (keeps the grid aligned).
+        row_titles: row labels (topologies); ``len == n_rows``.
+        col_titles: column labels (seeds); ``len == n_cols``.
+        reduction:  reducer name, shown in the suptitle ("PCA"/"UMAP").
+        embedding:  embedding name, shown in the suptitle ("MentalBERT"/"SBERT").
+        phq9_vmin/phq9_vmax: colour limits. Left None (default), each row is
+            scaled to its own finite PHQ-9 min/max (per-row scale). A supplied
+            value pins that bound on every row, forcing a shared scale.
+        path/filename/save/show_fig: save controls (``{path}/{filename}.png``, dpi=300).
+
+    Returns:
+        (fig, axes)
+    """
+    n_rows = len(row_titles)
+    n_cols = len(col_titles)
+
+    # Per-row PHQ-9 colour scales: each setting (row) gets its OWN vmin/vmax and
+    # its OWN colourbar, so within-row colour contrast isn't compressed onto one
+    # figure-wide scale. An explicit phq9_vmin/vmax pins that bound on every row;
+    # left None (the default), each row is scaled to its own finite PHQ-9 data.
+    def _row_limits(r):
+        vals = [np.asarray(cell_phq9.get((r, c)), float).ravel()
+                for c in range(n_cols)
+                if cell_phq9.get((r, c)) is not None
+                and np.asarray(cell_phq9.get((r, c))).size]
+        lo, hi = phq9_vmin, phq9_vmax
+        if vals:
+            finite = np.concatenate(vals)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                if lo is None:
+                    lo = float(finite.min())
+                if hi is None:
+                    hi = float(finite.max())
+        return lo, hi
+
+    # Small panels (no titles, just row labels + one colourbar per row); extra
+    # width budgets for the four per-row colourbars stacked on the right.
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(1.05 * n_cols + 0.6, 1.05 * n_rows),
+                             squeeze=False, layout="constrained")
+    fig.set_constrained_layout_pads(w_pad=0.01, h_pad=0.01,
+                                    wspace=0.01, hspace=0.01)
+
+    for r in range(n_rows):
+        rvmin, rvmax = _row_limits(r)
+        sc_row = None                       # last coloured scatter handle in row r
+        for c in range(n_cols):
+            ax = axes[r][c]
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.grid(alpha=0.25)
+
+            traj = cell_trajs.get((r, c))
+            if traj is not None and np.asarray(traj).shape[0] > 0:
+                traj = np.asarray(traj)
+                phq9 = cell_phq9.get((r, c))
+                ax.plot(traj[:, 0], traj[:, 1], color="gray", alpha=0.4,
+                        linewidth=0.8, zorder=1)
+                if phq9 is not None and np.asarray(phq9).shape[0] == traj.shape[0]:
+                    sc_row = ax.scatter(traj[:, 0], traj[:, 1], c=np.asarray(phq9),
+                                        cmap="RdYlGn_r", vmin=rvmin, vmax=rvmax,
+                                        s=10, alpha=0.9, edgecolors="black",
+                                        linewidths=0.2, zorder=2)
+                else:
+                    ax.scatter(traj[:, 0], traj[:, 1], s=10, alpha=0.9,
+                               edgecolors="black", linewidths=0.2, zorder=2)
+                # Light start (square) / end (star) markers — readable at grid scale.
+                ax.scatter(traj[0, 0], traj[0, 1], marker="s", s=22,
+                           facecolors="none", edgecolors="black",
+                           linewidths=0.8, zorder=3)
+                ax.scatter(traj[-1, 0], traj[-1, 1], marker="*", s=45,
+                           facecolors="none", edgecolors="black",
+                           linewidths=0.8, zorder=3)
+
+            if c == 0:
+                ax.set_ylabel(row_titles[r], fontsize=7)
+
+        # One colourbar per row, each on that row's own PHQ-9 scale.
+        if sc_row is not None:
+            cbar = fig.colorbar(sc_row, ax=list(axes[r]), shrink=0.9,
+                                pad=0.01, fraction=0.045)
+            cbar.set_label("Mean PHQ-9", fontsize=7)
+            cbar.ax.tick_params(labelsize=6)
+
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        out = os.path.join(path, f"{filename}.png")
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"[plot] wrote {out}")
+    if show_fig:
+        plt.show()
+    plt.close(fig)
+    return fig, axes
+
+
+def _phq9_limits(phq9s, vmin, vmax):
+    """Fill (vmin, vmax) from the finite PHQ-9 values when not supplied."""
+    if (vmin is None or vmax is None) and phq9s:
+        allv = np.concatenate([np.asarray(p, float).ravel() for p in phq9s
+                               if np.asarray(p).size])
+        finite = allv[np.isfinite(allv)] if allv.size else allv
+        if finite.size:
+            if vmin is None:
+                vmin = float(finite.min())
+            if vmax is None:
+                vmax = float(finite.max())
+    return vmin, vmax
+
+
+def _draw_overlay(ax, trajs, phq9s, vmin, vmax, equal_aspect=False,
+                  show_ticks=False, line_color="0.7", dot_size=10):
+    """Overlay every trajectory of one setting into a single axes.
+
+    Seeds are NOT visually distinguished (faint shared-colour connecting lines);
+    dots are windows coloured by mean PHQ-9 (green→red). start = square, end =
+    star. Returns the last scatter handle (for a colourbar).
+    """
+    sc = None
+    for tr, pq in zip(trajs, phq9s):
+        tr = np.asarray(tr)
+        ax.plot(tr[:, 0], tr[:, 1], color=line_color, alpha=0.4, linewidth=0.7,
+                zorder=1)
+        sc = ax.scatter(tr[:, 0], tr[:, 1], c=np.asarray(pq), cmap="RdYlGn_r",
+                        vmin=vmin, vmax=vmax, s=dot_size, alpha=0.9,
+                        edgecolors="none", zorder=2)
+        ax.scatter(tr[0, 0], tr[0, 1], marker="s", s=2 * dot_size,
+                   facecolors="none", edgecolors="black", linewidths=0.6, zorder=3)
+        ax.scatter(tr[-1, 0], tr[-1, 1], marker="*", s=4 * dot_size,
+                   facecolors="none", edgecolors="black", linewidths=0.6, zorder=3)
+    if show_ticks:
+        ax.tick_params(labelsize=7)
+        ax.xaxis.set_major_locator(plt.MaxNLocator(5))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+    else:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    ax.grid(alpha=0.25)
+    if equal_aspect:
+        ax.set_aspect("equal", adjustable="datalim")
+    return sc
+
+
+def plot_entrainment_overlay(trajs, phq9s, seeds=None, row_title="",
+                             reduction="PCA", embedding="MentalBERT",
+                             phq9_vmin=None, phq9_vmax=None, equal_aspect=True,
+                             path="", filename="", save=False, show_fig=False):
+    """All seed trajectories of ONE setting overlaid in a single shared axes.
+
+    Every seed was projected with the same per-setting reducer, so one axes is a
+    single coordinate system (same x/y scale for all seeds) — overlaying shows
+    directly whether the seeds drift together or diverge. Seeds are not
+    distinguished (no legend); dots = windows coloured by mean PHQ-9 (green→red),
+    start = square, end = star.
+
+    Args:
+        trajs:  list of (T, 2) reduced trajectories (one per seed).
+        phq9s:  list of (T,) per-window mean PHQ-9 (one per seed).
+        seeds:  unused (kept for call-site compatibility).
+        row_title: setting label for the title (e.g. "SDA undirected").
+        equal_aspect: unused (panels fill the axes; ticks show the scale).
+
+    Returns:
+        (fig, ax)
+    """
+    phq9_vmin, phq9_vmax = _phq9_limits(phq9s, phq9_vmin, phq9_vmax)
+    fig, ax = plt.subplots(figsize=(4.6, 4.0))
+    sc = _draw_overlay(ax, trajs, phq9s, phq9_vmin, phq9_vmax,
+                       equal_aspect=False, show_ticks=True, dot_size=14)
+    ax.set_xlabel(f"{reduction} 1")
+    ax.set_ylabel(f"{reduction} 2")
+    if sc is not None:
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.85)
+        cbar.set_label("Mean PHQ-9", fontsize=9)
+    title = f"{embedding} entrainment trajectories ({reduction} 2D)"
+    ax.set_title(f"{row_title} — {title}" if row_title else title, fontsize=9)
+
+    plt.tight_layout()
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        out = os.path.join(path, f"{filename}.png")
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"[plot] wrote {out}")
+    if show_fig:
+        plt.show()
+    plt.close(fig)
+    return fig, ax
+
+
+def plot_entrainment_overlay_grid(cell_trajs, cell_phq9, row_titles, col_titles,
+                                  reduction="PCA", embedding="MentalBERT",
+                                  equal_aspect=True, path="", filename="",
+                                  save=False, show_fig=False):
+    """Small grid of per-setting overlays — one cell per setting, own colourbar.
+
+    Each cell overlays all seeds of that setting (its own per-setting PCA), with
+    its OWN PHQ-9 colour scale + slim colourbar (so cells are self-contained; the
+    PCA axes differ cell to cell anyway). No seed legend; compact panels.
+
+    Args:
+        cell_trajs: ``{(row, col): [ (T,2) per seed ]}``.
+        cell_phq9:  ``{(row, col): [ (T,)  per seed ]}``.
+        row_titles / col_titles: setting axis labels (e.g. ["SDA","SDC"],
+            ["undirected","directed"]).
+
+    Returns:
+        (fig, axes)
+    """
+    n_rows, n_cols = len(row_titles), len(col_titles)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(2.9 * n_cols, 2.2 * n_rows),
+                             squeeze=False, layout="constrained")
+
+    for r in range(n_rows):
+        for c in range(n_cols):
+            ax = axes[r][c]
+            trajs = cell_trajs.get((r, c))
+            phq9s = cell_phq9.get((r, c))
+            if trajs:
+                vmin, vmax = _phq9_limits(phq9s, None, None)  # per-cell scale
+                # panels fill the axes (no equal aspect -> no y whitespace) + ticks
+                sc = _draw_overlay(ax, trajs, phq9s, vmin, vmax,
+                                   equal_aspect=False, show_ticks=True, dot_size=7)
+                if sc is not None:
+                    cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+                    cb.ax.tick_params(labelsize=6)
+            else:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            if r == 0:
+                ax.set_title(col_titles[c], fontsize=9)
+            if c == 0:
+                ax.set_ylabel(row_titles[r], fontsize=9)
+
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        out = os.path.join(path, f"{filename}.png")
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"[plot] wrote {out}")
+    if show_fig:
+        plt.show()
+    plt.close(fig)
+    return fig, axes
+
+
+def plot_entrainment_shared(groups_per_col, col_titles, reduction="PCA",
+                            embedding="MentalBERT", path="", filename="",
+                            save=False, show_fig=False):
+    """SDA+SDC variants in ONE shared mapping per column (e.g. per direction).
+
+    Each column is a single shared reduced space (one PCA fit pooling all that
+    column's groups), so SDA and SDC trajectories are directly comparable in it.
+    Group identity (net × variant) is encoded by **marker shape** so the dot
+    colour stays free for mean PHQ-9 (green→red). Each column has its OWN PHQ-9
+    colourbar (own scale) and visible axis ticks so the per-column scale is
+    readable; panels fill the axes (no forced equal aspect). No figure title.
+
+    Args:
+        groups_per_col: ``{col_index: [group, ...]}`` where each group is
+            ``{"label": str, "marker": str, "trajs": [ (T,2) ], "phq9s": [ (T,) ]}``.
+        col_titles: column labels (e.g. ["undirected", "directed"]).
+
+    Returns:
+        (fig, axes)
+    """
+    n_cols = len(col_titles)
+    fig, axes = plt.subplots(1, n_cols, figsize=(2.4 * n_cols + 0.3, 2.55),
+                             squeeze=False, layout="constrained")
+
+    for ci in range(n_cols):
+        ax = axes[0][ci]
+        groups = groups_per_col.get(ci, [])
+        # Per-column PHQ-9 scale (own colourbar), so each panel uses its full range.
+        col_phq9 = [p for g in groups for p in g["phq9s"]]
+        vmin, vmax = _phq9_limits(col_phq9, None, None)
+        sc = None
+        for g in groups:
+            for tr, pq in zip(g["trajs"], g["phq9s"]):
+                tr = np.asarray(tr)
+                ax.plot(tr[:, 0], tr[:, 1], color="0.8", alpha=0.3,
+                        linewidth=0.4, zorder=1)
+                sc = ax.scatter(tr[:, 0], tr[:, 1], c=np.asarray(pq),
+                                cmap="RdYlGn_r", vmin=vmin, vmax=vmax, s=7,
+                                marker=g["marker"], alpha=0.9,
+                                edgecolors="black", linewidths=0.15, zorder=2)
+        ax.grid(alpha=0.25)
+        ax.tick_params(labelsize=6)
+        ax.xaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.set_xlabel(f"{reduction} 1", fontsize=7)
+        ax.set_ylabel(f"{reduction} 2", fontsize=7)
+        # Sub-caption underneath: (a) undirected, (b) directed, ...
+        ax.text(0.5, -0.30, f"({chr(97 + ci)}) {col_titles[ci]}",
+                transform=ax.transAxes, ha="center", va="top", fontsize=9)
+        if sc is not None:
+            cb = fig.colorbar(sc, ax=ax, shrink=0.85, pad=0.02, fraction=0.046)
+            cb.set_label("Mean PHQ-9", fontsize=7)
+            cb.ax.tick_params(labelsize=6)
+
+    # Marker legend (group identity), drawn in neutral grey since colour = PHQ-9.
+    ref = next((col for col in groups_per_col.values() if col), [])
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], marker=g["marker"], linestyle="none",
+                      markerfacecolor="0.5", markeredgecolor="0.3",
+                      markersize=6, label=g["label"]) for g in ref]
+    if handles:
+        fig.legend(handles=handles, loc="outside upper center",
+                   ncol=len(handles), fontsize=6, frameon=False)
+    if save and path and filename:
+        os.makedirs(path, exist_ok=True)
+        out = os.path.join(path, f"{filename}.png")
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"[plot] wrote {out}")
+    if show_fig:
+        plt.show()
+    plt.close(fig)
+    return fig, axes
+
+
 # def plot_embedding_PCA_runs(mean_traj,
 #                         mean_within_var_per_setting=None,
 #                         mean_phq9_per_setting=None,

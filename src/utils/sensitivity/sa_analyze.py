@@ -125,6 +125,35 @@ def load_axis_runs(root: str, axis: str, emb_name: str = "embeddings.npz") -> di
     return runs
 
 
+def load_phq9_runs(root: str, emb_name: str = "embeddings.npz") -> dict:
+    """Return {(band, rep): {embeddings, agent_ids, rounds, phq9}} for the PHQ-9
+    conditioning runs under ``root/phq9/<band>/rep_*/<emb_name>``.
+
+    Keyed so it drops straight into ``neighbor_cosines`` with the band playing
+    the role of "setting": within = same band, different reps (the LLM-noise
+    floor); cross = different bands (the conditioning effect). Falls back to the
+    legacy single-dir layout (``phq9/<band>/<emb_name>``, rep 1) when no rep_*
+    dirs exist.
+    """
+    paths = sorted(glob.glob(os.path.join(root, "phq9", "*", "rep_*", emb_name)))
+    legacy = not paths
+    if legacy:
+        paths = sorted(glob.glob(os.path.join(root, "phq9", "*", emb_name)))
+    runs = {}
+    for p in paths:
+        parts = p.split(os.sep)
+        band, rep = (parts[-2], 1) if legacy else \
+            (parts[-3], int(parts[-2].split("_")[1]))
+        data = np.load(p, allow_pickle=True)
+        runs[(band, rep)] = {
+            "embeddings": data["embeddings"],
+            "agent_ids":  data["agent_ids"],
+            "rounds":     data["rounds"],
+            "phq9":       data["phq9"],
+        }
+    return runs
+
+
 # =====================================================================
 # NEIGHBOUR AXIS — paired per-(agent, round) cosine
 # =====================================================================
@@ -618,18 +647,25 @@ def phq9_conditioning_heatmap(root: str, out_dir: str,
 # Three-axis comparison: per-anchor cosine drop (within − cross) per axis
 # =====================================================================
 
-def _per_anchor_drops(df: pd.DataFrame) -> pd.Series:
-    """For each (agent_id, round) anchor, drop = mean within − mean cross.
-    One value per anchor — the distribution this returns is what the box plot
-    visualises."""
-    grouped = df.groupby(["agent_id", "round"])
+def _per_anchor_drops(df: pd.DataFrame, value_col: str = "cosine",
+                      anchor_cols=("agent_id", "round"),
+                      drop_sign: float = 1.0) -> pd.Series:
+    """For each anchor (grouped by ``anchor_cols``), drop =
+    ``drop_sign * (mean within − mean cross)`` of ``value_col``. One value per
+    anchor — the distribution this returns is what the box plot visualises.
+
+    Defaults give the cosine within−cross drop (axis moves output more than LLM
+    noise ⇒ positive). The MentalBERT+MLP figure passes ``value_col='delta'``
+    with ``drop_sign=-1`` so the box shows cross−within of |Δ predicted PHQ-9|
+    (factor pushes predicted severity past noise ⇒ positive)."""
+    grouped = df.groupby(list(anchor_cols))
     drops = []
     for _, sub in grouped:
-        within = sub.loc[sub.pair_type == "within", "cosine"]
-        cross  = sub.loc[sub.pair_type == "cross",  "cosine"]
+        within = sub.loc[sub.pair_type == "within", value_col]
+        cross  = sub.loc[sub.pair_type == "cross",  value_col]
         if len(within) == 0 or len(cross) == 0:
             continue
-        drops.append(float(within.mean() - cross.mean()))
+        drops.append(float(drop_sign * (within.mean() - cross.mean())))
     return pd.Series(drops)
 
 
@@ -677,14 +713,15 @@ def comparison_boxplot(axis_dfs: dict, out_path: str):
 
 
 def _per_anchor_null_drops(df: pd.DataFrame, rng: np.random.Generator,
-                           n_per_anchor: int = 20) -> np.ndarray:
+                           n_per_anchor: int = 20, value_col: str = "cosine",
+                           anchor_cols=("agent_id", "round")) -> np.ndarray:
     """For each anchor, compute the magnitude of a 'null drop' = |mean(half1) − mean(half2)|
-    on random half-splits of that anchor's within-setting cosines. This is the cosine
+    on random half-splits of that anchor's within-setting ``value_col`` values. This is the
     drop you'd see if the axis under test had NO effect — just LLM stochasticity.
     """
     nulls = []
-    for _, sub in df[df.pair_type == "within"].groupby(["agent_id", "round"]):
-        vals = sub.cosine.values
+    for _, sub in df[df.pair_type == "within"].groupby(list(anchor_cols)):
+        vals = sub[value_col].values
         if len(vals) < 4:
             continue
         half = len(vals) // 2
@@ -697,12 +734,20 @@ def _per_anchor_null_drops(df: pd.DataFrame, rng: np.random.Generator,
 
 
 def comparison_combined(axis_dfs: dict, out_path: str,
-                        n_bootstrap: int = 1000, seed: int = 0):
+                        n_bootstrap: int = 1000, seed: int = 0, *,
+                        value_col: str = "cosine", ylabel: str = "Cosine drop",
+                        anchor_cols=("agent_id", "round"), drop_sign: float = 1.0):
     """Side-by-side: box plot (left, full per-anchor distribution) + forest
     plot (right, mean within−cross with 95 % bootstrap CI). Adds an LLM-noise
     NULL reference: an extra box of per-anchor null drops, and a horizontal line
     at the null median on both panels. Anything above the line exceeds
-    irreducible LLM stochasticity."""
+    irreducible LLM stochasticity.
+
+    ``value_col`` / ``anchor_cols`` / ``drop_sign`` / ``ylabel`` let the same
+    figure render either the cosine within−cross drop (defaults) or the
+    MentalBERT+MLP |Δ predicted PHQ-9| cross−within drop (sa_phq9 passes
+    ``value_col='delta', ylabel='|Δ predicted PHQ-9|',
+    anchor_cols=('agent_a',), drop_sign=-1``)."""
     rng = np.random.default_rng(seed)
     names = list(axis_dfs.keys())
     # Colour scheme tied to the agent_phq9_combined plot:
@@ -714,13 +759,17 @@ def comparison_combined(axis_dfs: dict, out_path: str,
         "Agent":     "#2e7ebc",
         "Joint":     "#d96907",
         "Decoding":  "#2e8b57",   # sea green — temperature/top_p axis
+        "PHQ-9":     "#6a3d9a",   # purple — depression-severity conditioning axis
     }
     colours = [_COLOUR_BY_NAME.get(n, "#7f7f7f") for n in names]
 
-    drops = [_per_anchor_drops(axis_dfs[n]).values for n in names]
+    drops = [_per_anchor_drops(axis_dfs[n], value_col=value_col,
+                               anchor_cols=anchor_cols, drop_sign=drop_sign).values
+             for n in names]
 
     # Null = LLM-noise drops, computed from each axis's within-set then pooled.
-    null_per_axis = [_per_anchor_null_drops(axis_dfs[n], rng) for n in names]
+    null_per_axis = [_per_anchor_null_drops(axis_dfs[n], rng, value_col=value_col,
+                                            anchor_cols=anchor_cols) for n in names]
     null_pooled = np.concatenate(null_per_axis) if null_per_axis else np.asarray([])
     null_median = float(np.median(null_pooled)) if len(null_pooled) else np.nan
 
@@ -766,7 +815,7 @@ def comparison_combined(axis_dfs: dict, out_path: str,
                        linestyle="--", alpha=0.8,
                        label="LLM-noise")
         ax_box.legend(loc="upper left", fontsize=9, framealpha=0.9)
-    ax_box.set_ylabel("Cosine drop")
+    ax_box.set_ylabel(ylabel)
     ax_box.grid(axis="y", linestyle=":", alpha=0.5)
 
     # --- Forest plot (right) ---
@@ -780,7 +829,7 @@ def comparison_combined(axis_dfs: dict, out_path: str,
         ax_forest.plot(m, y[i], "o", color=c, markersize=7,
                        markeredgecolor="black", markeredgewidth=0.8, zorder=3)
     ax_forest.set_yticks(y); ax_forest.set_yticklabels(names)
-    ax_forest.set_xlabel("Cosine drop")
+    ax_forest.set_xlabel(ylabel)
     ax_forest.axvline(0, color="black", linewidth=0.6, linestyle="-", alpha=0.5)
     if not np.isnan(null_median):
         ax_forest.axvline(null_median, color="#555555", linewidth=1.0,
@@ -2528,6 +2577,25 @@ def main():
     # Decoding is excluded here — it gets its own per-setting figure below
     # (decoding_settings_comparison.png); this plot stays the structural axes.
     cross_axis_dfs = {k: v for k, v in axis_dfs.items() if k != "Decoding"}
+
+    # PHQ-9 conditioning as a 4th box: bands play the role of "setting", so
+    # neighbor_cosines gives within(=same band, diff rep) vs cross(=diff band).
+    # Needs >=2 reps/band for the active encoder — true for SBERT, skipped for
+    # the 1-rep MentalBERT cosine (whose anisotropy makes the metric meaningless
+    # anyway; the MentalBERT story is told by sa_phq9's MLP figure instead).
+    phq9_runs = load_phq9_runs(args.root, emb_name=args.emb_name)
+    reps_per_band: dict = {}
+    for (band, rep) in phq9_runs:
+        reps_per_band.setdefault(band, set()).add(rep)
+    if phq9_runs and min((len(v) for v in reps_per_band.values()), default=0) >= 2:
+        print("\n=== PHQ-9 axis (for cross-axis comparison) ===")
+        phq9_df = neighbor_cosines(phq9_runs)
+        phq9_df.to_csv(os.path.join(args.out_dir, "phq9_cosines.csv"), index=False)
+        cross_axis_dfs["PHQ-9"] = phq9_df
+    else:
+        print(f"[phq9] <2 reps/band with {args.emb_name}; PHQ-9 box omitted from "
+              "the cosine comparison (expected for MentalBERT — use sa_phq9).")
+
     if len(cross_axis_dfs) >= 2:
         print("\n=== Cross-axis comparison ===")
         comparison_combined(cross_axis_dfs,

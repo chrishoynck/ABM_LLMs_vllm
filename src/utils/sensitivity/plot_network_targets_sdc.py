@@ -29,21 +29,20 @@ visible.
 
 Configurations (rebuilt from parameters with _eval_one; no LLM)
 ---------------------------------------------------------------
-Labels name the metric each config probes (not "saved"/arrows), mirroring the
-plain-SDA plot. "higher degree" keeps degree in the name on purpose — degree is
-the thing it varies, even though it is also a panel.
+Labels follow the canonical naming table (not "saved"/arrows), mirroring the
+plain-SDA plot.
 
-    goal PHQ-9      – the parameter set used for the saved simulation runs
+    calibrated      – the parameter set used for the saved simulation runs
                       (data/networks_post/basis/sdc/.../non_debiased/4_9429_d8_2539_dim3),
                       rebuilt so every metric is measured identically to the
                       variations below; PHQ-9 assortativity lands in the 0–0.10
                       band.
-    higher degree   – same set with the degree parameter raised (8.25→10) to see
+    high degree     – same set with the degree parameter raised (8.25→10) to see
                       how realized degree / clustering / fragmentation respond
                       (exploratory only — not retargeted).
-    high PHQ-9      – higher alpha, lower dim (3→2, drops the latent slot) and
+    high PHQ-9$_\rho$ – higher alpha, lower dim (3→2, drops the latent slot) and
                       lower latent_weight so the fixed-weight PHQ-9 axis drives
-                      the geometry, lifting PHQ-9 assortativity above its band.
+                      the geometry, lifting PHQ-9 assortativity (ρ) above its band.
 
 These three are first-pass probes ("see what we end up with") before searching
 for properly calibrated combinations. Five master seeds (14–18), each reseeding
@@ -154,14 +153,13 @@ def _sdc_directed_points(combo: list[float]) -> dict[str, list[tuple[float, bool
 def plot_network_targets_sdc(out: str) -> None:
     san.set_mode("sdc")   # bind san.REF_RANGES to the SDC reference bands
 
-    # (label, points). Labels name the metric each config probes; "higher degree"
-    # keeps degree because that is what it varies (degree is also panel (c)).
-    # (label, points). Labels name the metric each config probes; "higher degree"
-    # keeps degree because that is what it varies (degree is also panel (c)).
+    # (label, points). Canonical config names (table): the saved set is the
+    # "calibrated" config, the raised-degree probe is "high degree", and the
+    # alpha/dim probe is "high PHQ-9$_\rho$" (ρ = PHQ-9 assortativity).
     configs = [
-        ("goal\nPHQ-9",    _sdc_points(_SDC_SAVED)),
-        ("higher\ndegree", _sdc_points(_SDC_HIGH_DEG)),
-        ("high\nPHQ-9",    _sdc_points(_SDC_HIGH_PHQ9)),
+        ("calibrated",        _sdc_points(_SDC_SAVED)),
+        ("high\ndegree",      _sdc_points(_SDC_HIGH_DEG)),
+        ("high\nPHQ-9$_\\rho$", _sdc_points(_SDC_HIGH_PHQ9)),
     ]
     # Directed counterpart of each config, aligned to ``configs`` — measured on the
     # directed graph (out-degree throughout) and overlaid in every panel.

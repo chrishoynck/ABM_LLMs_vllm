@@ -71,6 +71,7 @@ if not hasattr(_main, "neural_net_BERT"):
 from utils.sensitivity.sa_analyze import (
     BAND_LABELS,
     _parse_setting,
+    comparison_combined,
     phq9_to_band,
 )
 
@@ -160,6 +161,30 @@ def predict_axis(regressor, root: str, axis: str, device: torch.device,
         rep = int(next(x for x in parts if x.startswith("rep_")).split("_")[1])
         df = block_preds_from_npz(regressor, p, device)
         preds[(setting, rep)] = df
+        if write_per_run and len(df):
+            df.to_csv(os.path.join(os.path.dirname(p), "phq9_pred.csv"), index=False)
+    return preds
+
+
+def predict_phq9(regressor, root: str, device: torch.device,
+                 emb_name: str = "embeddings.npz",
+                 write_per_run: bool = True) -> dict:
+    """Return {(band, rep): per-block DataFrame} for the PHQ-9 conditioning runs
+    under ``root/phq9/<band>/rep_*/<emb_name>``. Band plays the role of setting,
+    so phq9_within_cross (paired=True) gives within = same band / different rep
+    (LLM-noise floor) and cross = same persona re-conditioned on a different band.
+    Mirrors ``predict_axis`` but for the band/rep layout (with the legacy
+    single-dir fallback)."""
+    paths = sorted(glob.glob(os.path.join(root, "phq9", "*", "rep_*", emb_name)))
+    if not paths:
+        paths = sorted(glob.glob(os.path.join(root, "phq9", "*", emb_name)))
+    preds: dict = {}
+    for p in paths:
+        parts = p.split(os.sep)
+        band, rep = (parts[-3], int(parts[-2].split("_")[1])) \
+            if parts[-2].startswith("rep_") else (parts[-2], 1)
+        df = block_preds_from_npz(regressor, p, device)
+        preds[(band, rep)] = df
         if write_per_run and len(df):
             df.to_csv(os.path.join(os.path.dirname(p), "phq9_pred.csv"), index=False)
     return preds
@@ -319,9 +344,11 @@ def main():
                         help="Where to write combined CSVs + PNGs.")
     parser.add_argument("--regressor", default=DEFAULT_REGRESSOR,
                         help="regressor.pt to use (default: best fine-tuned seed 35).")
-    parser.add_argument("--axes", nargs="+", default=["neighbor", "agent", "joint"],
+    parser.add_argument("--axes", nargs="+",
+                        default=["neighbor", "agent", "joint", "phq9"],
                         help="Axes to analyse. Non-agent axes are always slot-paired; "
-                             "the agent axis pairing is set by --agent-pairing.")
+                             "the agent axis pairing is set by --agent-pairing. "
+                             "'phq9' = the 5 severity-band conditioning runs.")
     parser.add_argument("--agent-pairing", choices=["band", "slot"], default="band",
                         help="Agent-axis cross pairing. 'band' (default): band-matched "
                              "different personas (legacy, mirrors agent_cosines_centroid). "
@@ -336,13 +363,21 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     regressor = load_regressor(args.regressor, device)
 
+    # Display names + per-axis slot-paired delta tables for the cross-axis figure.
+    _DISPLAY = {"neighbor": "Neighbour", "agent": "Agent", "joint": "Joint",
+                "phq9": "PHQ-9"}
+    axis_deltas: dict = {}
+
     for axis in args.axes:
         full = os.path.join(args.root, axis)
         if not os.path.isdir(full):
             print(f"[skip] {full} not present")
             continue
         print(f"\n=== {axis} axis ===")
-        preds = predict_axis(regressor, args.root, axis, device, emb_name=args.emb_name)
+        if axis == "phq9":
+            preds = predict_phq9(regressor, args.root, device, emb_name=args.emb_name)
+        else:
+            preds = predict_axis(regressor, args.root, axis, device, emb_name=args.emb_name)
         preds = {k: v for k, v in preds.items() if len(v)}
         if not preds:
             print(f"  no predictions for {axis}")
@@ -384,6 +419,27 @@ def main():
 
         plot_phq9_bar_scatter(delta, axis.capitalize(),
                               os.path.join(args.out_dir, f"{axis}_phq9_bar_scatter.png"))
+
+        # For the cross-axis comparison figure every axis must be slot-paired so
+        # the per-agent anchor (agent_a) is well defined — band-matched cross
+        # pairs join DIFFERENT agents and share no anchor. Reuse `delta` when it
+        # is already slot-paired, otherwise recompute it slot-paired.
+        if paired:
+            axis_deltas[_DISPLAY.get(axis, axis)] = delta
+        else:
+            _assert_slot_phq9_consistent(preds, axis)
+            axis_deltas[_DISPLAY.get(axis, axis)] = phq9_within_cross(preds, paired=True)
+
+    # Cross-axis comparison: the same box(distribution)+forest(mean ± CI) figure
+    # as sa_analyze's axes_comparison, but on |Δ predicted PHQ-9| (cross − within)
+    # instead of cosine drop. drop_sign=-1 flips within−cross → cross−within so a
+    # tall box still means "factor moves output beyond LLM noise".
+    if len(axis_deltas) >= 2:
+        print("\n=== Cross-axis comparison (MentalBERT + MLP) ===")
+        comparison_combined(
+            axis_deltas, os.path.join(args.out_dir, "axes_comparison.png"),
+            value_col="delta", ylabel="|Δ predicted PHQ-9|",
+            anchor_cols=("agent_a",), drop_sign=-1.0)
 
     print(f"\n[done] PHQ-9 SA outputs under {args.out_dir}/")
 

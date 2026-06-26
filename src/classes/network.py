@@ -726,6 +726,7 @@ class SocialDistanceAttachment(_Network):
         self.b = self.find_b_for_target_Ek()
         self.generate_connections()
 
+        self.agent_w_highest_deg = max(self.all_agents, key=lambda a: len(a.agent_connections))
         self._enforce_happy_hub(happy_personas)
 
         self.verify_scale_free_distribution(plot)

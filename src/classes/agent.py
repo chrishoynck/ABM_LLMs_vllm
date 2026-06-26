@@ -695,13 +695,18 @@ class Agent:
 
     def __hash__(self):
         """
-        Hash the agent by its ID and identity.
+        Hash the agent by its ID.
         Needed for the set data structure.
+
+        ID alone (not persona) so the hash stays consistent with ``__eq__``,
+        which compares by ID only, and so agents remain hashable when the
+        persona is an unhashable structured value (e.g. the dict personas saved
+        by the ``happy`` runs rather than a plain string).
 
         Returns:
             int: The hash of the agent.
         """
-        return hash((self.ID, self.persona if self.persona else None)) 
+        return hash(self.ID)
 
     def __eq__(self, other):
         """

@@ -738,12 +738,32 @@ def plot_phase_grid(cells, color_map, *, row_titles, col_titles,
     return seen
 
 
+def _downsample_ts_agg(d, step):
+    """Sub-sample one TS aggregate to a point every ``step`` assessments.
+
+    The means and the round axis are taken every ``step``-th sample (the kept
+    datapoint), while the ±SD spreads are *averaged* over each block of ``step``
+    so the plotted spread reflects the whole window, not a single point.
+    Returns ``d`` unchanged when ``step`` is None / <= 1.
+    """
+    if not d or step is None or step <= 1:
+        return d
+    idx = np.arange(0, len(d["t"]), step)
+    out = dict(d)
+    for k in ("t", "dw_mean", "mean_mean", "assort_mean"):
+        out[k] = np.asarray(d[k], float)[idx]
+    for k in ("dw_sd", "mean_sd", "assort_sd"):
+        a = np.asarray(d[k], float)
+        out[k] = np.array([np.nanmean(a[i:i + step]) for i in idx])
+    return out
+
+
 def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
                                      suptitle="", path="", filename="default",
                                      save=False, show=True, overwrite=False,
                                      prefix="ts_phq9_assort_grid",
                                      dw_color="#d96907", mean_color="#8d2c03",
-                                     assort_color="#2e7ebc", xmax=300):
+                                     assort_color="#2e7ebc", xmax=300, step=5):
     """Time-series grid of PHQ-9 score + assortativity, one cell per (row, col).
 
     The temporal counterpart of :func:`plot_phase_grid`: instead of a phase
@@ -764,14 +784,18 @@ def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
             Missing cells are drawn empty.
         row_titles/col_titles: cell labels; their lengths set the grid shape.
         xmax: right x-limit (rounds), default 300.
+        step: keep one datapoint every ``step`` assessments (means sub-sampled,
+            ±SD averaged over each block; see :func:`_downsample_ts_agg`).
+            Default 5; pass 1 / None to plot every point.
 
     Returns the (row, col) cells that were drawn, or None when skipped because the
     PNG already exists.
     """
     if _skip_existing(path, filename, prefix, overwrite, save):
         return None
+    cells = {k: _downsample_ts_agg(v, step) for k, v in cells.items()}
     nrow, ncol = len(row_titles), len(col_titles)
-    fig, axes = plt.subplots(nrow, ncol, figsize=(2.5 * ncol, 1.95 * nrow),
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.2 * ncol, 1.5 * nrow),
                              sharex=True, squeeze=False)
 
     drawn = []
@@ -831,7 +855,7 @@ def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
             else:
                 ax.tick_params(axis="y", labelleft=False, length=0)
             if c == ncol - 1:
-                axr.set_ylabel("PHQ-9 assortativity (r)", fontsize=9, color=assort_color)
+                axr.set_ylabel(r"PHQ-9$_\rho$", fontsize=9, color=assort_color)
                 axr.tick_params(axis="y", labelsize=7, labelcolor=assort_color, color=assort_color)
             else:
                 axr.tick_params(axis="y", labelright=False, length=0)
@@ -845,9 +869,10 @@ def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
                Line2D([0], [0], color=mean_color, marker="s", ls="--", lw=1.0, ms=4),
                Line2D([0], [0], color=assort_color, marker="o", lw=1.2, ms=4)]
     labels = ["DW PHQ-9", "Mean PHQ-9", "Assortativity ± SD"]
-    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False,
-               fontsize=8, bbox_to_anchor=(0.5, -0.01))
-    fig.tight_layout(rect=[0, 0.05, 1, 0.97 if suptitle else 1.0])
+    # legend along the top, above the column titles
+    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False,
+               fontsize=8, bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     _save(fig, save, path, filename, prefix, show, do_tight=False)
     return drawn
 

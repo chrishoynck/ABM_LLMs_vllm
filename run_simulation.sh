@@ -98,7 +98,7 @@ INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real d
 # AGE_WEIGHT=2.3149
 # N_CLUSTERS=2
 # STUB_GAMMA=2.5          # ignored for sda (sdc-only); kept bound so the shared run command works
-INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
+# INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real distribution
 DIRECTED=0             # undirected graph -> saved under data/networks_post/happy/sda/undirected/...
 
 
@@ -171,9 +171,9 @@ LLAMA_ID="Qwen/Qwen3.5-27B" PYTHONPATH=src python src/llama_activate.py "$NET" \
     --n_clusters    "$N_CLUSTERS" \
     --check_point   "$CHECK_POINT" \
     --log           "$LOG" \
+    --happy \
     "${INIT_ARGS[@]}" \
     "${DIRECTED_ARGS[@]}" \
-    --happy \
     --no-cds_dynamic \
     --phq9_mode bert \
     --bias_table_path "$BIAS_TABLE" \
