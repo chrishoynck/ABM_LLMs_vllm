@@ -15,8 +15,8 @@
 # the first run encodes (GPU recommended) and later runs reuse the cache.
 # Figures already on disk are skipped; set OVERWRITE=1 to redraw.
 #
-# See src/utils/tools/plot_lexical_entrainment.py and the plot_entrainment_*
-# functions in src/utils/visualization.py.
+# See src/utils/analyses/lexical_entrainment/global/plot_lexical_entrainment.py and
+# the plot_entrainment_* functions in src/utils/visualization.py.
 #
 #   bash run_lexical_entrainment.sh                 # default: PCA, MentalBERT
 #   OVERWRITE=1 bash run_lexical_entrainment.sh     # redraw everything
@@ -25,7 +25,9 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# This script lives at src/utils/analyses/lexical_entrainment/global/, so the repo
+# root is five directories up. All paths below are relative to that root.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 cd "$REPO_DIR"
 
 # Project venv (has sentence-transformers / torch; the system python does not).
@@ -50,7 +52,7 @@ echo "  reduction  : $REDUCTION   embedding: ${EMBEDDING:-mentalbert}"
 echo "  num_steps  : $NUM_STEPS   shift: $SHIFT"
 echo "========================================================"
 
-PYTHONPATH=src "$PY" -m utils.tools.plot_lexical_entrainment \
+PYTHONPATH=src "$PY" -m utils.analyses.lexical_entrainment.global.plot_lexical_entrainment \
     --scan       "$GRID_ROOT" \
     --reduction  "$REDUCTION" \
     --num_steps  "$NUM_STEPS" \

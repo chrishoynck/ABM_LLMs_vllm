@@ -548,6 +548,100 @@ def _run_phase_ts(opts):
             save=True, show=False, overwrite=opts.overwrite)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Combined mode  (--combined)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# One stacked figure per direction (a "directed" and an "undirected" plot), the
+# debiased calibrated configs only. Each figure is the per-combo grid of
+# plot_param_combo_grid with the critical-slowing-down rows (SD, AC1) removed and
+# the two network types stacked: SDC on top, SDA below. Per network type it shows
+# a mean-PHQ-9 + assortativity line row and a PHQ-9 dot-grid heatmap row, one
+# column per seed. The mean-PHQ-9 line is the palette's deep brown.
+
+
+def _combined_seed_paths(leaf, cfg, grid_rounds):
+    """Seed net.json paths for one calibrated config under a directed leaf.
+
+    Globs ``<leaf>/<cfg>/**/seed_*/net.json``, drops the ``init_0`` (all start at
+    PHQ-9 0) variant, and — when ``grid_rounds`` is set — keeps only that round
+    count. Returns them sorted (seed order).
+    """
+    base = os.path.join(leaf, cfg)
+    paths = []
+    for p in glob.glob(os.path.join(base, "**", "net.json"), recursive=True):
+        segs = p.split(os.sep)
+        if "init_0" in segs:
+            continue
+        if not os.path.basename(os.path.dirname(p)).startswith("seed_"):
+            continue
+        if grid_rounds:
+            m = re.search(r"rounds(\d+)_N", p)
+            if not (m and int(m.group(1)) == grid_rounds):
+                continue
+        paths.append(p)
+    return sorted(paths)
+
+
+def _load_combined_section(leaf, cfg, check_point, window, grid_rounds):
+    """Per-seed line + heatmap data for one section (one calibrated config).
+
+    Each net is loaded, reduced to the small arrays the figure needs (mean PHQ-9,
+    assortativity, the sorted per-agent PHQ-9 matrix) and then freed, so only one
+    heavy network is in memory at a time. Returns (per_seed, cols_round).
+    """
+    interval = max(1, int(check_point))
+    per_seed, cols_round = [], None
+    for p in _combined_seed_paths(leaf, cfg, grid_rounds):
+        net = ri.generate_network(args=None, pipe=None, file_path=p)[0]
+        cr, _sd, _ac, phq9_m = nev._csd_matrices(net, interval, window)
+        _, mean_phq9, assort = nev.phq9_mean_and_assortativity(net, interval)
+        if cols_round is None:
+            cols_round = cr
+        per_seed.append({"mean": mean_phq9, "assort": assort, "phq9": phq9_m})
+        del net
+        gc.collect()
+    return per_seed, cols_round
+
+
+def _run_combined(opts):
+    """Combined mode: one stacked SDC/SDA figure per direction (debiased)."""
+    root = opts.scan or "data/networks_post/basis"
+    nets = opts.phase_net or ["sdc", "sda"]   # SDC on top, SDA below
+    plot_dir = os.path.join(root, "plots")
+
+    for ddir, _dtitle in PHASE_TS_DIRECTIONS:
+        filename = f"calibrated_debiased_{ddir}"
+        out = nev.figure_path(plot_dir, filename, "phq9_combined_grid")
+        if not opts.overwrite and out and os.path.exists(out):
+            print(f"[skip] combined grid exists: {out}")
+            continue
+
+        sections, cols_round = [], None
+        for net in nets:
+            cfg = PHASE_TS_CALIBRATED.get(net)
+            if cfg is None:
+                print(f"[skip] no calibrated config for {net}")
+                continue
+            leaf = os.path.join(root, net, ddir, "debiased")
+            per_seed, cr = _load_combined_section(
+                leaf, cfg, opts.check_point, opts.csd_window, opts.grid_rounds)
+            print(f"  {net} {ddir}/debiased: "
+                  f"{len(per_seed) if per_seed else 'MISSING'} seeds")
+            if not per_seed:
+                continue
+            if cols_round is None:
+                cols_round = cr
+            sections.append((net.upper(), per_seed))
+
+        if not sections:
+            print(f"[skip] no calibrated debiased {ddir} runs under {root}")
+            continue
+        nev.plot_phq9_combined_grid(
+            sections, cols_round, path=plot_dir, filename=filename,
+            save=True, show=False, overwrite=opts.overwrite)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -576,10 +670,19 @@ def main():
                              "axis) vs round, across-seed mean +/- SD, one point "
                              "every 5 assessments. Scans --scan (default "
                              "data/networks_post/basis).")
+    parser.add_argument("--combined", action="store_true",
+                        help="One stacked figure per direction (a directed and "
+                             "an undirected plot), debiased calibrated configs "
+                             "only: the per-combo grid with the SD / AC1 "
+                             "(critical-slowing-down) rows removed and SDC "
+                             "stacked over SDA (mean PHQ-9 + assortativity lines "
+                             "and a PHQ-9 heatmap per network type, one column "
+                             "per seed). Scans --scan (default "
+                             "data/networks_post/basis).")
     parser.add_argument("--phase_net", nargs="*", choices=["sda", "sdc"],
                         default=None,
-                        help="Phase mode: restrict to these network types "
-                             "(default: both sda and sdc).")
+                        help="Phase / phase_ts / combined mode: restrict to "
+                             "these network types (default: both sda and sdc).")
     parser.add_argument("--grid_rounds", type=int, default=300,
                         help="Grid mode: only combos with this round count "
                              "(0 = any). Default 300 = fully-finished runs.")
@@ -635,6 +738,10 @@ def main():
                              "figure — a run missing only one figure still gets "
                              "that one drawn).")
     opts = parser.parse_args()
+
+    if opts.combined:
+        _run_combined(opts)
+        return
 
     if opts.phase_ts:
         _run_phase_ts(opts)

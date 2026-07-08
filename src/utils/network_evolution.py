@@ -153,6 +153,9 @@ def _rolling_mean(arr, window):
 # Palette shared with the SA / validation figures (blue accent, firebrick PHQ-9).
 COL_CDS = "#1f77b4"
 COL_PHQ9 = "#b22222"
+# Deep brown from the sa_analyze palette — the PHQ-9 line colour for the combined
+# (CSD-free) grid, where the firebrick of the per-combo grids reads as red.
+COL_PHQ9_BROWN = "#8d2c03"
 
 
 def _style_axis(ax):
@@ -566,6 +569,23 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
 
     square_handles = []   # (ax, sc, n_cols) for post-layout sizing
 
+    # Top-row y-limits scaled to the data (with a small margin), shared across
+    # all seeds so the columns stay directly comparable. Clamped to the valid
+    # ranges (PHQ-9 in [0, 27], assortativity in [-1, 1]).
+    def _data_ylim(arrays, floor, cap, frac=0.05):
+        vals = np.concatenate([np.ravel(a) for a in arrays])
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return floor, cap
+        lo, hi = float(vals.min()), float(vals.max())
+        if hi == lo:
+            lo, hi = lo - 0.5, hi + 0.5
+        m = (hi - lo) * frac
+        return max(floor, lo - m), min(cap, hi + m)
+
+    phq9_ylim = _data_ylim([d["mean"] for d in per_seed], 0, 27)
+    assort_ylim = _data_ylim([d["assort"] for d in per_seed], -1, 1)
+
     for c, d in enumerate(per_seed):
         n_agents = d["phq9"].shape[0]
         X = np.tile(cols, (n_agents, 1))
@@ -574,7 +594,7 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
         # ── row 0: mean PHQ-9 + assortativity lines ──
         ax0 = fig.add_subplot(gs[0, c])
         ax0.plot(cols, d["mean"], color=COL_PHQ9, lw=1.2)
-        ax0.set_ylim(0, 27)
+        ax0.set_ylim(*phq9_ylim)
         ax0.set_xlim(-0.5, n_cols - 0.5)
         ax0.set_xticks(ticks)
         ax0.set_xticklabels([])
@@ -582,7 +602,7 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
         axr = ax0.twinx()
         axr.plot(cols, d["assort"], color=COL_CDS, lw=1.2)
         axr.axhline(0, color="0.6", lw=0.5, ls="--")
-        axr.set_ylim(-1, 1)
+        axr.set_ylim(*assort_ylim)
         axr.tick_params(labelsize=6)
         if c == 0:
             ax0.set_ylabel("mean PHQ-9", color=COL_PHQ9, fontsize=7)
@@ -633,6 +653,161 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
         sc.set_sizes([side ** 2])
 
     _save(fig, save, path, filename, f"param_grid_w{window}", show, do_tight=False)
+
+
+def _combined_data_ylim(arrays, floor, cap, frac=0.05):
+    """Shared y-limit for one section's seed columns (data extent + margin)."""
+    vals = np.concatenate([np.ravel(a) for a in arrays])
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return floor, cap
+    lo, hi = float(vals.min()), float(vals.max())
+    if hi == lo:
+        lo, hi = lo - 0.5, hi + 0.5
+    m = (hi - lo) * frac
+    return max(floor, lo - m), min(cap, hi + m)
+
+
+def plot_phq9_combined_grid(sections, cols_round, *,
+                            phq9_color=COL_PHQ9_BROWN, assort_color=COL_CDS,
+                            phq9_vmax=27, path="", filename="default",
+                            save=False, show=True, overwrite=False,
+                            prefix="phq9_combined_grid"):
+    """Combined PHQ-9 figure: per section a line row + a PHQ-9 heatmap row.
+
+    This is :func:`plot_param_combo_grid` with the critical-slowing-down rows
+    (rolling SD, lag-1 autocorrelation) removed and two such per-combo grids
+    stacked into one figure — e.g. SDC on top, SDA below. For each section it
+    draws, one column per seed:
+
+        * a line panel — unweighted mean PHQ-9 (``phq9_color``, left axis) and
+          PHQ-9 assortativity (``assort_color``, twin right axis, dashed zero
+          line); and
+        * a PHQ-9 dot-grid heatmap (one square per agent per assessment, agents
+          sorted low->high by final PHQ-9, ``RdYlGn_r`` on [0, phq9_vmax]).
+
+    The mean-PHQ-9 line uses ``phq9_color`` (default the palette's deep brown)
+    rather than the firebrick of the per-combo grids. Each section sets its own
+    line y-limits (SDC and SDA live on very different PHQ-9 / assortativity
+    scales) but its heatmap row shares the [0, phq9_vmax] colour scale.
+
+    Args:
+        sections: ordered list of ``(label, per_seed)``. ``label`` is the side
+            caption (e.g. ``"SDC"``); ``per_seed`` is a list of per-seed dicts
+            ``{"mean": 1-D, "assort": 1-D, "phq9": (n_agents x n_cols)}`` — the
+            ``mean_phq9`` / ``assort`` of :func:`phq9_mean_and_assortativity` and
+            the ``phq9_m`` of :func:`_csd_matrices` (rows already sorted).
+        cols_round: shared 1-D round axis (len == n_cols), e.g. [0, 10, …, 300].
+
+    Returns the section labels drawn, or None when skipped because the PNG exists.
+    """
+    if _skip_existing(path, filename, prefix, overwrite, save):
+        return None
+
+    n_sec = len(sections)
+    n_seeds = max(len(per_seed) for _, per_seed in sections)
+    cols_round = np.asarray(cols_round)
+    n_cols = len(cols_round)
+    cols = np.arange(n_cols)
+    # x ticks every 100 rounds (seed columns are too narrow for one every 50).
+    ticks = [c for c in cols if int(cols_round[c]) % 100 == 0] or list(cols[::10])
+    tick_labels = [str(int(cols_round[c])) for c in ticks]
+
+    # 2 rows per section (lines, then heatmap); the heatmap rows are taller so
+    # they read roughly square, the line rows are short strips (as in the
+    # hand-assembled reference). A sliver of left margin holds the side caption.
+    n_rows = 2 * n_sec
+    fig = plt.figure(figsize=(1.05 * n_seeds + 1.0, 2.45 * n_sec))
+    height_ratios = [r for _ in range(n_sec) for r in (0.72, 1.0)]
+    gs = gridspec.GridSpec(n_rows, n_seeds + 1, figure=fig,
+                           width_ratios=[1] * n_seeds + [0.05],
+                           height_ratios=height_ratios,
+                           left=0.135, right=0.91, top=0.97, bottom=0.07,
+                           wspace=0.12, hspace=0.18)
+
+    square_handles = []   # (ax, sc, n_cols) for post-layout square sizing
+    drawn = []
+    for s, (label, per_seed) in enumerate(sections):
+        line_row, heat_row = 2 * s, 2 * s + 1
+        is_last_section = s == n_sec - 1
+
+        # Per-section line y-limits, shared across this section's seed columns so
+        # the columns stay directly comparable.
+        phq9_ylim = _combined_data_ylim([d["mean"] for d in per_seed], 0, phq9_vmax)
+        assort_ylim = _combined_data_ylim([d["assort"] for d in per_seed], -1, 1)
+
+        last_sc = None
+        for c, d in enumerate(per_seed):
+            # ── line panel: mean PHQ-9 (left) + assortativity (twin right) ──
+            ax0 = fig.add_subplot(gs[line_row, c])
+            ax0.plot(cols, d["mean"], color=phq9_color, lw=1.2)
+            ax0.set_ylim(*phq9_ylim)
+            ax0.set_xlim(-0.5, n_cols - 0.5)
+            ax0.set_xticks(ticks)
+            ax0.set_xticklabels([])
+            ax0.tick_params(labelsize=6)
+            axr = ax0.twinx()
+            axr.plot(cols, d["assort"], color=assort_color, lw=1.2)
+            axr.axhline(0, color="0.6", lw=0.5, ls="--")
+            axr.set_ylim(*assort_ylim)
+            axr.tick_params(labelsize=6)
+            if c == 0:
+                ax0.set_ylabel("mean PHQ-9", color=phq9_color, fontsize=7)
+                ax0.tick_params(axis="y", labelcolor=phq9_color, labelsize=6)
+            else:
+                ax0.set_yticklabels([])
+            if c == n_seeds - 1:
+                axr.set_ylabel("assortativity", color=assort_color, fontsize=7)
+                axr.tick_params(axis="y", labelcolor=assort_color, labelsize=6)
+            else:
+                axr.set_yticklabels([])
+
+            # ── heatmap panel: PHQ-9 dot grid (one square per agent per update) ──
+            mat = d["phq9"]
+            n_agents = mat.shape[0]
+            X = np.tile(cols, (n_agents, 1))
+            Y = np.tile(np.arange(n_agents).reshape(-1, 1), (1, n_cols))
+            ax = fig.add_subplot(gs[heat_row, c])
+            valid = ~np.isnan(mat)
+            sc = ax.scatter(X[valid], Y[valid], c=mat[valid], cmap="RdYlGn_r",
+                            marker="s", linewidths=0, vmin=0, vmax=phq9_vmax)
+            ax.set_yticks([])
+            ax.set_ylim(-0.5, n_agents - 0.5)
+            ax.set_xlim(-0.5, n_cols - 0.5)
+            ax.set_xticks(ticks)
+            if is_last_section:
+                ax.set_xticklabels(tick_labels, fontsize=6)
+                ax.tick_params(axis="x", labelsize=6)
+            else:
+                ax.set_xticklabels([])
+            if c == 0:
+                ax.set_ylabel("agent", fontsize=7)   # one row per agent
+            square_handles.append((ax, sc, n_cols))
+            last_sc = sc
+
+        # one colourbar for this section's heatmap row (shared scale across seeds)
+        cax = fig.add_subplot(gs[heat_row, n_seeds])
+        cbar = fig.colorbar(last_sc, cax=cax)
+        cbar.set_label("PHQ-9", fontsize=7)
+        cbar.ax.tick_params(labelsize=6)
+
+        # side annotation, rotated like a y-axis label, centred on the section.
+        top_bb = gs[line_row, 0].get_position(fig)
+        bot_bb = gs[heat_row, 0].get_position(fig)
+        fig.text(0.045, (top_bb.y1 + bot_bb.y0) / 2.0, label,
+                 fontsize=13, rotation=90, ha="center", va="center")
+        drawn.append(label)
+
+    # Size the squares to fill the column pitch (no whitespace) after layout.
+    # GridSpec margins are fixed above, so skip _save's tight_layout.
+    fig.canvas.draw()
+    for ax, sc, ncol in square_handles:
+        w_pts = ax.get_window_extent().width * 72.0 / fig.dpi
+        side = (w_pts / max(ncol, 1)) * 1.05
+        sc.set_sizes([side ** 2])
+
+    _save(fig, save, path, filename, prefix, show, do_tight=False)
+    return drawn
 
 
 # ──────────────────────────────────────────────────────────────────────────────

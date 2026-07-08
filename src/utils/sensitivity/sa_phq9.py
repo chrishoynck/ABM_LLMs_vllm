@@ -32,7 +32,7 @@ Outputs (default ``data/sensitivity/plots_phq9/``):
     <axis>_phq9_pred.csv       - one row per (setting, rep, agent): raw_pred, true_phq9, band
     <axis>_phq9_delta.csv      - one row per pair: within|cross, band, |Δ pred|
     <axis>_phq9_summary.csv    - mean ± std |Δ| per (band, within|cross)
-    <axis>_phq9_bar_scatter.png
+    axes_comparison.png        - cross-axis box + forest on |Δ predicted PHQ-9|
 Plus a ``phq9_pred.csv`` next to each run's ``embeddings.npz``.
 
 Usage::
@@ -290,47 +290,6 @@ def phq9_within_cross(preds: dict, paired: bool) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def plot_phq9_bar_scatter(df: pd.DataFrame, axis_name: str, out_path: str,
-                          max_scatter_per_band: int = 200) -> None:
-    """Bars (mean |Δ pred|) + jittered scatter, two bars per PHQ-9 band."""
-    fig, ax = plt.subplots(figsize=(11, 6))
-    x = np.arange(len(BAND_LABELS))
-    bar_w = 0.36
-    rng = np.random.default_rng(0)
-
-    for ptype, colour, offset in [("within", "#cccccc", -bar_w / 2),
-                                  ("cross",  "#e67e22", +bar_w / 2)]:
-        means, errs = [], []
-        for band in BAND_LABELS:
-            sub = df[(df.band == band) & (df.pair_type == ptype)]
-            means.append(sub.delta.mean() if len(sub) else np.nan)
-            errs.append(sub.delta.std() if len(sub) > 1 else 0.0)
-        ax.bar(x + offset, means, bar_w, yerr=errs, label=f"{ptype}-setting",
-               color=colour, edgecolor="black", linewidth=0.5,
-               error_kw={"elinewidth": 0.7, "capsize": 3})
-        for j, band in enumerate(BAND_LABELS):
-            sub = df[(df.band == band) & (df.pair_type == ptype)]
-            if len(sub) == 0:
-                continue
-            if len(sub) > max_scatter_per_band:
-                sub = sub.sample(max_scatter_per_band, random_state=int(j))
-            jit = rng.uniform(-bar_w / 4, bar_w / 4, len(sub))
-            ax.scatter(np.full(len(sub), x[j] + offset) + jit, sub.delta,
-                       s=6, alpha=0.25, color="black", linewidths=0)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(BAND_LABELS, rotation=10)
-    ax.set_ylabel("|Δ predicted PHQ-9|  (points)")
-    ax.set_xlabel("PHQ-9 band")
-    ax.set_title(f"{axis_name} sensitivity — within vs cross-setting predicted PHQ-9")
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.legend(loc="upper right")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"[plot] {out_path}")
-
-
 # =====================================================================
 # CLI
 # =====================================================================
@@ -416,9 +375,6 @@ def main():
             pivot["delta(cross-within)"] = pivot["cross"] - pivot["within"]
             print("  cross − within per band (points):")
             print(pivot.round(4))
-
-        plot_phq9_bar_scatter(delta, axis.capitalize(),
-                              os.path.join(args.out_dir, f"{axis}_phq9_bar_scatter.png"))
 
         # For the cross-axis comparison figure every axis must be slot-paired so
         # the per-agent anchor (agent_a) is well defined — band-matched cross

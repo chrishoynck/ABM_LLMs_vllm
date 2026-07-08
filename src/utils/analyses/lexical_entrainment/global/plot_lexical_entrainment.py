@@ -20,13 +20,14 @@ Output (under ``plots/lexical_entrainment/`` at the repo root):
     shape but are not comparable across panels
     (``entrainment_grid_perseed_<emb>_<red>.png``).
   * SDA+SDC shared map   — one PCA per direction pooling SDA & SDC (calibrated +
-    high-degree), so the two network types share axes; group = marker, colour =
+    high degree), so the two network types share axes; group = marker, colour =
     PHQ-9 (``entrainment_shared_sda_sdc_<emb>_<red>.png``). Disable with
     ``--no-shared``.
 
 Run from the repo root with the project venv (sentence-transformers / torch)::
 
-    PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_lexical_entrainment \\
+    PYTHONPATH=src .venv_vllm/bin/python \\
+        -m utils.analyses.lexical_entrainment.global.plot_lexical_entrainment \\
         --scan data/networks_post/basis
 
 The first run encodes tweets with MentalBERT (GPU recommended) and caches them
@@ -45,8 +46,9 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # headless / cluster-safe; we only save figures
 
-# Allow running as a plain script as well as ``-m utils.tools...``.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+# Allow running as a plain script as well as ``-m utils.analyses...``.
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")))
 
 import utils.metrics as metrics
 import utils.visualization as vis
@@ -150,7 +152,7 @@ def _load_setting(paths_with_seeds, num_steps, shift, mentalbert, cache_dir,
 def _run_shared(opts, out_dir, emb_name, emb_slug, red_name):
     """SDA+SDC shared-mapping experiment: one reduction per direction.
 
-    For each direction, pools every SHARED_GROUPS combo (calibrated + high-deg,
+    For each direction, pools every SHARED_GROUPS combo (calibrated + high degree,
     both nets) into a single PCA so SDA and SDC share axes, then plots with group
     encoded by marker and colour by PHQ-9.
     """

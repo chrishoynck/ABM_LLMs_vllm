@@ -25,8 +25,6 @@ Stratify both into the 5-band PHQ-9 buckets used elsewhere in the project
 Outputs to ``data/sensitivity/plots/``:
     {neighbor,agent}_cosines.csv        - one row per pair
     {neighbor,agent}_summary.csv        - mean ± std per (band, within|cross)
-    {neighbor,agent}_bar_scatter.png    - bars + jittered scatter per band
-    {neighbor,agent}_heatmap.png        - 4×4 cosine matrix
 
 Usage::
 
@@ -334,190 +332,12 @@ def agent_cosines_centroid(runs: dict) -> pd.DataFrame:
 
 
 # =====================================================================
-# PLOTTING
-# =====================================================================
-
-def plot_bar_scatter(df: pd.DataFrame, axis_name: str, out_path: str,
-                     max_scatter_per_band: int = 200):
-    """Bar chart with jittered per-pair scatter, two bars per PHQ-9 band."""
-    fig, ax = plt.subplots(figsize=(11, 6))
-    n_bands = len(BAND_LABELS)
-    x = np.arange(n_bands)
-    bar_w = 0.36
-    rng = np.random.default_rng(0)
-    colour_within = "#cccccc"
-    colour_cross  = "#3498db"
-
-    for ptype, colour, offset in [("within", colour_within, -bar_w / 2),
-                                  ("cross",  colour_cross,  +bar_w / 2)]:
-        means, errs = [], []
-        for band in BAND_LABELS:
-            sub = df[(df.band == band) & (df.pair_type == ptype)]
-            means.append(sub.cosine.mean() if len(sub) else np.nan)
-            errs.append(sub.cosine.std() if len(sub) > 1 else 0.0)
-        ax.bar(x + offset, means, bar_w, yerr=errs,
-               label=f"{ptype}-setting",
-               color=colour, edgecolor="black", linewidth=0.5,
-               error_kw={"elinewidth": 0.7, "capsize": 3})
-
-        # Jittered scatter (subsample for readability).
-        for j, band in enumerate(BAND_LABELS):
-            sub = df[(df.band == band) & (df.pair_type == ptype)]
-            if len(sub) == 0:
-                continue
-            if len(sub) > max_scatter_per_band:
-                sub = sub.sample(max_scatter_per_band, random_state=int(j))
-            jit = rng.uniform(-bar_w / 4, bar_w / 4, len(sub))
-            ax.scatter(np.full(len(sub), x[j] + offset) + jit, sub.cosine,
-                       s=6, alpha=0.25, color="black", linewidths=0)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(BAND_LABELS, rotation=10)
-    ax.set_ylabel("Cosine similarity")
-    ax.set_xlabel("PHQ-9 band")
-    ax.set_title(f"{axis_name} sensitivity — within vs cross-setting cosine")
-    ax.set_ylim(0, 1.02)
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.legend(loc="lower right")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"[plot] {out_path}")
-
-
-def plot_heatmap(df: pd.DataFrame, axis_name: str, out_path: str):
-    """4×4 cosine matrix: diagonal = within-setting, off-diagonal = cross."""
-    settings = sorted(set(df.setting_a) | set(df.setting_b))
-    n = len(settings)
-    mat = np.full((n, n), np.nan)
-    for i, sa in enumerate(settings):
-        for j, sb in enumerate(settings):
-            if sa == sb:
-                sub = df[(df.pair_type == "within") & (df.setting_a == sa)]
-            else:
-                sub = df[(df.pair_type == "cross") &
-                         (((df.setting_a == sa) & (df.setting_b == sb)) |
-                          ((df.setting_a == sb) & (df.setting_b == sa)))]
-            if len(sub):
-                mat[i, j] = sub.cosine.mean()
-
-    fig, ax = plt.subplots(figsize=(6.2, 5.4))
-    vmin = float(np.nanmin(mat))
-    vmax = float(np.nanmax(mat))
-    pad = max(0.005, (vmax - vmin) * 0.05)
-    im = ax.imshow(mat, cmap="Reds", vmin=vmin - pad, vmax=vmax + pad)
-    ax.set_xticks(range(n))
-    ax.set_yticks(range(n))
-    ax.set_xticklabels([_setting_label(s) for s in settings], rotation=30, ha="right")
-    ax.set_yticklabels([_setting_label(s) for s in settings])
-    threshold = vmin + (vmax - vmin) * 0.6
-    for i in range(n):
-        for j in range(n):
-            if not np.isnan(mat[i, j]):
-                colour = "white" if mat[i, j] > threshold else "black"
-                ax.text(j, i, f"{mat[i, j]:.3f}",
-                        ha="center", va="center", color=colour, fontsize=10)
-    ax.set_title(f"{axis_name} sensitivity — pairwise cosine across settings")
-    fig.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"[plot] {out_path}")
-
-
-def _axis_heatmap_matrix(df: pd.DataFrame) -> tuple[np.ndarray, list]:
-    """Return (matrix, settings) for one axis: diagonal = within-setting mean,
-    off-diagonal = cross-setting mean cosine."""
-    settings = sorted(set(df.setting_a) | set(df.setting_b))
-    n = len(settings)
-    mat = np.full((n, n), np.nan)
-    for i, sa in enumerate(settings):
-        for j, sb in enumerate(settings):
-            if sa == sb:
-                sub = df[(df.pair_type == "within") & (df.setting_a == sa)]
-            else:
-                sub = df[(df.pair_type == "cross") &
-                         (((df.setting_a == sa) & (df.setting_b == sb)) |
-                          ((df.setting_a == sb) & (df.setting_b == sa)))]
-            if len(sub):
-                mat[i, j] = float(sub.cosine.mean())
-    return mat, settings
-
-
-def plot_combined_heatmaps(axis_dfs: dict, out_path: str,
-                           cmap: str = "Blues", cell_size: float = 0.85):
-    """All SA-axis heatmaps in one figure, sharing one colourbar and one colour
-    scale. Style matches the prompt-SA heatmap in experiment.ipynb (Blues cmap,
-    cell-size sizing, white linewidths, title beneath each panel).
-    Y-axis seed labels render only on the first (leftmost) panel.
-    """
-    names = list(axis_dfs.keys())
-    n_panels = len(names)
-    if n_panels == 0:
-        return
-
-    matrices, settings_per = [], []
-    for name in names:
-        m, s = _axis_heatmap_matrix(axis_dfs[name])
-        matrices.append(m); settings_per.append(s)
-
-    # Shared colour scale across all panels.
-    all_vals = np.concatenate([m[~np.isnan(m)] for m in matrices])
-    vmin, vmax = float(all_vals.min()), float(all_vals.max())
-    pad = max(0.005, (vmax - vmin) * 0.05)
-    vmin, vmax = vmin - pad, vmax + pad
-
-    n_cells = max(len(s) for s in settings_per)
-    panel_w = max(4.0, n_cells * cell_size)
-    panel_h = max(4.0, n_cells * cell_size)
-    fig_w = panel_w * n_panels + 1.5
-    fig_h = panel_h + 1.0
-
-    fig = plt.figure(figsize=(fig_w, fig_h))
-    gs = fig.add_gridspec(1, n_panels + 1,
-                          width_ratios=[panel_w] * n_panels + [0.35],
-                          wspace=0.15)
-    cbar_ax = fig.add_subplot(gs[0, -1])
-
-    for k, (name, mat, sets) in enumerate(zip(names, matrices, settings_per)):
-        ax = fig.add_subplot(gs[0, k])
-        show_cbar = (k == n_panels - 1)
-        show_ytick = (k == 0)
-        xlabels = [_setting_label(s) for s in sets]
-        ylabels = [_setting_label(s) for s in sets] if show_ytick else False
-        sns.heatmap(
-            mat, ax=ax,
-            xticklabels=xlabels, yticklabels=ylabels,
-            vmin=vmin, vmax=vmax,
-            annot=True, fmt=".3f", annot_kws={"fontsize": 9},
-            cmap=cmap, linewidths=0.4, linecolor="white",
-            cbar=show_cbar,
-            cbar_ax=cbar_ax if show_cbar else None,
-            cbar_kws={"label": "cosine similarity"} if show_cbar else None,
-            square=True,
-        )
-        ax.tick_params(axis="x", rotation=45, labelsize=9)
-        ax.tick_params(axis="y", rotation=0, labelsize=9)
-        # Title beneath the panel.
-        ax.text(0.5, -0.18, name, transform=ax.transAxes,
-                ha="center", va="top", fontsize=11)
-
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[plot] {out_path}")
-
-
-# =====================================================================
-# MAIN
-# =====================================================================
-
-# =====================================================================
 # PHQ-9 conditioning: 5 band-settings, same agent + neighbour, vary PHQ-9
 # =====================================================================
 
-def phq9_conditioning_heatmap(root: str, out_dir: str,
-                              emb_name: str = "embeddings.npz",
-                              diag_floor: dict | None = None) -> pd.DataFrame | None:
+def phq9_conditioning_matrix(root: str, out_dir: str,
+                             emb_name: str = "embeddings.npz",
+                             diag_floor: dict | None = None) -> pd.DataFrame | None:
     """Build the band×band cosine matrix from the PHQ-9 conditioning runs.
 
     For each (agent_id, round) anchor that exists in all 5 band-settings,
@@ -609,34 +429,6 @@ def phq9_conditioning_heatmap(root: str, out_dir: str,
                     mat[i, j] = mean_pairwise_cos(be)
             else:
                 mat[i, j] = float(np.mean(vals)) if vals else np.nan
-
-    # Plot. Colour scale now spans the whole matrix (no forced 1.0 ceiling).
-    fig, ax = plt.subplots(figsize=(7.5, 6.5))
-    vmin = float(np.nanmin(mat))
-    vmax = float(np.nanmax(mat))
-    im = ax.imshow(mat, cmap="Blues", vmin=vmin - 0.01, vmax=vmax + 0.01)
-    ax.set_xticks(range(n))
-    ax.set_yticks(range(n))
-    ax.set_xticklabels(band_labels_ax, rotation=30, ha="right")
-    ax.set_yticklabels(band_labels_ax)
-    threshold = (vmin + vmax) / 2
-    for i in range(n):
-        for j in range(n):
-            if np.isnan(mat[i, j]):
-                continue
-            colour = "white" if mat[i, j] > threshold else "black"
-            ax.text(j, i, f"{mat[i, j]:.3f}",
-                    ha="center", va="center", color=colour, fontsize=10)
-    ax.set_xlabel("PHQ-9 band (target)")
-    ax.set_ylabel("PHQ-9 band (source)")
-    ax.set_title("PHQ-9 conditioning — cosine between same-persona "
-                 "posts under different PHQ-9 bands")
-    fig.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
-    fig.tight_layout()
-    out_path = os.path.join(out_dir, "phq9_conditioning_heatmap.png")
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"[plot] {out_path}")
 
     df = pd.DataFrame(mat, index=band_labels_ax, columns=band_labels_ax)
     df.to_csv(os.path.join(out_dir, "phq9_conditioning_matrix.csv"))
@@ -2564,14 +2356,7 @@ def main():
             print("  cross − within per band:")
             print(pivot[["within", "cross", "delta"]].round(4))
 
-        plot_bar_scatter(df, axis_label,
-                         os.path.join(args.out_dir, f"{axis_dir}_bar_scatter.png"))
         axis_dfs[axis_label] = df
-
-    # All axis heatmaps combined into one figure, shared colourbar + scale.
-    if len(axis_dfs) >= 1:
-        plot_combined_heatmaps(axis_dfs,
-                               os.path.join(args.out_dir, "axes_heatmaps.png"))
 
     # Cross-axis comparison: combined box (distribution) + forest (mean ± CI).
     # Decoding is excluded here — it gets its own per-setting figure below
@@ -2644,7 +2429,8 @@ def main():
                         index=False)
                     print(lin_summary.round(4).to_string(index=False))
 
-    # PHQ-9 conditioning: 5×5 cosine heatmap + line plot of cosine vs band-distance.
+    # PHQ-9 conditioning: 5×5 cosine matrix → line plot of cosine vs band-distance
+    # (+ the agent_phq9_combined figure below).
     # Diagonal = per-band LLM-noise floor, borrowed from the agent axis's
     # within-setting cosine (same model + baseline decoding; the PHQ-9 runs have
     # no repeats of their own). Without it the diagonal falls back to within-band.
@@ -2654,9 +2440,9 @@ def main():
         w = axis_dfs["Agent"]
         diag_floor = (w[w.pair_type == "within"].groupby("band").cosine.mean()
                       .to_dict())
-    phq9_matrix = phq9_conditioning_heatmap(args.root, args.out_dir,
-                                            emb_name=args.emb_name,
-                                            diag_floor=diag_floor)
+    phq9_matrix = phq9_conditioning_matrix(args.root, args.out_dir,
+                                           emb_name=args.emb_name,
+                                           diag_floor=diag_floor)
     if phq9_matrix is not None:
         phq9_distance_lineplot(phq9_matrix,
                                os.path.join(args.out_dir, "phq9_distance_line.png"))

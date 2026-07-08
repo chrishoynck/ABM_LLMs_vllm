@@ -49,11 +49,15 @@ import numpy as np
 import pandas as pd
 
 # ── paths ────────────────────────────────────────────────────────────────────
-# src/utils/cds_entrainment.py -> repo root is two dirs up.
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# src/utils/analyses/lexical_entrainment/local/cds_entrainment.py -> repo root is 5 dirs up.
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), *([os.pardir] * 5)))
 NGRAMS_TSV = os.path.join(REPO, "data", "distorted_language_ngrams.tsv")
 NETWORKS_DIR = os.path.join(REPO, "data", "networks_post")
-OUT_DIR = os.path.join(REPO, "data", "analysis", "cds_entrainment")
+# Both the PNG figures and their backing CSVs live together under the
+# lexical-entrainment plots tree (local/ = CDS local entrainment), so the outputs
+# are not spread between data/ and plots/.
+PLOTS_DIR = os.path.join(REPO, "plots", "lexical_entrainment", "local")
+OUT_DIR = PLOTS_DIR
 
 # Silent-round sentinels (FC.NO_CONTENT is "NO_POST"/"NO_TWEET").
 NO_CONTENT = {"no_post", "no_tweet"}
@@ -503,7 +507,7 @@ def plot_entrainment_timeseries(centers, out, out_png, W, step, smooth=11, band=
             return pd.Series(x).rolling(int(k), center=True, min_periods=1).mean().to_numpy()
         return x
 
-    fig, ax = plt.subplots(figsize=(4.6, 2.8))
+    fig, ax = plt.subplots(figsize=(3.4, 2.1))
     for k, (label, (mean, sem, _)) in enumerate(out.items()):
         c = SA_PALETTE[k % len(SA_PALETTE)]
         m = roll(mean, smooth)
@@ -513,12 +517,54 @@ def plot_entrainment_timeseries(centers, out, out_png, W, step, smooth=11, band=
             ax.fill_between(centers, m - s, m + s, alpha=0.15, color=c, linewidth=0)
     ax.axhline(0.0, color="0.5", lw=0.7, ls="--")
     ax.set_xlim(0, centers[-1] + centers[0])     # full round range (0-300)
+    ax.set_ylim(-0.01, 0.105)
     ax.set_xlabel("round", fontsize=8)
     ax.set_ylabel(r"entrainment $\Delta$", fontsize=8)
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=6, ncol=2, frameon=False, loc="upper left",
               handlelength=1.2, columnspacing=1.0, labelspacing=0.3)
     fig.tight_layout()
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+
+
+def plot_entrainment_seeds(centers, out, out_png, W, step, smooth=11, ncols=3):
+    """Small multiples: one panel per topology, all individual seed lines (thin) plus
+    the seed-mean (bold). Reveals whether the Delta(t) oscillation is phase-locked
+    across seeds (shared driver) or independent per run (residual noise)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def roll(x, k):
+        if k and k > 1:
+            return pd.Series(x).rolling(int(k), center=True, min_periods=1).mean().to_numpy()
+        return x
+
+    labels = list(out.keys())
+    n = len(labels)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(1.75 * ncols, 1.2 * nrows),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+    xmax = centers[-1] + centers[0]
+    for k, label in enumerate(labels):
+        ax = axes[k]
+        c = "tab:blue"
+        mean, _, mat = out[label]
+        for s in range(mat.shape[0]):
+            ax.plot(centers, roll(mat[s], smooth), color=c, lw=0.6, alpha=0.45)
+        ax.plot(centers, roll(mean, smooth), color=c, lw=1.6)
+        ax.axhline(0.0, color="0.6", lw=0.6, ls="--")
+        ax.set_xlim(0, xmax)
+        ax.set_ylim(-0.015, 0.13)
+        ax.set_title(label.split(" (")[0], fontsize=7)
+        ax.tick_params(labelsize=6)
+    for j in range(n, len(axes)):
+        axes[j].axis("off")
+    fig.supxlabel("round", fontsize=8)
+    fig.supylabel(r"entrainment $\Delta$", fontsize=8)
+    fig.tight_layout(pad=0.3, w_pad=0.2, h_pad=0.3)
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
 
@@ -544,7 +590,8 @@ def main():
                                        normalize=not args.no_normalize,
                                        R=args.repeats, seed=args.seed)
         os.makedirs(args.out, exist_ok=True)
-        png = os.path.join(args.out, "entrainment_timeseries.png")
+        os.makedirs(PLOTS_DIR, exist_ok=True)
+        png = os.path.join(PLOTS_DIR, "entrainment_timeseries.png")
         plot_entrainment_timeseries(centers, ts, png, W=args.window, step=args.step,
                                     smooth=args.smooth)
         # per-window seed-mean Delta(t), one column per config
@@ -556,6 +603,21 @@ def main():
         df_ts.to_csv(csv, index=False)
         print(f"[saved] {png}")
         print(f"[saved] {csv}")
+
+        # individual-seed small multiples + per-seed long CSV
+        seeds_png = os.path.join(PLOTS_DIR, "entrainment_timeseries_seeds.png")
+        plot_entrainment_seeds(centers, ts, seeds_png, W=args.window, step=args.step,
+                               smooth=args.smooth)
+        rows = []
+        for label, (_, _, mat) in ts.items():
+            for si in range(mat.shape[0]):
+                for c_, d_ in zip(centers, mat[si]):
+                    rows.append((float(c_), label, si, float(d_)))
+        seeds_csv = os.path.join(args.out, "entrainment_timeseries_seeds.csv")
+        pd.DataFrame(rows, columns=["round_center", "config", "seed_index", "delta"]
+                     ).to_csv(seeds_csv, index=False)
+        print(f"[saved] {seeds_png}")
+        print(f"[saved] {seeds_csv}  (seed_index = glob-sorted seed order)")
         return
 
     per_seed, agg = build_table(W=args.window, step=args.step,
