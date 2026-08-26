@@ -10,7 +10,7 @@ PHQ-9 scores are assigned balanced (cycle 0..27 then shuffle), matching
 build_persona_phq9_eval. The eval file is read-only — never modified.
 
 Usage:
-    python -m utils.tools.build_finetune_personas --n 2000 \\
+    python -m utils.create_data.build_finetune_personas --n 2000 \\
         --out data/personas_finetune_phq9.csv
 """
 

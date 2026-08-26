@@ -45,19 +45,22 @@ PCA/UMAP, degree-weighted PHQ-9) and
 
 ## utils/ subpackages
 
-- **tools/** — dataset builders (`build_bert_testset`, `build_finetune_personas`,
-  `build_test_personas`, `build_persona_phq9_eval`, `load_personas`), the
-  run-directory layout singleton `path_manager.py`, the tweet/post vocabulary
-  switch `format_config.py` (`FC`, most-imported module in the repo), network
-  (de)serialization `reading_in.py`, the CDS validator `validate_cds.py`
-  (canonical category-aware detector), the bias table `phq9_bias.py`, and four
-  standalone plot scripts (see Hand-run CLIs).
-- **create_data/** — network-free dataset generation: `test_phq9_llms.py`
-  (`TestLLMs` harness used by every pipeline), `generate_test_data.py`
-  (optimizer-aligned instructions, the SA workhorse), `generate_synthetic_dataset.py`
-  (old framework, Agent-driven), `generate_posts_grok.py` (xAI API, standalone),
-  `generate_posts_opt_h.py` (human-in-the-loop prompt iteration), `tools.py`
-  (shared loaders). Driver: `scripts/data_generation/create_data_menu.sh`.
+- **tools/** — shared infrastructure + standalone analysis CLIs: the persona-pool
+  loader `load_personas.py`, the run-directory layout singleton `path_manager.py`,
+  the tweet/post vocabulary switch `format_config.py` (`FC`, most-imported module
+  in the repo), network (de)serialization `reading_in.py`, the CDS validator
+  `validate_cds.py` (canonical category-aware detector), the bias table
+  `phq9_bias.py`, the regressor test-set replayer `build_bert_testset.py`
+  (assessment-side), and four standalone plot scripts (see Hand-run CLIs).
+- **create_data/** — the whole dataset story, from persona building to generation:
+  `build_persona_phq9_eval.py` (step 0 — the canonical shared (persona, PHQ-9)
+  eval file), `build_test_personas.py` / `build_finetune_personas.py` (persona
+  sets for BERT fine-tuning), `test_phq9_llms.py` (`TestLLMs` harness used by
+  every pipeline), `generate_test_data.py` (optimizer-aligned instructions, the
+  SA workhorse), `generate_synthetic_dataset.py` (old framework, Agent-driven),
+  `generate_posts_grok.py` (xAI API, standalone), `generate_posts_opt_h.py`
+  (human-in-the-loop prompt iteration), `loaders.py` (shared loaders for these
+  CLIs). Driver: `scripts/data_generation/create_data_menu.sh`.
 - **sensitivity/** — 3-stage SA pipeline: generate (via `create_data`) → embed
   (`sa_embed.py`) → analyze (`sa_analyze.py`, the hub; `sa_phq9.py` regressor-space
   variant; `sa_prompt.py` prompt axis). `sa_network.py` is separate: Sobol SA +
@@ -83,4 +86,4 @@ docstring carries the full argument example.
 | `utils.sensitivity.plot_network_targets` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.sensitivity.plot_network_targets` | `data/sensitivity/network_target_ranges.png` |
 | `utils.sensitivity.plot_network_targets_sdc` | same, `…plot_network_targets_sdc` | `data/sensitivity/network_target_ranges_sdc.png` |
 | `utils.analyses.lexical_entrainment.local.cds_entrainment` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.analyses.lexical_entrainment.local.cds_entrainment` | `plots/lexical_entrainment/local/entrainment_*.{csv,png}` |
-| `utils.tools.build_persona_phq9_eval` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.build_persona_phq9_eval --out data/personas_eval_1000_phq9.csv …` | `data/personas_eval_1000_phq9.csv` (built ONCE; no-op if it exists) |
+| `utils.create_data.build_persona_phq9_eval` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.create_data.build_persona_phq9_eval --out data/personas_eval_1000_phq9.csv …` | `data/personas_eval_1000_phq9.csv` (built ONCE; no-op if it exists) |

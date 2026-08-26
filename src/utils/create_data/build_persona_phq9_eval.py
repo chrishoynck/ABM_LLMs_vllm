@@ -8,7 +8,7 @@ persona → PHQ-9 pairing in the same order, so per-model BERT predictions are
 directly comparable.
 
 Usage:
-    python -m utils.tools.build_persona_phq9_eval \\
+    python -m utils.create_data.build_persona_phq9_eval \\
         --persona-pool data/personas_eval_1000.csv \\
         --pool-size 1000 \\
         --phq9-seed 1000 \\
@@ -24,7 +24,7 @@ import pandas as pd
 try:
     import utils.tools.load_personas as lp
 except ImportError:
-    from . import load_personas as lp
+    from ..tools import load_personas as lp
 
 
 def build(persona_pool: str, pool_size: int, phq9_seed: int, out_path: str) -> None:

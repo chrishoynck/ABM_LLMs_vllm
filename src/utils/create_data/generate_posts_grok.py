@@ -511,7 +511,7 @@ def main():
     parser.add_argument(
         "--persona-phq9-file", default=None,
         help="CSV with `persona` + `phq9` columns (built by "
-             "utils.tools.build_persona_phq9_eval). When set, both personas and "
+             "utils.create_data.build_persona_phq9_eval). When set, both personas and "
              "PHQ-9 scores come from this file in order.",
     )
     parser.add_argument(

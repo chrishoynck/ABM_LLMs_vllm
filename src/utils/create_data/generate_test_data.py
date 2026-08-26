@@ -50,7 +50,7 @@ from transformers import set_seed
 from utils.tools.path_manager import TestPathManager
 from utils.create_data.test_phq9_llms import TestLLMs
 
-from utils.create_data.tools import (
+from utils.create_data.loaders import (
     DEFAULT_NEIGHBOR_ROOTS,
     SEED,
     build_aligned_context,
@@ -77,7 +77,7 @@ def _parse_args():
                         help="Glob applied within --instruction-dir.")
 
     parser.add_argument("--persona-phq9-file", required=True,
-                        help="(persona, phq9) CSV from utils.tools.build_persona_phq9_eval.")
+                        help="(persona, phq9) CSV from utils.create_data.build_persona_phq9_eval.")
     parser.add_argument("--model", required=True,
                         help="Short alias (qwen27, gemma12, ...) or full HF ID.")
     parser.add_argument("--num_agents", type=int, default=12,

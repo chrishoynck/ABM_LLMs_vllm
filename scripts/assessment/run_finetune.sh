@@ -43,7 +43,7 @@ echo "[run] logging to ${LOG}  (tail -f to watch)"
 
 # === 1. Training personas (skip if already built) ===========================
 if [[ ! -f "${PERSONAS}" ]]; then
-    PYTHONPATH=src python -m utils.tools.build_finetune_personas --n "${N_TRAIN}" --out "${PERSONAS}"
+    PYTHONPATH=src python -m utils.create_data.build_finetune_personas --n "${N_TRAIN}" --out "${PERSONAS}"
 fi
 
 # === 2. Generate training posts (chunked + resumable; iter_10 prompt) ========
@@ -66,7 +66,7 @@ PYTHONPATH=src python -m utils.prompt_optimizer \
 # === 4. Build the TEST_N-block test set (reuse existing 120, generate the rest) =
 # 4a. pick the extra test personas (eval personas not in training, after the first 120)
 if [[ "${TEST_N}" -gt "${EXISTING_TEST_N}" && ! -f "${TEST_EXTRA_PERSONAS}" ]]; then
-    PYTHONPATH=src python -m utils.tools.build_test_personas \
+    PYTHONPATH=src python -m utils.create_data.build_test_personas \
         --n "${TEST_N}" --keep "${EXISTING_TEST_N}" --out "${TEST_EXTRA_PERSONAS}"
 fi
 # 4b. generate posts for the extra personas (chunked + resumable)

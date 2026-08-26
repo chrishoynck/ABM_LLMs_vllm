@@ -9,7 +9,7 @@ Writes the next ``--n - --keep`` such rows, so generating posts for them and
 appending to the existing test posts yields a clean ``--n``-block test set.
 
 Usage:
-    python -m utils.tools.build_test_personas --n 300 --keep 120 \\
+    python -m utils.create_data.build_test_personas --n 300 --keep 120 \\
         --out data/finetune/personas_test_extra.csv
 """
 

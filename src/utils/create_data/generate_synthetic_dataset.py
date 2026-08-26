@@ -37,7 +37,7 @@ from utils.tools.format_config import FC
 from utils.tools.path_manager import TestPathManager
 from utils.create_data.test_phq9_llms import TestLLMs
 
-from utils.create_data.tools import (
+from utils.create_data.loaders import (
     DEFAULT_MODELS,
     SEED,
     get_llm,
@@ -100,7 +100,7 @@ def _parse_args():
                         help="Shared eval-persona CSV (load_or_build_persona_pool). "
                              "Mutually exclusive with --persona-phq9-file.")
     parser.add_argument("--persona-phq9-file", default=None,
-                        help="(persona, phq9) CSV from utils.tools.build_persona_phq9_eval. "
+                        help="(persona, phq9) CSV from utils.create_data.build_persona_phq9_eval. "
                              "One block per persona at the assigned score; rounds default "
                              "to --check_point.")
     return parser.parse_args()
