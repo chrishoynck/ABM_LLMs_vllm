@@ -12,11 +12,11 @@
 #     * LLM left UNSEEDED     (--nondeterministic; one fresh draw per rep)
 #
 # Each prompt is a "setting", each draw a "rep" — sa_analyze.py's exact within/cross
-# design. sa_prompt_baseline.py then builds a heatmap whose DIAGONAL is the
+# design. sa_analyze --prompt-reps then builds a heatmap whose DIAGONAL is the
 # within-prompt median cosine (the noise floor) and OFF-DIAGONAL is the
 # cross-prompt median.
 #
-# Layout (consumed by sa_embed + sa_prompt_baseline):
+# Layout (consumed by sa_embed + sa_analyze --prompt-reps):
 #     <ROOT>/<label>/rep_<N>/posts.csv      (+ embeddings.npz from sa_embed)
 # rep_1 of each prompt reuses the existing single draw in prompt_sa/<label>.csv.
 #
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # === Config (edit before running) =========================================
-PERSONA_FILE="data/personas_eval_1000_phq9.csv"
+PERSONA_FILE="data/prompt_optimization_h/qwen27_baseline/inputs/personas_eval_1000_phq9.csv"
 MODEL="Qwen/Qwen3.5-27B"
 NUM_AGENTS=120                 # MUST match sa_prompt_run.sh so anchors line up
 CHECK_POINT=10
@@ -44,13 +44,13 @@ ROOT="data/prompt_optimization_h/qwen27_baseline/prompt_sa_reps"        # replic
 # unseeded reps are generated.
 LABELS=(minimal textgrad_seed24 textgrad_seed25 textgrad_seed28 textgrad_seed29 textgrad_seed53 iter_10)
 declare -A PROMPTS=(
-    [minimal]="data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt"
-    [textgrad_seed24]="data/test_post/optimized_tweets/Qwen3.5-27B_seed24/best_instruction_tweet.txt"
-    [textgrad_seed25]="data/test_post/optimized_tweets/Qwen3.5-27B_seed25/best_instruction_tweet.txt"
-    [textgrad_seed28]="data/test_post/optimized_tweets/Qwen3.5-27B_seed28/best_instruction_tweet.txt"
-    [textgrad_seed29]="data/test_post/optimized_tweets/Qwen3.5-27B_seed29/best_instruction_tweet.txt"
-    [textgrad_seed53]="data/test_post/optimized_tweets/Qwen3.5-27B_seed53/best_instruction_tweet.txt"
-    [iter_10]="data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt"
+    [minimal]="data/prompt_optimization_h/qwen27_baseline/inputs/prompt_iter_0.txt"
+    [textgrad_seed24]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed24.txt"
+    [textgrad_seed25]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed25.txt"
+    [textgrad_seed28]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed28.txt"
+    [textgrad_seed29]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed29.txt"
+    [textgrad_seed53]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed53.txt"
+    [iter_10]="data/prompt_optimization_h/qwen27_baseline/inputs/prompt_iter_10.txt"
 )
 
 # === Run ===================================================================

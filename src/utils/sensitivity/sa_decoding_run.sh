@@ -33,8 +33,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 
 # === Config (edit before running) =========================================
-PROMPT="data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt"
-PERSONA_FILE="data/personas_eval_1000_phq9.csv"
+PROMPT="data/sensitivity/inputs/prompt_iter_10.txt"   # copy of qwen27_baseline/iter_10/prompt.txt
+PERSONA_FILE="data/sensitivity/inputs/personas_eval_1000_phq9.csv"
 MODEL="Qwen/Qwen3.5-27B"
 NUM_AGENTS=60                          # per run; 60 x 10 posts = 600 per run
 CHECK_POINT=10                         # posts per agent

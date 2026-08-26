@@ -18,8 +18,8 @@
 set -euo pipefail
 
 # === Config (edit before running) =========================================
-PROMPT="data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt"   # MINIMAL prompt
-PERSONA_FILE="data/personas_eval_1000_phq9.csv"
+PROMPT="data/sensitivity/inputs/prompt_iter_0.txt"   # MINIMAL prompt (copy of qwen27_baseline/iter_0/prompt.txt)
+PERSONA_FILE="data/sensitivity/inputs/personas_eval_1000_phq9.csv"
 MODEL="Qwen/Qwen3.5-27B"
 NUM_AGENTS=60                          # per run; 60 × 10 posts = 600 per run (matches sa_run.sh)
 CHECK_POINT=10                         # posts per agent

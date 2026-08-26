@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # === Config (edit before running) =========================================
-PERSONA_FILE="data/personas_eval_1000_phq9.csv"
+PERSONA_FILE="data/prompt_optimization_h/qwen27_baseline/inputs/personas_eval_1000_phq9.csv"
 MODEL="Qwen/Qwen3.5-27B"
 NUM_AGENTS=120                 # 120 × 10 posts = 1200 anchors per variant
 CHECK_POINT=10                 # posts per agent
@@ -33,13 +33,13 @@ SA_DIR="data/prompt_optimization_h/qwen27_baseline/prompt_sa"
 # 'iter_10' in the names). Edit this block to add/remove prompts.
 LABELS=(minimal iter_10 textgrad_seed24 textgrad_seed25 textgrad_seed28 textgrad_seed29 textgrad_seed53)
 declare -A PROMPTS=(
-    [minimal]="data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt"
-    [iter_10]="data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt"
-    [textgrad_seed24]="data/test_post/optimized_tweets/Qwen3.5-27B_seed24/best_instruction_tweet.txt"
-    [textgrad_seed25]="data/test_post/optimized_tweets/Qwen3.5-27B_seed25/best_instruction_tweet.txt"
-    [textgrad_seed28]="data/test_post/optimized_tweets/Qwen3.5-27B_seed28/best_instruction_tweet.txt"
-    [textgrad_seed29]="data/test_post/optimized_tweets/Qwen3.5-27B_seed29/best_instruction_tweet.txt"
-    [textgrad_seed53]="data/test_post/optimized_tweets/Qwen3.5-27B_seed53/best_instruction_tweet.txt"
+    [minimal]="data/prompt_optimization_h/qwen27_baseline/inputs/prompt_iter_0.txt"
+    [iter_10]="data/prompt_optimization_h/qwen27_baseline/inputs/prompt_iter_10.txt"
+    [textgrad_seed24]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed24.txt"
+    [textgrad_seed25]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed25.txt"
+    [textgrad_seed28]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed28.txt"
+    [textgrad_seed29]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed29.txt"
+    [textgrad_seed53]="data/prompt_optimization_h/qwen27_baseline/inputs/textgrad_seed53.txt"
 )
 
 # === Run ===================================================================

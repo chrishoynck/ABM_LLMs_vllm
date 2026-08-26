@@ -388,3 +388,6 @@ confidential/*
 *.key
 .venv_wsl/
 logs/
+# Recoverable discard bin (cleanup 2026-08) + stray slurm logs
+bin/
+slurm_output_*.out
