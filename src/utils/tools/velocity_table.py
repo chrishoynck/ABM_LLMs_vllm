@@ -158,7 +158,7 @@ def main():
         print(f"{clean:<26}{set_lab:<9}{cell_txt(dw_stat):>16}{cell_txt(frac_stat):>16}{cell_txt(mean_stat):>16}{end_cell:>14}")
 
     # ---- LaTeX ----
-    tex_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "velocity_table.tex")
+    tex_path = os.path.join(REPO, "plots", "velocity_table.tex")
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
