@@ -1,11 +1,13 @@
 # Prompt Optimization with TextGrad
 
+Part of [ABM_based_LLMS](../README.md) — see the doc index there. Paths below are relative to the repo root.
+
 This README explains how to run prompt optimization for the two LLM tasks in the project:
 
 1. **Post generation** — getting an agent to write posts that match a persona + PHQ-9 profile.
 2. **PHQ-9 assessment** — getting an agent to infer a PHQ-9 score from a user's post history.
 
-Both are implemented in [src/utils/prompt_optimizer.py](src/utils/prompt_optimizer.py) and use [TextGrad](https://github.com/zou-group/textgrad) in a student–teacher loop.
+Both are implemented in [src/utils/prompt_optimizer.py](../src/utils/prompt_optimizer.py) and use [TextGrad](https://github.com/zou-group/textgrad) in a student–teacher loop.
 
 ---
 
@@ -22,7 +24,7 @@ We only optimize the **behavioral / stylistic** part of the prompt. Hard constra
 
 Each rewrite step is bounded: stay under ~180 words, no hallucinated concepts, preserve the fixed formatting and the allowance for harsh/negative emotional ranges.
 
-### Starting prompts (from [data/prompts_post_minimal.json](data/prompts_post_minimal.json))
+### Starting prompts (from [data/prompts_post_minimal.json](../data/prompts_post_minimal.json))
 
 Only the system instruction is optimized — the format block and output template stay frozen.
 
@@ -51,7 +53,7 @@ Validation runs every 2 steps; final prompt is scored on a held-out test set, an
 
 ---
 
-## File outline — [src/utils/prompt_optimizer.py](src/utils/prompt_optimizer.py)
+## File outline — [src/utils/prompt_optimizer.py](../src/utils/prompt_optimizer.py)
 
 One big file, but it splits into a few clear blocks. Skim this before diving in.
 
@@ -91,7 +93,7 @@ If you only care about the prompts, the two functions to read are `call_optimize
 
 ### Environment
 
-The vLLM environment used by both jobs can be installed from [requirements_vllm.txt](requirements_vllm.txt) using [`uv`](https://github.com/astral-sh/uv):
+The vLLM environment used by both jobs can be installed from [requirements_vllm.txt](../requirements_vllm.txt) using [`uv`](https://github.com/astral-sh/uv):
 
 ```bash
 uv venv .venv_vllm
@@ -101,7 +103,7 @@ uv pip install -r requirements_vllm.txt
 
 ### Example job script (post generation)
 
-A working SLURM script — this is [jobs/run_prompt_optimizer.job](jobs/run_prompt_optimizer.job):
+A working SLURM script — this is [jobs/run_prompt_optimizer.job](../jobs/run_prompt_optimizer.job):
 
 ```bash
 #!/bin/bash
@@ -131,7 +133,7 @@ Submit it with:
 sbatch jobs/run_prompt_optimizer.job
 ```
 
-### PHQ-9 variant — [jobs/run_prompt_optimizer_phq9.job](jobs/run_prompt_optimizer_phq9.job)
+### PHQ-9 variant — [jobs/run_prompt_optimizer_phq9.job](../jobs/run_prompt_optimizer_phq9.job)
 
 Same template, but add `--mode phq9` and bump the partition to `gpu_h100` / walltime to 8h:
 

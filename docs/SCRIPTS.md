@@ -1,5 +1,7 @@
 # SCRIPTS.md — driver scripts + SLURM jobs (layout 2026-08)
 
+All paths below are relative to the repo root. Doc index: [../README.md](../README.md).
+
 All drivers live in `scripts/<stage>/` and self-locate — run them from anywhere.
 Jobs live in `jobs/`; submit from anywhere: `sbatch jobs/<name>.job`.
 SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
@@ -42,7 +44,8 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 `run_plots.job` (replot saved SDA nets, 1×A100 1h) · `run_teacher_eval_iter0.job`
 (teacher-eval of the iter_0 post-gen prompt — ex `run_test_phq9.job`) ·
 `run_bert_optimizer.job` (train regressor, MIG 1h) · `run_prompt_optimizer.job` (H100 5h) ·
-`run_prompt_optimizer_phq9.job` (H100 1h).
+`run_prompt_optimizer_phq9.job` (H100 1h). The prompt-optimizer jobs are documented
+in depth in `prompt_optimizer.md`.
 
 ## notes
 - No SLURM wrapper yet (GPU needed, run in an interactive GPU session): `run_finetune`,
@@ -56,3 +59,6 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 - Still in `$HOME`: `delete_out.sh` (cleans `*.out` in cwd — slurm logs now land at the repo
   root, so run it from there) and `useful_commands.sh` (snippet NOTES, **not executable** —
   contains `scancel -u $USER` and cache purges).
+- 8 hand-run CLIs have no `.sh`/`.job` wrapper at all (confusion/mobility/velocity/
+  network-target/entrainment plotting + `build_persona_phq9_eval`) — inventoried with
+  run commands in [../src/README.md](../src/README.md) ("Hand-run CLIs").

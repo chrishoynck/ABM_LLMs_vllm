@@ -1,0 +1,27 @@
+# CS thesis — chapter/figure → code map
+
+Thesis: *Evaluating Transformer Pipelines for the Generation and Assessment of
+Depression in Social Media Data* (joint UvA-VU MSc Computer Science), repo
+`~/thesis/Computer_Science_Transformer/`. Code repo (this one):
+`https://github.com/chrishoynck/ABM_LLMs_vllm.git`. Paths relative to the
+code-repo root. Doc index: [../README.md](../README.md).
+
+| Thesis part | Repo component | Generator | Data inputs |
+|---|---|---|---|
+| Methods §Prompt Optimization; App. A Alg. 1; App. B §Prompt Optimization | `src/utils/prompt_optimizer.py` — see `prompt_optimizer.md` | `sbatch jobs/run_prompt_optimizer.job` (posts) / `run_prompt_optimizer_phq9.job` / `run_teacher_eval_iter0.job` | `data/test_post/Qwen_Qwen3.5-27B/`; outputs `data/test_post/optimized_{tweets,phq9}/` |
+| Human-in-the-loop prompt variant (App. B) | `src/utils/create_data/generate_posts_opt_h.py` | per-iteration hand runs | `data/prompt_optimization_h/`; baselines `data/prompts_post_minimal.json`, `data/prompts_optimal.json` |
+| Methods §Data Generation Loop; App. A Alg. 2 | `src/utils/create_data/{generate_test_data,test_phq9_llms,generate_synthetic_dataset,tools}.py` | `bash scripts/data_generation/create_data_menu.sh` (uncomment ONE block) | personas from `src/utils/tools/build_*personas.py` + `load_personas.py`; outputs `data/test_post/`, `data/test/Qwen/` (embeddings cache) |
+| Methods §MentalBERT+MLP; App. A Alg. 3; App. B §Feature Extraction / §Fine-Tuning | `prompt_optimizer.py` (`train_BERT_model`, `neural_net_BERT`), `src/utils/eval_bert_on_csv.py`, `src/utils/tools/build_bert_testset.py` | `sbatch jobs/run_bert_optimizer.job`; `bash scripts/assessment/run_finetune.sh` | `data/finetune/`; outputs `data/test_post/bert_regression{,_finetuned}/` |
+| Results §PHQ-9 Assessment / §Robustness & Cross-Domain | `src/utils/visualization.py` (eval-comparison CLI) | `bash scripts/assessment/run_eval_comparison.sh`, `run_phq9_on_bert_testset.sh`, `run_minimal_shift.sh` | `data/test_post/method_comparison/`, `optimized_phq9/*/eval_on_*` |
+| Results §Context/State + §Decoding Sensitivity | `src/utils/sensitivity/{sa_embed,sa_analyze,sa_phq9}.py` | `bash scripts/sensitivity/sa_run.sh`, `sa_decoding_run.sh`; `sbatch jobs/sa_phq9_minimal_run.job` | `data/sensitivity/{agent,neighbor,joint,phq9,decoding,phq9_minimal_prompt}/` |
+| App. C §Prompt Robustness | `src/utils/sensitivity/sa_prompt.py` | `bash scripts/sensitivity/sa_prompt_run.sh`; `sbatch jobs/sa_prompt_baseline_run.job` | `data/prompt_optimization_h/qwen27_baseline/prompt_sa*` |
+| Results §Cognitive Distortions + App. C §CDS Lexicon | `src/utils/tools/validate_cds.py` → `plots/cds_validation.png` | `PYTHONPATH=src python -m utils.tools.validate_cds` | `data/distorted_language_ngrams.tsv`, `data/finetune/cds_by_phq9*.csv` |
+| App. C §Classification vs. Embedding Space | `src/utils/tools/plot_confusion_depression.py` + `plot_sbert_cosine_conditioning.py` | hand-run — see `../src/README.md` ("Hand-run CLIs") | `data/test_post/bert_regression/test_blocks_seed35.csv` |
+| Methods fig `power_law_phq9` (HELIUS); App. B train/val curves | `experiment.ipynb` (savefig cells) → `plots/phq9_distribution.png` etc. | run the notebook | `data/confidential/phq9*.{sav,csv}`; optimizer/regressor logs |
+| Methods §Hardware and Environment | `requirements_vllm.txt`, `jobs/*.job` (SLURM, 2×A100/H100) | — | — |
+
+Not used by this thesis: the network simulation (`src/classes/network.py` round
+loop, `data/networks_post/`), lexical entrainment (`src/utils/analyses/`),
+`network_evolution.py`, `sa_network.py`, and the mobility/velocity/bias tools.
+
+Build instructions + known LaTeX quirks live in the thesis repo's own `README.md`.

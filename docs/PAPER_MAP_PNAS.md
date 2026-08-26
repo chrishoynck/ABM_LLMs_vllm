@@ -1,5 +1,7 @@
 # LLM_agent_Depression__PNAS_Nexus — figure/table provenance
 
+All paths below are relative to the repo root. Doc index: [../README.md](../README.md).
+
 Repo-generated assets in the paper (`manuscript.tex`), and how to regenerate them.
 
 | Paper asset | Repo artifact | Generator | Data inputs |
