@@ -24,6 +24,7 @@ analyses; GABM/CLS = network simulation) and the paper
 
 ## Documentation
 
+- [docs/ROADMAP.md](docs/ROADMAP.md) — narrative code roadmap: the pipeline stages, tagged with which manuscript (CS thesis / GABM thesis / PNAS paper) uses each
 - [docs/STRUCTURE.md](docs/STRUCTURE.md) — folder-by-folder "what is used where" (live / historical / frozen / binned) + known quirks
 - [docs/SCRIPTS.md](docs/SCRIPTS.md) — every driver script and SLURM job (inputs, outputs, GPU/walltime)
 - [docs/prompt_optimizer.md](docs/prompt_optimizer.md) — TextGrad prompt optimization: method, file outline, how to run

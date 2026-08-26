@@ -3,15 +3,16 @@
 GABM depression simulation + PHQ-9 assessment pipeline. Grew across two theses
 (CS = SA + generative/assessment model performance; GABM = network simulation)
 and the paper `LLM_agent_Depression__PNAS_Nexus`. Doc index: the repo-root
-`README.md`. Companions in this folder: `SCRIPTS.md` (every driver script +
-SLURM job), `PAPER_MAP_PNAS.md` (paper figure/table provenance),
-`THESIS_MAP_CS.md` / `THESIS_MAP_GABM.md` (thesis chapter→code maps),
-`prompt_optimizer.md` (TextGrad deep-dive). Per-folder `NOTES.md` files hold
+`README.md`. Companions in this folder: `ROADMAP.md` (pipeline walk-through,
+stages tagged per manuscript), `SCRIPTS.md` (every driver script + SLURM job),
+`PAPER_MAP_PNAS.md` (paper figure/table provenance), `THESIS_MAP_CS.md` /
+`THESIS_MAP_GABM.md` (thesis chapter→code maps), `prompt_optimizer.md`
+(TextGrad deep-dive). Per-folder `NOTES.md` files hold
 data details. All paths in this file are relative to the repo root.
 
 | Folder / file | Used by | Status |
 |---|---|---|
-| `README.md` + `docs/` | all | project documentation (this file + the five companion docs; `README.md` is the front door) |
+| `README.md` + `docs/` | all | project documentation (this file + the six companion docs; `README.md` is the front door) |
 | `src/` | all | live code (classes, utils, sensitivity, analyses) — module map in `src/README.md` |
 | `scripts/{simulation,sensitivity,assessment,plotting,data_generation}/` + `jobs/` | all | live drivers + versioned SLURM wrappers — see `SCRIPTS.md` for the full map |
 | `data/prompts_optimal.json` | all | LIVE prompt file (`FC.PROMPTS_FILE`) — has dead keys, see `data/NOTES.md` |

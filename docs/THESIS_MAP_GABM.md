@@ -21,4 +21,4 @@ relative to the code-repo root. Doc index: [../README.md](../README.md).
 | App. B shared pipeline material (data generation, prompt opt, MentalBERT+MLP) | same components as the CS thesis | — | see [THESIS_MAP_CS.md](THESIS_MAP_CS.md) |
 | Exp./App. C §Happy Hub | happy-hub configs in `scripts/simulation/run_simulation_{sda,sdc}.sh` | same simulation jobs | `data/happy_persona.csv`; outputs `data/networks_post/happy/` |
 
-Build instructions + known LaTeX quirks live in the thesis repo's own `README.md`.
+The narrative pipeline walk-through is [ROADMAP.md](ROADMAP.md) (stages tagged [GABM]).

@@ -24,4 +24,4 @@ Not used by this thesis: the network simulation (`src/classes/network.py` round
 loop, `data/networks_post/`), lexical entrainment (`src/utils/analyses/`),
 `network_evolution.py`, `sa_network.py`, and the mobility/velocity/bias tools.
 
-Build instructions + known LaTeX quirks live in the thesis repo's own `README.md`.
+The narrative pipeline walk-through is [ROADMAP.md](ROADMAP.md) (stages tagged [CS]).
