@@ -4,6 +4,8 @@
 # and a GPU session. Uncomment ONE block at a time. ITER / RUN_NAME / NUM_AGENTS
 # at the top drive the two iter-aware blocks (1 and 2).
 set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 ITER=10
 RUN_NAME=qwen27_baseline

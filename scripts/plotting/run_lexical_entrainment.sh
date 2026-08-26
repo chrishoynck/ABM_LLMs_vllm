@@ -18,16 +18,16 @@
 # See src/utils/analyses/lexical_entrainment/global/plot_lexical_entrainment.py and
 # the plot_entrainment_* functions in src/utils/visualization.py.
 #
-#   bash run_lexical_entrainment.sh                 # default: PCA, MentalBERT
-#   OVERWRITE=1 bash run_lexical_entrainment.sh     # redraw everything
-#   REDUCTION=umap bash run_lexical_entrainment.sh  # UMAP instead of PCA
-#   EMBEDDING=sbert bash run_lexical_entrainment.sh # plain SBERT instead
+#   bash scripts/plotting/run_lexical_entrainment.sh                 # default: PCA, MentalBERT
+#   OVERWRITE=1 bash scripts/plotting/run_lexical_entrainment.sh     # redraw everything
+#   REDUCTION=umap bash scripts/plotting/run_lexical_entrainment.sh  # UMAP instead of PCA
+#   EMBEDDING=sbert bash scripts/plotting/run_lexical_entrainment.sh # plain SBERT instead
 
 set -euo pipefail
 
-# This script lives at src/utils/analyses/lexical_entrainment/global/, so the repo
-# root is five directories up. All paths below are relative to that root.
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+# This script lives at scripts/plotting/, so the repo root is two directories up.
+# All paths below are relative to that root.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 # Project venv (has sentence-transformers / torch; the system python does not).

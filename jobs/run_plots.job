@@ -1,0 +1,32 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=Run_model
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=01:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+
+# Check whether the GPU is available
+srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
+
+# Load & plot saved nets for seeds 14-18.
+# Params MUST match the dir they were saved under (see scripts/simulation/run_simulation_sda.sh):
+#   data/networks_post/basis/sda/undirected/non_debiased/1_1655_d4_5_dim5/rounds300_N100/seed_{14..18}/
+# undirected (no --directed), alpha 1.1655, degree 4.5, dim 5, rounds 300, N 100;
+# no --bias_table_path -> non_debiased/ subtree (PathManager).
+# --use_saved_network (no value) = load-only; --save writes plots, not net.json.
+PYTHONPATH=src srun python src/llama_activate.py sda \
+    --num_agents 100 --rounds 300 --check_point 10 \
+    --alpha 1.1655 --degree 4.5 --dim 5 \
+    --seeds 14 15 16 17 18 \
+    --use_saved_network --save
+
+# --- old simulation lines (different topology/seeds; kept for reference) ---
+# srun python src/llama_activate.py sda --num_agents 200 --rounds 600 --check_point 10 --degree 6 --save --directed --seeds 78 --use_saved_network
+# srun python src/llama_activate.py sda --num_agents 200 --rounds 600 --check_point 10 --degree 9 --save --directed --seeds 88 --use_saved_network

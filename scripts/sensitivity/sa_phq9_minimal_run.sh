@@ -16,6 +16,8 @@
 # One rep per band. Guarded: any band whose posts.csv exists is SKIPPED.
 # Invoke from the repo root with the venv activated and a GPU session.
 set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # === Config (edit before running) =========================================
 PROMPT="data/sensitivity/inputs/prompt_iter_0.txt"   # MINIMAL prompt (copy of qwen27_baseline/iter_0/prompt.txt)

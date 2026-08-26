@@ -13,9 +13,10 @@
 # BERT's own per-PHQ-9 result on these blocks is already on disk:
 #   data/test_post/bert_regression/Qwen3.5-27B_seed<SEED>/test_scores_phq9.csv
 #
-# Run from the repo root on a GPU session:  bash run_phq9_on_bert_testset.sh
+# Run from the repo root on a GPU session:  bash scripts/assessment/run_phq9_on_bert_testset.sh
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # ============================== CONFIG ======================================
 PYTHON="${PYTHON:-.venv_vllm/bin/python}"   # interpreter with vLLM + torch (override via env)

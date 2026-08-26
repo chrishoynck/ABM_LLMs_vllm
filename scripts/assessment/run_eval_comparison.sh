@@ -7,6 +7,8 @@
 #
 # Run from the repo root with the venv activated.
 set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # ============================== CONFIG ======================================
 OUT_DIR="data/test_post/method_comparison"

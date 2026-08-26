@@ -1187,7 +1187,7 @@ def _decoding_diversity_stats(runs: dict, n_bootstrap: int = 1000, seed: int = 0
     return order, colours, means, los, his, base_mean, [len(d) for d in data]
 
 
-# (temperature, top_p) actually swept per decoding setting (see sa_decoding_run.sh).
+# (temperature, top_p) actually swept per decoding setting (see scripts/sensitivity/sa_decoding_run.sh).
 _DECODING_PARAMS = {
     "baseline": (0.7, 0.9),
     "temp_lo":  (0.4, 0.9),
@@ -1809,7 +1809,7 @@ def load_heldout_phq9_scores(model_name: str, seeds: list,
 
     Reads ``<base_dir>/<model>_seed<seed>/<eval_subdir>/test_scores_phq9.csv`` — the
     optimized PHQ-9 prompts scored on the SAME blocks the MentalBERT regressor was
-    tested on (produced by run_phq9_on_bert_testset.sh). Use in place of
+    tested on (produced by scripts/assessment/run_phq9_on_bert_testset.sh). Use in place of
     ``load_test_scores`` to annotate the prompt landscape with held-out,
     apples-to-apples scores rather than each run's own in-distribution test split.
     """
@@ -2158,7 +2158,7 @@ def plot_prompt_output_string_pair(
     missing = [lab for lab in order if lab not in have]
     if missing:
         raise SystemExit(f"no replicate embeddings for {missing} under {reps_root} "
-                         "(run sa_prompt_baseline_run.sh + sa_embed first).")
+                         "(run scripts/sensitivity/sa_prompt_baseline_run.sh + sa_embed first).")
     df = neighbor_cosines(runs)
     mat = output_cosine_matrix(df, order, agg=agg)
 
@@ -2215,7 +2215,7 @@ def plot_prompt_output_string_pair(
 # within/cross MEDIAN cosine heatmap + CLI. Each prompt is drawn several times
 # (unseeded) with personas/neighbours/PHQ-9 fixed, so the diagonal is the real
 # within-prompt LLM-noise floor and the off-diagonal is the cross-prompt median.
-# Built by sa_prompt_baseline_run.sh (+ sa_embed); run via:
+# Built by scripts/sensitivity/sa_prompt_baseline_run.sh (+ sa_embed); run via:
 #   PYTHONPATH=src python -m utils.sensitivity.sa_analyze --prompt-reps --root <reps_root>
 # =====================================================================
 

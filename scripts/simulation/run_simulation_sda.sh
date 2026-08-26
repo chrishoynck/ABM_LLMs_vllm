@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full ABM simulation — calibrated SDA, undirected, debiased, HAPPY hub, 5 seeds.
-# (run_simulation2.sh is the SDC counterpart with the same settings.)
+# (run_simulation_sdc.sh is the SDC counterpart with the same settings.)
 #
 # Optimal SDC network parameters (sa_network --net sdc, averaged_best.csv, N=200, 5 seeds):
 #   alpha=4.9429  stub_gamma=1.6187  degree=8.2539  dim=3  n_clusters=2
@@ -8,18 +8,18 @@
 #   Achieved: mean_degree=5.67  gamma=2.13  ks=0.105  C=0.208  phq9_assort=0.075
 #             lcc=0.868  (mean_loss=0.437)
 #
-# Called via run_data_simulation.job (SLURM resources allocated there).
-# Can also run interactively:  bash run_simulation.sh
+# Called via jobs/run_simulation_sda.job (SLURM resources allocated there).
+# Can also run interactively:  bash scripts/simulation/run_simulation_sda.sh
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 # ── Silence watchdog ───────────────────────────────────────────────────────
 # Alerts to stderr if the SLURM output file goes unmodified for 5 minutes.
 _watchdog() {
-    local outfile="${HOME}/slurm_output_${SLURM_JOB_ID:-0}.out"
+    local outfile="${REPO_DIR}/slurm_output_${SLURM_JOB_ID:-0}.out"
     local silence=300   # seconds
     while true; do
         sleep 60

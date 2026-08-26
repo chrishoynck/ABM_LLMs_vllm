@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the network topology Sobol SA from the terminal.
 # Usage:
-#   bash run_sa_network.sh [options]
+#   bash scripts/sensitivity/run_sa_network.sh [options]
 #
 # Options (all optional — defaults shown below):
 #   --n-sobol   N      Sobol base size; total evals = N×12   (default: 512)
@@ -9,14 +9,14 @@
 #   --out-dir   PATH   Where to write CSVs + PNGs             (default: data/sensitivity/network)
 #
 # Example — quick run with 128 base samples (~1 500 builds):
-#   bash run_sa_network.sh --n-sobol 128
+#   bash scripts/sensitivity/run_sa_network.sh --n-sobol 128
 #
 # Example — publication run with all CPUs:
-#   bash run_sa_network.sh --n-sobol 512 --n-jobs -1
+#   bash scripts/sensitivity/run_sa_network.sh --n-sobol 512 --n-jobs -1
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 PYTHON="$REPO_DIR/.venv_vllm/bin/python"

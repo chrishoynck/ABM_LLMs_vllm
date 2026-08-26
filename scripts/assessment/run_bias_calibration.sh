@@ -10,10 +10,11 @@
 # Output: phq9_bias_table.csv next to the regressor — the simulation loads it
 # automatically (network.py), no flag.
 #
-# Run interactively or from a SLURM job:  bash run_bias_calibration.sh
+# Run interactively or from a SLURM job:  bash scripts/assessment/run_bias_calibration.sh
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # ── config ──────────────────────────────────────────────────────────────────
 GEN_MODEL="qwen27"                     # model that writes the posts (matches finetune data)

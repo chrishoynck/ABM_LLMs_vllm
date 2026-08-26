@@ -146,7 +146,7 @@ class _Network:
         # subtracting this offset — indexed by the agent's previous PHQ-9, the
         # score its assessed posts were generated at — removes the instrument
         # bias so the well-being drift is driven by social influence rather than
-        # the regressor. The table is PRECOMPUTED separately (run_bias_calibration.sh
+        # the regressor. The table is PRECOMPUTED separately (scripts/assessment/run_bias_calibration.sh
         # -> utils.tools.phq9_bias) and saved as phq9_bias_table.csv next to
         # regressor.pt; the network only loads and applies it.
         # PHQ-9 bias correction is OPT-IN: applied only when an explicit

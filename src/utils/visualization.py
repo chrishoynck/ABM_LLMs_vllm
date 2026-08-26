@@ -2326,7 +2326,7 @@ def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
 # test_posts.csv for every bar (BERT eval_baseline, prompt eval_on_human300,
 # minimal minimal_human300).
 #
-# Run via the shell wrapper run_eval_comparison.sh, or directly:
+# Run via the shell wrapper scripts/assessment/run_eval_comparison.sh, or directly:
 #   PYTHONPATH=src python -m utils.visualization --out-dir data/test_post/method_comparison
 # =========================================================================== #
 _EVAL_MODEL_SHORT = "Qwen3.5-27B"

@@ -6,6 +6,8 @@
 # Run from the repo root with the venv activated and a GPU session. All output is
 # also tee'd to logs/finetune_<timestamp>.log so you can `tail -f` progress.
 set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # ============================== CONFIG ======================================
 N_TRAIN=3000                       # training personas (<= 7736 available)

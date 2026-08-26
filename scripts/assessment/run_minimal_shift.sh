@@ -22,9 +22,10 @@
 # phq9.system_instruction); we still score it per seed for matching structure.
 #
 # Pipeline (student model only — no teacher / optimizer is loaded). GPU session:
-#   bash run_minimal_shift.sh
+#   bash scripts/assessment/run_minimal_shift.sh
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_DIR"
 
 # ============================== CONFIG ======================================
 PYTHON="${PYTHON:-.venv_vllm/bin/python}"   # interpreter with vLLM + torch (override via env)

@@ -8,7 +8,7 @@ Repo-generated assets in the paper (`manuscript.tex`), and how to regenerate the
 | Fig `SA-PHQ9.png` (§2.2) | `data/sensitivity/plots_sbert/agent_phq9_combined.png` | same `sa_analyze` run | `data/sensitivity/phq9/*` + `phq9_minimal_prompt/*` |
 | Fig `syntetic_data_CDS.png` (§2.3) | `plots/cds_validation.png` | `PYTHONPATH=src python -m utils.tools.validate_cds` | `data/finetune/cds_by_phq9*.csv`, `data/distorted_language_ngrams.tsv` |
 | Fig `power_law_phq9.jpg` (§4.1) | `plots/phq9_distribution.png` | `experiment.ipynb` (savefig cell) | `data/confidential/phq9_filtered.csv` (HELIUS) |
-| Tables 1–2 (estimators / shift) | aggregate CSVs + figs | `bash run_eval_comparison.sh` → `utils.visualization` | `data/test_post/method_comparison/`, `data/test_post/bert_regression/eval_baseline/aggregate.csv`, `data/test_post/optimized_phq9/*/eval_on_*` |
+| Tables 1–2 (estimators / shift) | aggregate CSVs + figs | `bash scripts/assessment/run_eval_comparison.sh` → `utils.visualization` | `data/test_post/method_comparison/`, `data/test_post/bert_regression/eval_baseline/aggregate.csv`, `data/test_post/optimized_phq9/*/eval_on_*` |
 | `re-infer-loop.pdf`, `LLM_inference`, `Textgrad_diagram`, `tweet_generation_loop`, `BERT-phq9` | — | hand-drawn diagrams | — |
 
 Notes

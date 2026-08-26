@@ -101,7 +101,7 @@ uv pip install -r requirements_vllm.txt
 
 ### Example job script (post generation)
 
-A working SLURM script — this is [~/run_prompt_optimizer.job](../run_prompt_optimizer.job):
+A working SLURM script — this is [jobs/run_prompt_optimizer.job](jobs/run_prompt_optimizer.job):
 
 ```bash
 #!/bin/bash
@@ -122,21 +122,21 @@ source .venv_vllm/bin/activate
 
 # Check whether the GPU is available
 srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
-srun python -m src.utils.prompt_optimizer --seeds 22 23 --num-steps 8 --batch-size 7 --val-sample-size 40 --test-sample-size 120
+PYTHONPATH=src srun python -m utils.prompt_optimizer --seeds 22 23 --num-steps 8 --batch-size 7 --val-sample-size 40 --test-sample-size 120
 ```
 
 Submit it with:
 
 ```bash
-sbatch ~/run_prompt_optimizer.job
+sbatch jobs/run_prompt_optimizer.job
 ```
 
-### PHQ-9 variant — [~/run_prompt_optimizer_phq9.job](../run_prompt_optimizer_phq9.job)
+### PHQ-9 variant — [jobs/run_prompt_optimizer_phq9.job](jobs/run_prompt_optimizer_phq9.job)
 
 Same template, but add `--mode phq9` and bump the partition to `gpu_h100` / walltime to 8h:
 
 ```bash
-srun python -m src.utils.prompt_optimizer \
+PYTHONPATH=src srun python -m utils.prompt_optimizer \
     --seeds 23 24 25 26 --num-steps 8 \
     --batch-size 10 --val-sample-size 40 --test-sample-size 100 \
     --mode phq9
@@ -145,7 +145,7 @@ srun python -m src.utils.prompt_optimizer \
 Submit it with:
 
 ```bash
-sbatch ~/run_prompt_optimizer_phq9.job
+sbatch jobs/run_prompt_optimizer_phq9.job
 ```
 
 ---

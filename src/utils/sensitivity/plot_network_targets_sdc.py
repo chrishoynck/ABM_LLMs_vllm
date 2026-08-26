@@ -92,7 +92,7 @@ _BAND_OVERRIDE = {"phq9_assort": (0.0, 0.10)}
 # SDC parameter order for _eval_one(net="sdc"):
 #   [alpha, stub_gamma, degree, dim, n_clusters, latent_weight, age_weight]
 # Saved set: data/networks_post/basis/sdc/undirected/non_debiased/4_9429_d8_2539_dim3
-# (run_simulation.sh / network_sdc/averaged_best.csv).
+# (scripts/simulation/run_simulation_sdc.sh / network_sdc/averaged_best.csv).
 _SDC_SAVED     = [4.9429, 1.6187, 8.2539, 3, 2, 18.3813, 2.2095]
 _SDC_HIGH_DEG  = [4.9429, 1.6187, 10.0,   3, 2, 18.3813, 2.2095]   # degree param ↑ (realizes k≈6)
 _SDC_HIGH_PHQ9 = [8.0,    1.6187, 8.2539, 2, 2,  2.0,    2.2095]   # alpha↑ dim↓ latent_w↓

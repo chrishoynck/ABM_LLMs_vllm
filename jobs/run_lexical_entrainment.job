@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=9
 #SBATCH --time=01:00:00
-#SBATCH --output=slurm_output_%A.out
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
 
 # Per-seed lexical-entrainment grids on MentalBERT embeddings.
 #
@@ -15,7 +15,7 @@
 # the 4 per-setting figures + the combined 4x5 grid under
 # plots/lexical_entrainment/.
 #
-# Submit:  sbatch src/utils/analyses/lexical_entrainment/global/run_lexical_entrainment.job
+# Submit:  sbatch jobs/run_lexical_entrainment.job
 # Re-runs reuse the caches and skip existing figures. Knobs (env vars, see
 # run_lexical_entrainment.sh): OVERWRITE=1, REDUCTION=umap, EMBEDDING=sbert.
 # One GPU is enough — sentence-transformers encodes on a single device.
@@ -27,4 +27,4 @@ source .venv_vllm/bin/activate
 # Check whether the GPU is available
 srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
 
-srun bash src/utils/analyses/lexical_entrainment/global/run_lexical_entrainment.sh
+srun bash scripts/plotting/run_lexical_entrainment.sh

@@ -15,7 +15,7 @@ drawn), and a run whose figures all exist is not even loaded. Pass
 
 Two ways to select runs:
 
-  * **Explicit parameters** — the same flags ``run_simulation.sh`` uses
+  * **Explicit parameters** — the same flags ``scripts/simulation/run_simulation_sda.sh`` uses
     (``net``, ``--alpha/--degree/--dim`` for sda/sdc, ``--rounds``, ``--num_agents``,
     ``--seeds``). The on-disk path is resolved through ``PathManager`` exactly as in
     the simulation, so it lands on the standard checkpoints.
@@ -123,7 +123,7 @@ def _plot_one(file_path, opts):
 
 
 def _explicit_paths(opts):
-    """Resolve standard checkpoint paths from run_simulation.sh-style flags."""
+    """Resolve standard checkpoint paths from run_simulation_sda.sh-style flags."""
     from utils.tools.path_manager import PathManager
 
     paths = []
@@ -699,7 +699,7 @@ def main():
     parser.add_argument("--min_seeds", type=int, default=1,
                         help="Grid mode: skip combos with fewer than this many seeds.")
 
-    # Network-identifying parameters (mirror run_simulation.sh / llama_activate)
+    # Network-identifying parameters (mirror run_simulation_sda.sh / llama_activate)
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--degree", type=float, default=2)
     parser.add_argument("--dim", type=int, default=2)
@@ -773,7 +773,7 @@ def main():
         paths = _explicit_paths(opts)
         if not paths:
             # No checkpoints for this parameter set is a normal "nothing to do"
-            # outcome when looping run_simulation.sh configs — exit cleanly so a
+            # outcome when looping run_simulation_sda.sh configs — exit cleanly so a
             # `set -e` shell loop moves on to the next config.
             print("No matching checkpoints found for the given parameters — skipping.")
             return

@@ -28,12 +28,12 @@
 #
 # See src/utils/network_evolution.py and src/utils/tools/plot_network_evolution.py.
 #
-#   bash run_plot_evolution.sh                # skip figures already on disk
-#   OVERWRITE=1 bash run_plot_evolution.sh    # redraw everything
+#   bash scripts/plotting/run_plot_evolution.sh                # skip figures already on disk
+#   OVERWRITE=1 bash scripts/plotting/run_plot_evolution.sh    # redraw everything
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 # Pass --overwrite through to the driver when OVERWRITE=1.
@@ -44,7 +44,7 @@ OVERWRITE_FLAG=()
 # networkx/seaborn/SALib — see the network-sa-python-env note).
 PY=".venv_vllm/bin/python"
 
-# ── Shared run parameters (match run_simulation.sh) ─────────────────────────
+# ── Shared run parameters (match run_simulation_sda.sh) ─────────────────────────
 ROUNDS=300              # only fully-finished runs are plotted (rounds filter)
 CHECK_POINT=10          # PHQ-9 update cadence — must match the simulated run
 CSD_WINDOW=8            # critical-slowing-down rolling window, in PHQ-9 updates
