@@ -63,7 +63,7 @@ PCA/UMAP, degree-weighted PHQ-9) and
   CLIs). Driver: `scripts/data_generation/create_data_menu.sh`.
 - **sensitivity/** — 3-stage SA pipeline: generate (via `create_data`) → embed
   (`sa_embed.py`) → analyze (`sa_analyze.py`, the hub; `sa_phq9.py` regressor-space
-  variant; `sa_prompt.py` prompt axis). `sa_network.py` is separate: Sobol SA +
+  variant; prompt axis via `sa_analyze --prompt-reps`). `sa_network.py` is separate: Sobol SA +
   calibration of SDA/SDC topology parameters (CPU). `plot_network_targets{,_sdc}.py`
   plot simulated configs vs calibration target bands.
 - **analyses/lexical_entrainment/** — `global/plot_lexical_entrainment.py`

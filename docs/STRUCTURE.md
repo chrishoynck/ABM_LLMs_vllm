@@ -16,7 +16,7 @@ data details. All paths in this file are relative to the repo root.
 | `src/` | all | live code (classes, utils, sensitivity, analyses) — module map in `src/README.md` |
 | `scripts/{simulation,sensitivity,assessment,plotting,data_generation}/` + `jobs/` | all | live drivers + versioned SLURM wrappers — see `SCRIPTS.md` for the full map |
 | `data/prompts_optimal.json` | all | LIVE prompt file (`FC.PROMPTS_FILE`) — has dead keys, see `data/NOTES.md` |
-| `data/prompts_post.json` | provenance | HISTORICAL — generated the high-fidelity set (see `data/test_post/Qwen_Qwen3.5-27B/NOTES.md`) |
+| `data/prompts_post.json` | provenance | HISTORICAL — the generation prompt (`tweet_gen.*`) behind the high-fidelity set; obsolete `phq9.*` keys removed 2026-08-27 (see `data/test_post/Qwen_Qwen3.5-27B/NOTES.md`) |
 | `data/prompts_post_minimal.json` | CS/paper | live (minimal prompt baseline) |
 | `data/networks_post/` | GABM | live simulation runs |
 | `data/test_post/` | CS + paper | live: high-fidelity set, regressors, prompt-opt evals |

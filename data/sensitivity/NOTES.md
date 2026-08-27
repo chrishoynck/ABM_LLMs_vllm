@@ -24,7 +24,7 @@ Local copies of the small generation inputs (see `inputs/NOTES.md`). Drivers
 point here since 2026-08; originals unchanged elsewhere.
 
 ## Implicit dependencies (not duplicated, by design)
-- Neighbour pool: `DEFAULT_NEIGHBOR_ROOTS` (src/utils/create_data/tools.py:81) →
+- Neighbour pool: `DEFAULT_NEIGHBOR_ROOTS` (src/utils/create_data/loaders.py:80) →
   `data/test_post/Qwen_Qwen3.5-27B/...` — used implicitly by every SA generation
   (no driver passes `--neighbor-source-dir`).
 - Regressor for `sa_phq9.py` (DEFAULT_REGRESSOR, sa_phq9.py:80):

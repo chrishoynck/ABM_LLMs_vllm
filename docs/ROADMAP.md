@@ -49,8 +49,9 @@ for the stochastic axes (agent persona / neighbour context / joint vs the
 irreducible-noise baseline), the PHQ-9 severity-band separability (S-BERT
 adjacent-band cosine — the paper's convergence result), and the
 temperature/top-p decoding grid (PNAS `decoder_SA`); `sa_phq9.py` repeats the
-axes in regressor space (PHQ-9-drop anchors figure); `sa_prompt.py` prompt
-robustness [CS only]. Drivers in `scripts/sensitivity/`.
+axes in regressor space (PHQ-9-drop anchors figure). CS prompt robustness comes
+from `sa_analyze.plot_prompt_sensitivity_pair` (via `experiment.ipynb`), not from
+the prompt-variant SA. Drivers in `scripts/sensitivity/`.
 
 ## 5. Network construction & calibration — [GABM]
 

@@ -8,7 +8,7 @@
 #     * same neighbour posts (same --neighbor-seed across every prompt)
 #     * same per-slot PHQ-9  (falls out of the fixed agent-seed)
 #     * LLM left UNSEEDED    (--nondeterministic; one free draw per prompt)
-# so a paired per-(agent, round) cosine in sa_prompt.py isolates the prompt.
+# so a paired per-(agent, round) cosine isolates the prompt effect.
 #
 # Guarded: any variant whose output CSV already exists is SKIPPED (no
 # regeneration). Delete a CSV to force its variant to re-generate.
@@ -30,9 +30,9 @@ NUM_NEIGHBORS=5
 # (e.g. prompt_Qwen_Qwen3.5-27B.csv, which other pipelines depend on by name).
 SA_DIR="data/prompt_optimization_h/qwen27_baseline/prompt_sa"
 
-# label -> instruction file. The label becomes the CSV stem, which sa_prompt.py
-# uses for --box-against / --heatmap-exclude matching (so keep 'minimal' and
-# 'iter_10' in the names). Edit this block to add/remove prompts.
+# label -> instruction file. The label becomes the CSV stem, reused as rep_1 by
+# sa_prompt_baseline_run.sh (so keep 'minimal' and 'iter_10' in the names).
+# Edit this block to add/remove prompts.
 LABELS=(minimal iter_10 textgrad_seed24 textgrad_seed25 textgrad_seed28 textgrad_seed29 textgrad_seed53)
 declare -A PROMPTS=(
     [minimal]="data/prompt_optimization_h/qwen27_baseline/inputs/prompt_iter_0.txt"
