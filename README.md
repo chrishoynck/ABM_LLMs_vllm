@@ -55,3 +55,54 @@ GPU work goes through SLURM: `sbatch jobs/<name>.job` (see [docs/SCRIPTS.md](doc
 - PNAS paper figures/tables → [docs/PAPER_MAP_PNAS.md](docs/PAPER_MAP_PNAS.md)
 - CS thesis (`Computer_Science_Transformer/`) → [docs/THESIS_MAP_CS.md](docs/THESIS_MAP_CS.md)
 - GABM thesis (`Computational_Science_GABM/`) → [docs/THESIS_MAP_GABM.md](docs/THESIS_MAP_GABM.md)
+
+### Known caveat — assessment and generation results come from different datasets
+
+Three generation prompts produced the synthetic post data:
+
+| Dataset | Generation prompt | Where |
+|---|---|---|
+| base / "high-fidelity" (~1.2k blocks) | `data/prompts_post.json` — an early, informally tuned prompt predating the systematic optimization study. NOT the minimal prompt; do not call it "non-optimized". | `data/test_post/Qwen_Qwen3.5-27B/` ([NOTES](data/test_post/Qwen_Qwen3.5-27B/NOTES.md)) |
+| minimal | `data/prompts_post_minimal.json` | `data/sensitivity/phq9_minimal_prompt/` |
+| human-optimized | `data/prompts_optimal.json` | `data/finetune/`, `data/sensitivity/phq9/`, all simulation runs |
+
+Order actually run: high-fidelity set first → TextGrad optimization of the PHQ-9
+*assessment* prompt on that set → TextGrad + human optimization of the
+*generation* prompt, which was never fed back into a regenerated high-fidelity
+set (no compute/time budget once the focus moved to the GABM thesis). The clean
+order would have been: optimize generation → regenerate high-fidelity →
+optimize assessment.
+
+Consequences per pipeline:
+- **LLM assessment prompt** (`data/test_post/optimized_phq9/`) — optimized and
+  evaluated on the base set only; on human-optimized data it is *evaluated*
+  (shift table) but never re-optimized.
+- **MentalBERT+MLP** — trained on the base set (`bert_regression/`), then
+  fine-tuned on human-optimized data (`bert_regression_finetuned/`, via
+  `scripts/assessment/run_finetune.sh`). The fine-tuned regressor is the one the
+  simulation uses, so GABM-thesis results are internally consistent.
+- Per-band MAE/bias figures come from the base set; the S-BERT adjacent-band and
+  class-similarity figures come from minimal + human-optimized SA runs
+  (`data/sensitivity/`). **Any claim linking assessment error to linguistic
+  overlap crosses distributions** unless it uses the base-set version.
+
+Contained, not fatal: the bias direction (over-estimate mild, under-estimate
+severe) and the rising adjacent-band similarity reproduce on every distribution
+and in both assessor families, and the mismatch makes the shift table
+(`scripts/assessment/run_eval_comparison.sh`) a fair symmetric OOD test rather
+than a self-test. A within-distribution version of the linguistics↔error link
+already exists: the S-BERT class-similarity matrix computed on the base-set BERT
+test split (CS thesis App. B, `fig:phq9_confusion_cosim`).
+
+Manuscript-side TODOs (fix there, not here) — agreed with D. Roy 2026-08-26 to
+stay a background limitation, provided each result set names its dataset:
+- Both Methods sections currently imply the high-fidelity set came from the
+  optimized prompts; name its actual generating prompt where it is introduced.
+- State the dataset in the assessment figure/table captions (CS thesis Figs
+  4.6–4.8 + `tab:phq9-estimators`; paper `tab:estimators`,
+  `fig:prompt_comparison`) and in Figs 4.3b / 4.4.
+- Limitations: one sentence that both assessors were calibrated on the base set
+  and only MentalBERT+MLP was re-fit and re-evaluated on the human-optimized
+  one.
+- Use one dataset name throughout; the CS thesis currently mixes "high fidelity",
+  "non-optimized" and "the synthetic dataset" for the same data.
