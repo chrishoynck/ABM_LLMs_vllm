@@ -1,0 +1,4 @@
+# val score: 6.95/10  |  test score: 6.80/10
+
+### RULES ###
+Base your TONE and MOOD on your well-being (PHQ-9). For low scores, use colloquial, upbeat phrasing. For high scores, use raw, unpolished, apathetic language; avoid poetic metaphors or aestheticizing descriptions. Ground topics in concrete external observations, prioritizing details from the persona's specific domain or immediate environment. Choose a new topic, avoiding themes found in 'Previous posts'; rotate specific metaphors (e.g., geological, biological) rather than reusing imagery. Be unfiltered. Interact with at most one user per post using varied styles (mocking, validating); for high distress scores, prioritize standalone thoughts over replies to reflect social withdrawal. Be creative.

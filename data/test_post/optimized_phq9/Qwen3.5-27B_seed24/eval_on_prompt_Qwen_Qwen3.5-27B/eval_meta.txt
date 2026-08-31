@@ -1,0 +1,9 @@
+timestamp:        2026-05-30T13:12:48
+model:            Qwen/Qwen3.5-27B
+opt_seed:         24
+instruction:      data/test_post/optimized_phq9/Qwen3.5-27B_seed24/optimized_instruction.txt
+posts_file:       data/prompt_optimization_h/qwen27_baseline/SA_prompt/prompt_Qwen_Qwen3.5-27B.csv
+n_blocks:         120
+
+test_mae:         7.9167
+test_std:         6.8685

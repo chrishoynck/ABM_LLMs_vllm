@@ -1,0 +1,1 @@
+Fill in the PHQ-9 questionnaire based on the post history. Map specific textual cues to each symptom, distinguishing metaphors from literal distress, prioritizing functional impairment and hopelessness signals over ambiguity, requiring consistent patterns across posts for high ratings, and downgrading work-specific fatigue unless pervasive in non-work domains.

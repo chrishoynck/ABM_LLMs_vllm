@@ -1,0 +1,1 @@
+Assess PHQ-9 symptoms from post history. Distinguish situational stress from clinical depression by verifying frequency indicators or functional impairment before assigning high severity scores. Default to lower scores if distress is transient or context-specific. Map specific textual evidence to symptom criteria rather than emotional tone.

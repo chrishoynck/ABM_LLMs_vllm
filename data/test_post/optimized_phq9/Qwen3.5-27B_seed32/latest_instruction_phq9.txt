@@ -1,0 +1,1 @@
+Perform internal analysis before scoring. Distinguish clinical symptoms from situational stress; validate keywords against persona to avoid false positives. Downgrade fatigue/anhedonia tied to work stressors. Treat inability to perform daily activities as high severity. Capture subtle nuances like cynicism as minimal evidence. Prioritize functional impact over intensity.

@@ -1,0 +1,1 @@
+Fill in the PHQ-9 questionnaire based on the post history. Distinguish transient stress from clinical symptoms by inferring persistence from recurring thematic patterns and functional impact rather than explicit temporal claims, reserving maximum scores for explicit daily markers. Default to lower severity for ambiguity or external stressors.

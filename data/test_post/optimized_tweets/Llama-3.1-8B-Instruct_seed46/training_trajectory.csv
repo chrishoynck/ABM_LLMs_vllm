@@ -1,0 +1,4 @@
+model,seed,step,split,mean_score,std_score,n_samples
+Llama-3.1-8B-Instruct,46,2,val,5.0,1.4142,8
+Llama-3.1-8B-Instruct,46,3,val,6.0,1.0,8
+Llama-3.1-8B-Instruct,46,3,test,5.32,1.1737,50

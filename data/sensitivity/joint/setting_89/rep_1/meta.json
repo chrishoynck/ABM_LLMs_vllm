@@ -1,0 +1,8 @@
+{
+  "encoder": "MentalBERT",
+  "embedding_dim": 768,
+  "n_posts": 600,
+  "n_agents": 60,
+  "n_rounds": 10,
+  "source_csv": "data/sensitivity/joint/setting_89/rep_1/posts.csv"
+}

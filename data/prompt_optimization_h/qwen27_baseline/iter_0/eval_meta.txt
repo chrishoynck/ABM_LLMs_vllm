@@ -1,0 +1,17 @@
+timestamp:           2026-06-24T09:28:31
+model:               Qwen/Qwen3.5-27B
+seed:                42
+sample_seed:         999
+llm_seed:            <vllm default>
+num_agents:          100
+tweets_per_sample:   3
+instruction_file:    data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt
+persona_phq9_file:   data/personas_eval_1000_phq9.csv
+neighbor_pool_size:  119782
+neighbor_pool_roots:
+  - data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_inter
+  - data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter
+sampled_row_idx:     [0, 10, 31, 32, 37, 38, 49, 88, 93, 95, 97, 101, 108, 117, 125, 129, 132, 139, 149, 154, 155, 157, 163, 167, 175, 198, 207, 233, 269, 274, 275, 284, 290, 295, 301, 304, 320, 331, 346, 353, 384, 390, 409, 421, 448, 464, 465, 474, 504, 513, 517, 527, 531, 535, 539, 541, 547, 555, 557, 559, 565, 575, 592, 609, 612, 619, 629, 632, 639, 646, 681, 684, 692, 702, 716, 725, 733, 742, 747, 751, 759, 785, 811, 817, 822, 834, 836, 873, 892, 907, 909, 911, 934, 935, 937, 946, 950, 953, 986, 990]
+
+mean_score:          5.6800
+std_score:           1.4063

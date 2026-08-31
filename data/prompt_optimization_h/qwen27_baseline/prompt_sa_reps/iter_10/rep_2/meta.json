@@ -1,0 +1,8 @@
+{
+  "encoder": "MentalBERT",
+  "embedding_dim": 768,
+  "n_posts": 1200,
+  "n_agents": 120,
+  "n_rounds": 10,
+  "source_csv": "data/prompt_optimization_h/qwen27_baseline/prompt_sa_reps/iter_10/rep_2/posts.csv"
+}

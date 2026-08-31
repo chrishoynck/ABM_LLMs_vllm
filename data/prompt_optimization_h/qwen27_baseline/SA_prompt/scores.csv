@@ -1,0 +1,2 @@
+variant_id,model,csv,n_agents,sample_seed,training_score,test_score
+prompt,Qwen/Qwen3.5-27B,../../../sensitivity/phq9_minimal_prompt/severe/rep_1/posts.csv,60,0,,

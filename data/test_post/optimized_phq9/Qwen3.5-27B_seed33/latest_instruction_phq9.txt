@@ -1,0 +1,1 @@
+Assess PHQ-9 symptoms from post history. Prioritize functional impairment and behavioral withdrawal over explicit frequency markers. Treat metaphorical expressions of anhedonia or fatigue as valid evidence. Score based on cumulative symptom presence across posts rather than defaulting to zero for context-specific distress or effortful coping. Verify criteria internally.

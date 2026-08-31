@@ -1,0 +1,2 @@
+variant_id,model,csv,n_agents,sample_seed,training_score,test_score
+best_instruction_tweet,Qwen/Qwen3.5-27B,../../../prompt_optimization_h/qwen27_baseline/prompt_sa_reps/textgrad_seed53/rep_3/posts.csv,120,0,,

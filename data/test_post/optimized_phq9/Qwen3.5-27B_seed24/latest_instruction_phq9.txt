@@ -1,0 +1,1 @@
+Fill in PHQ-9 based on post history. Distinguish clinical symptoms from situational stress, prioritizing functional impairment over emotional tone; assign high scores only for pervasive clinical markers. Use internal reasoning to evaluate domain-specific metaphors for underlying clinical distress rather than discounting them.

@@ -1,0 +1,9 @@
+timestamp:        2026-06-18T20:31:34
+model:            Qwen/Qwen3.5-27B
+opt_seed:         23
+instruction:      data/test_post/optimized_phq9/Qwen3.5-27B_seed23/minimal_instruction.txt
+posts_file:       data/test_post/bert_regression/test_blocks_seed35_minimal.csv
+n_blocks:         1125
+
+test_mae:         5.1760
+test_std:         3.8934

@@ -1,0 +1,8 @@
+{
+  "encoder": "SBERT-MiniLM-L6-v2",
+  "embedding_dim": 384,
+  "n_posts": 600,
+  "n_agents": 60,
+  "n_rounds": 10,
+  "source_csv": "data/sensitivity/phq9_minimal_prompt/modsevere/rep_1/posts.csv"
+}

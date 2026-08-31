@@ -382,7 +382,13 @@ cython_debug/
 
 # Plots and data
 plots/
-data/
+# Non-confidential research data under data/ is tracked. These stay local:
+# confidential (HELIUS), a different paper's frozen tree, and trees too large
+# for GitHub (networks_post 14G; test/ holds a >100MB embedding cache).
+data/confidential/
+data/methodology_paper/
+data/networks_post/
+data/test/
 confidential/*
 *.secret
 *.key
