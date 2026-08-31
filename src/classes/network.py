@@ -358,7 +358,6 @@ class _Network:
         for agent in agents:
             prompt = agent.phq9_questionnaire_prompt(
                 tokenizer, agent.tweethistory[-check_point:],
-                use_persona=agent.persona is not None,
             )
             templated = tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True,

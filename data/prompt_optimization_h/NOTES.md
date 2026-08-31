@@ -14,8 +14,6 @@ the automated TextGrad counterpart lives in `data/test_post/optimized_*`.
   `prompt_cosine_reps/` outputs of `sa_analyze --prompt-reps`.
 - `SA_prompt/` — `sa_prompt.py` default `--sa-dir`; its
   `prompt_Qwen_Qwen3.5-27B.csv` is also read by `run_finetune.sh:25`.
-- `prompt_sa_baseline/` — binned (output of the deleted `sa_prompt_baseline.py`,
-  merged into `sa_analyze.py --prompt-reps`).
 
 ## Status flags
 - The prompt-variant SA (`sa_prompt.py`, `prompt_sa/`, `prompt_sa_reps/` and

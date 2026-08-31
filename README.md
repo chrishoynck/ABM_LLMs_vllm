@@ -15,7 +15,7 @@ analyses; GABM/CLS = network simulation) and the paper
 |---|---|
 | `src/` | all live Python — module map in [src/README.md](src/README.md) |
 | `scripts/<stage>/` + `jobs/` | shell drivers + SLURM jobs — full map in [docs/SCRIPTS.md](docs/SCRIPTS.md) |
-| `data/` | inputs + run outputs (~16 GB, gitignored) — see `data/NOTES.md` |
+| `data/` | inputs + run outputs — non-confidential research data is tracked in git; `confidential/` (HELIUS), `methodology_paper/`, `networks_post/` (14 GB) and `test/` stay local. **Provenance map (what comes from where, used for what): [data/README.md](data/README.md)**; cleanup/status notes in `data/NOTES.md` |
 | `plots/` | figure outputs (gitignored) |
 | `logs/` | run logs; nothing reads them back (gitignored) |
 | `bin/` | recoverable discard from the 2026-08 cleanup — restore with `mv bin/X X`, see `bin/NOTES.md` |
@@ -32,7 +32,8 @@ analyses; GABM/CLS = network simulation) and the paper
 - [docs/THESIS_MAP_CS.md](docs/THESIS_MAP_CS.md) — CS thesis chapter → code map
 - [docs/THESIS_MAP_GABM.md](docs/THESIS_MAP_GABM.md) — Computational Science (GABM) thesis chapter → code map
 - [src/README.md](src/README.md) — module map + the hand-run analysis CLIs
-- per-folder `NOTES.md` files (under `data/`, `bin/`) — file-level details for the data trees
+- [data/README.md](data/README.md) — data provenance map: where every dataset comes from (real vs hand-made vs generated, and by which script) and what it is used for
+- per-folder `NOTES.md` files (under `data/`, `bin/`) — file-level status/cleanup details for the data trees
 
 ## Getting started
 
@@ -62,7 +63,7 @@ Three generation prompts produced the synthetic post data:
 
 | Dataset | Generation prompt | Where |
 |---|---|---|
-| base / "high-fidelity" (~1.2k blocks) | `data/prompts_post.json` — an early, informally tuned prompt predating the systematic optimization study. NOT the minimal prompt; do not call it "non-optimized". | `data/test_post/Qwen_Qwen3.5-27B/` ([NOTES](data/test_post/Qwen_Qwen3.5-27B/NOTES.md)) |
+| base / "high-fidelity" (12k blocks = 120k posts; the CS thesis' "≈1.2k blocks / 12k posts" is a 10× slip) | `data/prompts_post.json` — an early, informally tuned prompt predating the systematic optimization study. NOT the minimal prompt; do not call it "non-optimized". | `data/test_post/Qwen_Qwen3.5-27B/` ([NOTES](data/test_post/Qwen_Qwen3.5-27B/NOTES.md)) |
 | minimal | `data/prompts_post_minimal.json` | `data/sensitivity/phq9_minimal_prompt/` |
 | human-optimized | `data/prompts_optimal.json` | `data/finetune/`, `data/sensitivity/phq9/`, all simulation runs |
 
@@ -106,3 +107,7 @@ stay a background limitation, provided each result set names its dataset:
   one.
 - Use one dataset name throughout; the CS thesis currently mixes "high fidelity",
   "non-optimized" and "the synthetic dataset" for the same data.
+- CS thesis Methods (§ Datasets and Splits) states the base set as "≈1,200
+  post-blocks (≈12,000 posts)" — a 10× slip. On-disk counts and the split
+  figures both manuscripts use (9,638+1,237+1,125 = 12,000 blocks) give
+  12,000 blocks / 120,000 posts; the PNAS manuscript's numbers are correct.

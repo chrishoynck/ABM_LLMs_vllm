@@ -234,158 +234,83 @@ class Agent:
             # f"relevant depressive symptoms and {diag_flag}.{extra_txt}"
         )
     
-    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str], force_active=False, use_persona=False):
+    def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str]):
         """
-        build a phq9_questionnaire_prompt
+        build the persona-aware phq9_questionnaire_prompt (only live variant;
+        the non-persona system_user / user_template_user paths were removed)
         """
-        if self.well_being is None:
-            well_being_info =  "No well-being information available."
-        else:
-            well_being_info = self.well_being_prompt(self.well_being)
-        
-        system = self._PROMPTS["phq9"]["system_user"]
-        
-        # involve persona in the prompt
-        if use_persona:
-            system = self._PROMPTS["phq9"]["system_persona"]
-            user = self._PROMPTS["phq9"]["user_template_persona"].format(
-                agent_id=self.ID,
-                persona=self.persona,
-                tweets_block="\n".join(tweets)
-            )
-        
-        # do not provide well-being information 
-        elif force_active:
-            user = self._PROMPTS["phq9"]["user_template_forced"].format(
-                agent_id=self.ID,
-                tweets_block="\n".join(tweets)
-            )
-        else:
-            user = self._PROMPTS["phq9"]["user_template_user"].format(
-                agent_id=self.ID,
-                well_being_info=well_being_info,
-                tweets_block="\n".join(tweets)
-            )
+        system = self._PROMPTS["phq9"]["system_persona"]
+        user = self._PROMPTS["phq9"]["user_template_persona"].format(
+            agent_id=self.ID,
+            persona=self.persona,
+            tweets_block="\n".join(tweets)
+        )
 
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        
-        # print("PROMPT MESSAGES: ", messages)
+
         return messages
-        # return tokenizer.apply_chat_template(
-        #     messages, tokenize=False, add_generation_prompt=True
-        # )
 
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
 
         prompt_cfg = self._PROMPTS["tweet_gen"]
-        system_str = prompt_cfg["system_forced"] if force_active else prompt_cfg["system_standard"]
-        system_content = system_str.format(max_chars=max_chars)
-
         if not force_active:
-            # Data-generation path (TestLLMs with interaction=True): own-block + neighbor-block
-            # fed into user_template. tweet_block_phq9 adds same-score anti-repetition.
-            max_history = 2
-            own_block = ""
-            if len(self.tweethistory) == 0:
-                own_block = f"(no own previous {FC.label_plural})"
-            else:
-                recent = [t for t in self.tweethistory[-max_history:] if t and t != FC.NO_CONTENT]
-                if recent:
-                    items = "\n".join(f"- {t[:max_chars]}" for t in reversed(recent))
-                    own_block = items + f"\n(Do not repeat topics or reuse words from your previous {FC.label_plural}.)"
-                else:
-                    own_block = f"(no own previous {FC.label_plural})"
-
-            if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
-                recent = self.tweethistory[-self._tweets_since_phq9_update:]
-                same_score = [t for t in recent if t and t != FC.NO_CONTENT]
-                if same_score:
-                    items = "\n".join(f'- "{t[:max_chars]}"' for t in same_score)
-                    own_block = (
-                        f"\nYour previous {FC.label_plural} for this well-being state:\n{items}\n"
-                        f"(Do NOT adopt the same topics or reuse the same words. "
-                        f"Be original and vary your content.)"
-                    )
-                else:
-                    own_block = ""
-
-            neighbor_block = f"(no neighbor {FC.label_plural})" if len(neighbor_pairs) == 0 else "\n".join(
-                f"- Agent {nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs
+            raise ValueError(
+                "non-forced tweet generation (legacy TestLLMs interaction mode) was "
+                "removed together with the tweet_gen.system_standard/user_template keys"
             )
-            user_content = prompt_cfg["user_template"].format(
+        system_content = prompt_cfg["system_forced"].format(max_chars=max_chars)
+
+        if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
+            # Data-generation path: show tweets since last PHQ-9 update.
+            recent = self.tweethistory[-self._tweets_since_phq9_update:]
+            same_score = [t for t in recent if t and t != FC.NO_CONTENT]
+            if same_score:
+                items = "\n".join(f'- "{t[:max_chars]}"' for t in same_score)
+                previous_tweet_block = (
+                    f"\nYour previous {FC.label_plural} for this well-being state:\n{items}\n"
+                    f"(Do NOT adopt the same topics or reuse the same words. "
+                    f"Be original and vary your content.)"
+                )
+            else:
+                previous_tweet_block = ""
+            user_content = prompt_cfg["user_template_forced"].format(
                 agent_id=self.ID,
                 persona=self.persona,
                 well_being=self.well_being_prompt(self.well_being),
-                neighbor_block=neighbor_block,
-                own_block=own_block,
+                previous_tweet_block=previous_tweet_block,
             )
-
         else:
-            if tweet_block_phq9 and self._tweets_since_phq9_update > 0:
-                # Data-generation path: show tweets since last PHQ-9 update.
-                recent = self.tweethistory[-self._tweets_since_phq9_update:]
-                same_score = [t for t in recent if t and t != FC.NO_CONTENT]
-                if same_score:
-                    items = "\n".join(f'- "{t[:max_chars]}"' for t in same_score)
-                    previous_tweet_block = (
-                        f"\nYour previous {FC.label_plural} for this well-being state:\n{items}\n"
-                        f"(Do NOT adopt the same topics or reuse the same words. "
-                        f"Be original and vary your content.)"
-                    )
-                else:
-                    previous_tweet_block = ""
-                user_content = prompt_cfg["user_template_forced"].format(
-                    agent_id=self.ID,
-                    persona=self.persona,
-                    well_being=self.well_being_prompt(self.well_being),
-                    previous_tweet_block=previous_tweet_block,
+            # Main simulation path — SA-aligned format.
+            recent_own = [t for t in self.tweethistory[-3:] if t and t != FC.NO_CONTENT]
+            if recent_own:
+                own_section = "### PREVIOUS POSTS ###\n" + "\n".join(
+                    f"- {t[:max_chars]}" for t in recent_own
                 )
             else:
-                # Main simulation path — SA-aligned format.
-                # Own posts: last 5 actual tweets.
-                recent_own = [t for t in self.tweethistory[-3:] if t and t != FC.NO_CONTENT]
-                if recent_own:
-                    # first_words = list(dict.fromkeys(
-                    #     t.split()[0].strip('"\'.!?,') for t in recent_own if t.split()
-                    # ))
-                    own_section = "### PREVIOUS POSTS ###\n" + "\n".join(
-                        f"- {t[:max_chars]}" for t in recent_own
-                    )
-                    # + "\n(Do not repeat recurring phrases or topic-specific terms that appear across your previous posts above."
-                    # if first_words:
-                    #     own_section += f" Do NOT start your post with: {', '.join(first_words)}.)"
-                    # else:
-                    #     own_section += ")"
-                else:
-                    own_section = "### PREVIOUS POSTS ###\n(none yet)"
+                own_section = "### PREVIOUS POSTS ###\n(none yet)"
 
-                # Neighbor posts.
-                if len(neighbor_pairs) > 0:
-                    neighbor_section = "\n\n### POSTS FROM OTHERS ###\n" + "\n".join(
-                        f"- @user_{nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs
-                    )
-                else:
-                    neighbor_section = ""
-
-                phq9_val = (self.well_being or {}).get("phq9_sumscore", 0) or 0
-                severity = self.phq9_severity_category(phq9_val)
-                well_being_str = f"{severity} (PHQ-9: {int(round(float(phq9_val)))})"
-
-                user_content = prompt_cfg["user_template_forced"].format(
-                    agent_id=self.ID,
-                    persona=self.persona,
-                    well_being=well_being_str,
-                    previous_tweet_block=own_section + neighbor_section,
+            if len(neighbor_pairs) > 0:
+                neighbor_section = "\n\n### POSTS FROM OTHERS ###\n" + "\n".join(
+                    f"- @user_{nid}: {txt[:max_chars]}" for nid, txt in neighbor_pairs
                 )
+            else:
+                neighbor_section = ""
+
+            phq9_val = (self.well_being or {}).get("phq9_sumscore", 0) or 0
+            severity = self.phq9_severity_category(phq9_val)
+            well_being_str = f"{severity} (PHQ-9: {int(round(float(phq9_val)))})"
+
+            user_content = prompt_cfg["user_template_forced"].format(
+                agent_id=self.ID,
+                persona=self.persona,
+                well_being=well_being_str,
+                previous_tweet_block=own_section + neighbor_section,
+            )
 
         messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
-        
-        # print("PROMPT MESSAGES: ", messages)
+
         return messages
-        # return tokenizer.apply_chat_template(
-        #     messages, tokenize=False, add_generation_prompt=True
-        # )
     
     def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars=240, force_active=False, tweet_block_phq9=False):
         """

@@ -284,7 +284,7 @@ class TestLLMs:
         prompts = []
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(
-                tokenizer, agent.tweethistory[-(check_point):], force_active=True,
+                tokenizer, agent.tweethistory[-(check_point):],
             )
             templated = tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True,

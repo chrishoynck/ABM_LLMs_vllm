@@ -7,8 +7,7 @@ Qwen3.5-27B with **thinking enabled** (`enable_thinking: True`).
   `ABM_FORMAT=post`). The JSON was edited afterwards (May 11); the exact
   March bytes are unrecoverable (data/ is untracked).
 - `data/prompts_post.json` was trimmed 2026-08-27 to the generation prompt only
-  (`tweet_gen.*`). All 9 obsolete `phq9.*` assessment keys were removed —
-  full original kept at `bin/data/prompts_post.json.orig-full`.
+  (`tweet_gen.*`); the 9 obsolete `phq9.*` assessment keys were removed.
 - PHQ-9 labels are PRESCRIBED, not assessed: each agent walks a random
   permutation of scores 0–27, `check_point=10` posts per score. The `phq9`
   column in `tweets_with_phq9.csv` is therefore ground truth (which is what

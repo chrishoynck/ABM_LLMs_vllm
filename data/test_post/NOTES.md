@@ -12,7 +12,3 @@ Dual role (accidental name collision): (a) `TestPathManager` output base
 | `method_comparison/` | comparison figures + aggregate outputs (`run_eval_comparison.sh`) | paper Tables 1–2, CS appendix |
 | `optimized_phq9/` | TextGrad PHQ-9 prompt runs (seeds 23,24,25,32,33) + eval_on_* + `Qwen3.5-27B_sensitivity/` | CS figs 4.7/4.8, paper tables |
 | `optimized_tweets/` | TextGrad post-generation prompt runs (name is a tweet-era leak — these are POST prompts) | CS appendix; prompts copied to `prompt_optimization_h/qwen27_baseline/inputs/` |
-
-Binned (→ `bin/data/test_post/`): `bert_regression_scratch/` (abandoned
-from-scratch ablation, zero refs), `bert_regression_finetuned/method_comparison/`
-(stale duplicate of the top-level `method_comparison/`).
