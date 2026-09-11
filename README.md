@@ -1,13 +1,49 @@
 # ABM_based_LLMS
 
-Generative agent-based model (GABM) of depression contagion on social networks,
-plus the PHQ-9 assessment pipeline it depends on. LLM agents (Qwen3.5-27B via
-vLLM) write social-media posts from a persona + PHQ-9 profile; depression is
-re-assessed from post histories by either an optimized LLM prompt or a
-MentalBERT+MLP regressor; prompts are optimized with TextGrad. The repo grew
-across two MSc theses (CS = generative/assessment model performance + sensitivity
-analyses; GABM/CLS = network simulation) and the paper
-`LLM_agent_Depression__PNAS_Nexus`.
+Code for a line of research on **depression contagion in social networks**: does
+depressive language spread between connected people, and what does that do to the
+mental-health distribution of a population? The answer is pursued with a generative
+agent-based model (GABM) in which LLM agents write social-media posts from a persona
+and a PHQ-9 depression profile, read their neighbours' posts, and then have their own
+severity re-assessed *from the language they produce* — so depression evolves through
+text rather than through a hand-written update rule.
+
+That simulation only means something if two components underneath it hold up, and both
+are built and validated here as well: a **generator** whose synthetic posts genuinely
+reflect a target PHQ-9 score, and an **assessor** that can recover a PHQ-9 score back
+out of a block of posts. Building and stress-testing those two is the CS thesis; running
+the network simulation on top of them is the Computational Science (GABM) thesis; the
+paper `LLM_agent_Depression__PNAS_Nexus` draws on both.
+
+Stack: Qwen3.5-27B served with vLLM for generation and LLM-based assessment, a supervised
+MentalBERT+MLP regressor as the second assessor, prompts optimized with TextGrad plus a
+human-in-the-loop arm. Everything GPU-bound runs through SLURM.
+
+## Main pipelines
+
+1. **Synthetic data generation** — persona (PersonaHub) × PHQ-9 target drawn from the
+   heavy-tailed HELIUS distribution (power-law fit γ=2.36) → labelled post blocks.
+2. **Prompt optimization** — TextGrad student–teacher loops over both the post-generation
+   and the PHQ-9-assessment prompt, plus a human-in-the-loop arm that beats TextGrad on
+   the shared teacher-scored test set.
+3. **PHQ-9 assessment** — two architecturally unrelated assessors compared on identical
+   held-out data: LLM prompt inference (minimal vs optimized) and the MentalBERT+MLP
+   regressor, incl. a base → human-optimized distribution-shift test.
+4. **Sensitivity analyses** — stochastic axes (agent persona / neighbour context / joint)
+   against an irreducible-noise baseline, PHQ-9 severity-band separability in embedding
+   space (S-BERT adjacent-band cosine), and a temperature/top-p decoding grid.
+5. **Network construction & calibration** — SDA network over latent dims + age + PHQ-9 and
+   its scale-free SDC extension, Sobol-calibrated against empirical target bands.
+6. **Simulation** — round loop of activation → post generation from persona + own and
+   neighbour history → PHQ-9 re-assessment every 10 rounds.
+7. **Simulation analysis** — trajectories and phase plots, lexical entrainment (global
+   MentalBERT drift, local CDS entrainment vs a random baseline), per-agent PHQ-9 mobility,
+   velocity of contagion.
+8. **Empirical validation** — generated language against the Bathina et al. cognitive-
+   distortion lexicon (r = +0.95 with severity) and embedding-overlap diagnostics.
+
+Stage-by-stage file map, tagged with the manuscript that uses each:
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
 
@@ -43,6 +79,14 @@ source .venv_vllm/bin/activate
 uv pip install -r requirements_vllm.txt
 ```
 
+The non-Qwen student generators (Gemma-4-31B-it, Kimi-Linear-48B-A3B) need a newer
+vLLM and run in a second venv, used only for post generation:
+
+```bash
+uv venv --python 3.10 .venv_vllm_g4
+uv pip install --python .venv_vllm_g4/bin/python -r requirements_vllm_g4.txt
+```
+
 Python modules run from the repo root with `src` on the path:
 
 ```bash
@@ -57,57 +101,37 @@ GPU work goes through SLURM: `sbatch jobs/<name>.job` (see [docs/SCRIPTS.md](doc
 - CS thesis (`Computer_Science_Transformer/`) → [docs/THESIS_MAP_CS.md](docs/THESIS_MAP_CS.md)
 - GABM thesis (`Computational_Science_GABM/`) → [docs/THESIS_MAP_GABM.md](docs/THESIS_MAP_GABM.md)
 
-### Known caveat — assessment and generation results come from different datasets
+## Known caveat — assessment and generation results come from different datasets
 
-Three generation prompts produced the synthetic post data:
+Three generation prompts produced the synthetic post data: the **base** ("high-fidelity")
+set of 12k blocks / 120k posts from an early, informally tuned prompt
+(`data/prompts_post.json`; not the minimal prompt, so don't call it "non-optimized"), the
+**minimal** baseline (`data/prompts_post_minimal.json`), and the **human-optimized** set
+(`data/prompts_optimal.json`) used for the linguistic analyses and every simulation run.
+The base set came first, so both assessors were calibrated on it; only MentalBERT+MLP was
+later re-fit on human-optimized data. Consequence: per-band assessment-error figures come
+from the base set while the S-BERT/linguistic figures come from minimal + human-optimized
+runs, so **any claim linking assessment error to linguistic overlap crosses distributions**
+unless it uses the base-set version (which exists: CS thesis App. B, `fig:phq9_confusion_cosim`).
 
-| Dataset | Generation prompt | Where |
-|---|---|---|
-| base / "high-fidelity" (12k blocks = 120k posts; the CS thesis' "≈1.2k blocks / 12k posts" is a 10× slip) | `data/prompts_post.json` — an early, informally tuned prompt predating the systematic optimization study. NOT the minimal prompt; do not call it "non-optimized". | `data/test_post/Qwen_Qwen3.5-27B/` ([NOTES](data/test_post/Qwen_Qwen3.5-27B/NOTES.md)) |
-| minimal | `data/prompts_post_minimal.json` | `data/sensitivity/phq9_minimal_prompt/` |
-| human-optimized | `data/prompts_optimal.json` | `data/finetune/`, `data/sensitivity/phq9/`, all simulation runs |
+**The simulation is unaffected.** The fine-tuned regressor
+(`data/test_post/bert_regression_finetuned/`, via `scripts/assessment/run_finetune.sh`) was
+fine-tuned on human-optimized data — the same distribution the optimized generative
+pipeline produces at simulation time — so the assessor the GABM uses is *in distribution*
+with the posts it scores, and the GABM-thesis results are internally consistent. Elsewhere
+the mismatch is contained: the bias direction (over-estimate mild, under-estimate severe)
+and the rising adjacent-band similarity reproduce on every distribution and in both
+assessor families, and the mismatch makes the shift table
+(`scripts/assessment/run_eval_comparison.sh`) a fair symmetric OOD test rather than a
+self-test.
 
-Order actually run: high-fidelity set first → TextGrad optimization of the PHQ-9
-*assessment* prompt on that set → TextGrad + human optimization of the
-*generation* prompt, which was never fed back into a regenerated high-fidelity
-set (no compute/time budget once the focus moved to the GABM thesis). The clean
-order would have been: optimize generation → regenerate high-fidelity →
-optimize assessment.
-
-Consequences per pipeline:
-- **LLM assessment prompt** (`data/test_post/optimized_phq9/`) — optimized and
-  evaluated on the base set only; on human-optimized data it is *evaluated*
-  (shift table) but never re-optimized.
-- **MentalBERT+MLP** — trained on the base set (`bert_regression/`), then
-  fine-tuned on human-optimized data (`bert_regression_finetuned/`, via
-  `scripts/assessment/run_finetune.sh`). The fine-tuned regressor is the one the
-  simulation uses, so GABM-thesis results are internally consistent.
-- Per-band MAE/bias figures come from the base set; the S-BERT adjacent-band and
-  class-similarity figures come from minimal + human-optimized SA runs
-  (`data/sensitivity/`). **Any claim linking assessment error to linguistic
-  overlap crosses distributions** unless it uses the base-set version.
-
-Contained, not fatal: the bias direction (over-estimate mild, under-estimate
-severe) and the rising adjacent-band similarity reproduce on every distribution
-and in both assessor families, and the mismatch makes the shift table
-(`scripts/assessment/run_eval_comparison.sh`) a fair symmetric OOD test rather
-than a self-test. A within-distribution version of the linguistics↔error link
-already exists: the S-BERT class-similarity matrix computed on the base-set BERT
-test split (CS thesis App. B, `fig:phq9_confusion_cosim`).
-
-Manuscript-side TODOs (fix there, not here) — agreed with D. Roy 2026-08-26 to
-stay a background limitation, provided each result set names its dataset:
-- Both Methods sections currently imply the high-fidelity set came from the
-  optimized prompts; name its actual generating prompt where it is introduced.
-- State the dataset in the assessment figure/table captions (CS thesis Figs
-  4.6–4.8 + `tab:phq9-estimators`; paper `tab:estimators`,
-  `fig:prompt_comparison`) and in Figs 4.3b / 4.4.
-- Limitations: one sentence that both assessors were calibrated on the base set
-  and only MentalBERT+MLP was re-fit and re-evaluated on the human-optimized
-  one.
-- Use one dataset name throughout; the CS thesis currently mixes "high fidelity",
-  "non-optimized" and "the synthetic dataset" for the same data.
-- CS thesis Methods (§ Datasets and Splits) states the base set as "≈1,200
-  post-blocks (≈12,000 posts)" — a 10× slip. On-disk counts and the split
-  figures both manuscripts use (9,638+1,237+1,125 = 12,000 blocks) give
-  12,000 blocks / 120,000 posts; the PNAS manuscript's numbers are correct.
+**Manuscript-side TODOs** (fix in the manuscripts, not here) — agreed with D. Roy
+2026-08-26 to stay a background limitation, provided each result set names its dataset:
+name the base set's actual generating prompt where it is introduced; state the dataset in
+the assessment figure/table captions (CS thesis Figs 4.3b/4.4/4.6–4.8 + `tab:phq9-estimators`;
+paper `tab:estimators`, `fig:prompt_comparison`); add one limitations sentence that both
+assessors were calibrated on the base set and only MentalBERT+MLP was re-fit and
+re-evaluated on the human-optimized one; use a single dataset name throughout (the CS
+thesis mixes "high fidelity", "non-optimized" and "the synthetic dataset"); and fix the CS
+thesis Methods 10× slip — "≈1,200 post-blocks (≈12,000 posts)" should be 12,000 blocks /
+120,000 posts (splits 9,638+1,237+1,125), as the PNAS manuscript already has it.

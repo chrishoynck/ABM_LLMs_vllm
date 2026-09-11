@@ -1,0 +1,10 @@
+\begin{tabular}{llcc}
+\toprule
+Generator & Estimator & MAE & Bias \\
+\midrule
+Qwen3.5-27B & BERT base (Qwen-trained) & $3.27 \pm 0.05$ & $-1.91$ \\
+ & BERT fine-tuned (own posts) & $2.88 \pm 0.05$ & $-1.10$ \\
+ & LLM prompt (minimal) & $4.60 \pm 0.00$ & $-0.12$ \\
+ & LLM prompt (TextGrad) & $7.23 \pm 1.05$ & $-6.59$ \\
+\bottomrule
+\end{tabular}

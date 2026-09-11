@@ -52,6 +52,9 @@ MODEL_ALIASES = {
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
     "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
     "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
+    # Mirror of utils.create_data.loaders.MODEL_ALIASES (keep both in sync).
+    "gemma4-31b": "google/gemma-4-31B-it",
+    "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 
 DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32

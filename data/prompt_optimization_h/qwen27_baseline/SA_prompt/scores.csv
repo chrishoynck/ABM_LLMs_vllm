@@ -1,2 +1,3 @@
 variant_id,model,csv,n_agents,sample_seed,training_score,test_score
-prompt,Qwen/Qwen3.5-27B,../../../sensitivity/phq9_minimal_prompt/severe/rep_1/posts.csv,60,0,,
+prompt,Qwen/Qwen3.5-27B,../../../finetune/smoke/smoke_qwen27.csv,3,0,,
+prompt,google/gemma-4-31B-it,../../../finetune/gemma4/test_posts_gemma4.csv,300,0,,

@@ -61,6 +61,7 @@ from utils.create_data.loaders import (
     load_persona_phq9_stratified,
     load_well_being_zeros,
     resolve_model_id,
+    resolve_student_decoding,
     sanitize_model_name,
 )
 
@@ -87,12 +88,16 @@ def _parse_args():
                              "that is derived from each instruction filename's integer).")
     parser.add_argument("--check_point", type=int, default=10,
                         help="Posts per persona block.")
-    parser.add_argument("--temp", type=float, default=0.7,
-                        help="Tweet-generation sampling temperature (default 0.7, the "
-                             "optimizer-student value). Varied by the decoding SA sweep.")
-    parser.add_argument("--top_p", type=float, default=0.9,
-                        help="Tweet-generation sampling top_p (default 0.9, the "
-                             "optimizer-student value). Varied by the decoding SA sweep.")
+    parser.add_argument("--temp", type=float, default=None,
+                        help="Tweet-generation sampling temperature. Default None = the "
+                             "per-model student value from loaders.STUDENT_DECODING "
+                             "(Qwen3.5-27B: 0.7, the optimizer-student value). Varied by "
+                             "the decoding SA sweep.")
+    parser.add_argument("--top_p", type=float, default=None,
+                        help="Tweet-generation sampling top_p. Default None = the "
+                             "per-model student value from loaders.STUDENT_DECODING "
+                             "(Qwen3.5-27B: 0.9, the optimizer-student value). Varied by "
+                             "the decoding SA sweep.")
 
     parser.add_argument("--neighbor-source-dir", action="append", default=None,
                         help="Directory containing seed_*/tweets_with_phq9.csv. "
@@ -177,6 +182,44 @@ def _append_blocks(path: str, agents, global_ids, interaction: bool = False) -> 
                 tweet = tweet.replace("\n", " ").replace("\r", " ").strip()
                 writer.writerow([gid, agent.persona, getattr(agent, "age", None),
                                  idx, value, tweet, interaction])
+
+
+def _write_meta(out_csv: str, model_id: str, args, instr_path: str) -> None:
+    """Record generation provenance next to the posts CSV (``<csv>.meta.json``).
+
+    Captures the generator, the resolved decoding parameters, seeds, prompt and
+    neighbour settings, and the vLLM version, so per-model runs (Qwen / Gemma /
+    Kimi) stay auditable for the paper's decoding table.
+    """
+    import json
+    from datetime import datetime
+    try:
+        import vllm
+        vllm_version = getattr(vllm, "__version__", None)
+    except Exception:  # pragma: no cover - provenance only
+        vllm_version = None
+    meta = {
+        "model": model_id,
+        "model_arg": args.model,
+        "temp": args.temp,
+        "top_p": args.top_p,
+        "max_tokens": 512,
+        "engine_seed": None if args.nondeterministic else SEED,
+        "seed": args.seed,
+        "thinking": bool(args.thinking),
+        "instruction_file": os.path.abspath(instr_path),
+        "persona_phq9_file": os.path.abspath(args.persona_phq9_file),
+        "num_agents": args.num_agents,
+        "check_point": args.check_point,
+        "num_neighbors": args.num_neighbors,
+        "neighbor_seed": args.neighbor_seed,
+        "neighbor_source_dir": args.neighbor_source_dir or list(DEFAULT_NEIGHBOR_ROOTS),
+        "vllm_version": vllm_version,
+        "python": sys.executable,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(out_csv + ".meta.json", "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
 
 
 def _resolve_instruction_paths(args) -> tuple[list[str], str]:
@@ -269,6 +312,9 @@ def main():
     neighbor_pool = gather_neighbor_pool(neighbor_roots) if args.num_neighbors > 0 else None
 
     model_id = resolve_model_id(args.model)
+    # Per-model student decoding (loaders.STUDENT_DECODING) unless overridden.
+    args.temp, args.top_p = resolve_student_decoding(model_id, args.temp, args.top_p)
+    print(f"[sa] decoding for {model_id}: temp={args.temp} top_p={args.top_p}")
     safe_model = sanitize_model_name(model_id)
     tok = get_tokenizer(model_id)
     pipe = get_llm(model_id, seed=None if args.nondeterministic else SEED)
@@ -322,6 +368,7 @@ def main():
             print(f"[sa] variant={instr_id} agent_seed={sample_seed} "
                   f"neighbor_seed={args.neighbor_seed} "
                   f"nondet={args.nondeterministic} -> {out_csv}")
+            _write_meta(out_csv, model_id, args, instr_path)
 
             def _build_and_run(personas_slice, phq9_slice, wb_slice, global_ids):
                 """Construct a TestLLMs over a persona slice, renumber to GLOBAL ids,

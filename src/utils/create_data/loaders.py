@@ -37,7 +37,9 @@ __all__ = [
     "DEFAULT_MODELS",
     "DEFAULT_NEIGHBOR_ROOTS",
     "SEED",
+    "STUDENT_DECODING",
     "resolve_model_id",
+    "resolve_student_decoding",
     "sanitize_model_name",
     "get_tokenizer",
     "get_llm",
@@ -63,6 +65,10 @@ MODEL_ALIASES = {
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
     "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
     "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
+    # Multi-model student arms (PNAS extension, 2026-09). Both run in
+    # .venv_vllm_g4 (vLLM >= 0.19); see requirements_vllm_g4.txt.
+    "gemma4-31b": "google/gemma-4-31B-it",
+    "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 
 DEFAULT_MODELS = [
@@ -95,10 +101,53 @@ def sanitize_model_name(model_id: str) -> str:
     return model_id.replace("/", "_").replace("\\", "_")
 
 
+# Student (post-generation) decoding per generator: (temperature, top_p).
+#
+# Qwen3.5-27B is the paper's operating point (0.7 / 0.9): Qwen's vendor instruct
+# default (0.7 / 0.8) with the nucleus truncation halved. The other rows apply
+# the same *relative* rule to each vendor's recommended instruct defaults
+# (T x 1.0; top_p = 1 - (1 - p_vendor) / 2):
+#   google/gemma-4-31B-it        vendor 1.0 / 0.95 (generation_config.json) -> 1.0 / 0.975
+#   Kimi-Linear-48B-A3B-Instruct vendor 0.6 / 0.95 (Kimi-K2 instruct guidance;
+#                                the Kimi-Linear card gives none)          -> 0.6 / 0.975
+# No top_k / penalties for any model: SamplingParams is built explicitly in
+# test_phq9_llms._generate_outputs, so vLLM's generation_config defaults
+# (e.g. Qwen's top_k=20, Gemma's top_k=64) are never applied.
+STUDENT_DECODING = {
+    "Qwen/Qwen3.5-27B": (0.7, 0.9),
+    "google/gemma-4-31B-it": (1.0, 0.975),
+    "moonshotai/Kimi-Linear-48B-A3B-Instruct": (0.6, 0.975),
+}
+_FALLBACK_DECODING = (0.7, 0.9)
+
+
+def resolve_student_decoding(model_id: str, temp: float | None = None,
+                             top_p: float | None = None) -> tuple[float, float]:
+    """Return ``(temperature, top_p)`` for student post generation.
+
+    Explicit ``temp`` / ``top_p`` win; otherwise the per-model entry in
+    :data:`STUDENT_DECODING` is used. Unknown models fall back to the Qwen
+    operating point (0.7 / 0.9) with a printed warning. Accepts aliases.
+    """
+    base = STUDENT_DECODING.get(resolve_model_id(model_id))
+    if base is None:
+        print(f"[decoding] WARN: no STUDENT_DECODING entry for {model_id!r}; using "
+              f"fallback temp={_FALLBACK_DECODING[0]} top_p={_FALLBACK_DECODING[1]}")
+        base = _FALLBACK_DECODING
+    return (base[0] if temp is None else float(temp),
+            base[1] if top_p is None else float(top_p))
+
+
 def get_tokenizer(model_id: str):
-    """Load a left-padded tokenizer; matches the simulation's tokenizer setup."""
+    """Load a left-padded tokenizer; matches the simulation's tokenizer setup.
+
+    ``trust_remote_code=True`` is needed for Kimi-Linear's custom
+    ``TikTokenTokenizer`` (auto_map in tokenizer_config.json); it is a no-op for
+    Qwen / Gemma, which ship standard tokenizers.
+    """
     cache_dir = os.environ.get("TRANSFORMERS_CACHE", None)
-    tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, use_fast=True)
+    tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, use_fast=True,
+                                        trust_remote_code=True)
     tok.padding_side = "left"
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -124,10 +173,34 @@ def get_llm(model_id: str, seed: int | None = SEED, max_model_len: int = 8192) -
     )
     if seed is not None:
         kwargs["seed"] = seed
-    if "qwen3.5" in model_id.lower():
+    low = model_id.lower()
+    gemma4_mm_fallback = None
+    if "qwen3.5" in low:
+        # Multimodal checkpoint: skip the vision-encoder allocation (text only).
         kwargs["limit_mm_per_prompt"] = {"image": 0}
         kwargs["enable_prefix_caching"] = True
-    return LLM(**kwargs)
+    elif "gemma-4" in low:
+        # Gemma 4 is multimodal (vision + optional audio; the 31B config has
+        # audio_config=null). Ask for text-only; if this vLLM rejects the
+        # `audio` key for a config without audio, retry with image only.
+        kwargs["limit_mm_per_prompt"] = {"image": 0, "audio": 0}
+        kwargs["enable_prefix_caching"] = True
+        gemma4_mm_fallback = {"image": 0}
+    # Kimi-Linear (hybrid KDA attention): no extra kwargs; vLLM decides whether
+    # prefix caching is supported for its hybrid KV layout.
+    if os.environ.get("ABM_DISABLE_PREFIX_CACHING") == "1":
+        # Escape hatch (TP=2 + prefix-caching deadlock seen in the TextGrad path
+        # on vLLM 0.17.1; see prompt_optimizer._build_engines call sites).
+        kwargs["enable_prefix_caching"] = False
+    try:
+        return LLM(**kwargs)
+    except (ValueError, KeyError) as exc:
+        if gemma4_mm_fallback is not None and "audio" in str(exc).lower():
+            print(f"[get_llm] {exc!s:.200} -> retrying with limit_mm_per_prompt="
+                  f"{gemma4_mm_fallback}")
+            kwargs["limit_mm_per_prompt"] = gemma4_mm_fallback
+            return LLM(**kwargs)
+        raise
 
 
 def load_persona_phq9(path: str, n_rows: int | None = None,

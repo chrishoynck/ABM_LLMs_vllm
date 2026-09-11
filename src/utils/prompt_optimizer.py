@@ -3361,6 +3361,13 @@ if __name__ == "__main__":
                              "(fine-tune). Requires --posts-file (the CSV to adapt to). "
                              "Pair with a low --learning-rate and --bert-out-dir so the "
                              "source regressors are not overwritten.")
+    parser.add_argument("--init-from-model", type=str, default=None,
+                        help="(--mode bert only) HF model id whose short name labels the "
+                             "SOURCE regressors under --init-from-dir ({short}_seed{seed}/). "
+                             "Default: --model. Set it when fine-tuning regressors trained on "
+                             "one generator's posts (e.g. Qwen/Qwen3.5-27B) on posts from "
+                             "another generator, whose id (--model) names the OUTPUT dirs "
+                             "and the embedding cache.")
     parser.add_argument("--bert-out-dir", type=str, default=None,
                         help="(--mode bert only) base dir for fine-tuned regressor output. "
                              "Default: data/test_post/bert_regression (overwrites!). When "
@@ -3518,8 +3525,9 @@ if __name__ == "__main__":
                     if os.path.isfile(done):
                         print(f"[fine-tune] seed {seed} already trained ({done}) — skipping")
                         continue
+                    init_short = (args.init_from_model or base_model_name).split("/")[-1]
                     init_from = os.path.join(args.init_from_dir,
-                                             f"{model_short}_seed{seed}", "regressor.pt")
+                                             f"{init_short}_seed{seed}", "regressor.pt")
                     if not os.path.isfile(init_from):
                         print(f"[fine-tune] WARN: no source regressor for seed {seed} "
                               f"({init_from}) — skipping")

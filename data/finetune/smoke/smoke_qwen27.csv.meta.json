@@ -1,0 +1,23 @@
+{
+  "model": "Qwen/Qwen3.5-27B",
+  "model_arg": "qwen27",
+  "temp": 0.7,
+  "top_p": 0.9,
+  "max_tokens": 512,
+  "engine_seed": 1234,
+  "seed": 42,
+  "thinking": false,
+  "instruction_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt",
+  "persona_phq9_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/finetune/personas_test_300.csv",
+  "num_agents": 3,
+  "check_point": 10,
+  "num_neighbors": 5,
+  "neighbor_seed": 42,
+  "neighbor_source_dir": [
+    "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_inter",
+    "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter"
+  ],
+  "vllm_version": "0.17.1",
+  "python": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/.venv_vllm/bin/python",
+  "timestamp": "2026-09-02T15:45:16"
+}

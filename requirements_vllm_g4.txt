@@ -1,0 +1,26 @@
+# Second inference venv (.venv_vllm_g4) for the non-Qwen student generators
+# (google/gemma-4-31B-it needs vLLM >= 0.19; moonshotai/Kimi-Linear-48B-A3B-Instruct
+# needs tiktoken + blobfile for its custom tokenizer). vLLM 0.19.1 pins
+# torch==2.10.0 (CUDA 12.8), the same torch the Qwen venv (.venv_vllm, vLLM
+# 0.17.1) uses. Gemma 4's tokenizer config needs transformers 5.x, hence
+# transformers 5.5.4 + sentence-transformers 6 (which requires transformers 5).
+#
+#   uv venv --python 3.10 .venv_vllm_g4
+#   uv pip install --python .venv_vllm_g4/bin/python -r requirements_vllm_g4.txt
+#
+# Only the data-generation path (utils.create_data.generate_test_data) runs in
+# this venv; MentalBERT training / the Qwen assessor stay in .venv_vllm.
+vllm==0.19.1
+transformers==5.5.4
+pandas==2.2.3
+numpy<2.3
+datasets==2.19.2
+langdetect==1.0.9
+pyreadstat==1.2.1
+scipy
+sentence-transformers==6.0.1
+scikit-learn
+networkx
+umap-learn==0.5.11
+tiktoken
+blobfile

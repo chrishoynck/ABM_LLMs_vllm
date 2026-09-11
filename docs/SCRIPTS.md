@@ -25,7 +25,9 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 ## assessment
 | script | purpose | job | inputs | outputs |
 |---|---|---|---|---|
-| `run_finetune.sh` | finetune BERT regressor + eval | — (GPU needed) | `data/finetune/` posts | `data/test_post/bert_regression_finetuned/` |
+| `run_finetune.sh` | generate posts + finetune BERT regressor + eval; env-var config, `GEN_TAG=<tag> GEN_MODEL=<alias>` for other generators (Qwen layout when unset) | `run_finetune_{gemma4,kimi}.job` (2×A100, 6h) | `data/finetune/` posts, `personas_test_300.csv` | `data/test_post/bert_regression_finetuned[_<tag>]/`, `bert_regression/eval_baseline[_<tag>]/` |
+| `run_llm_assessor_on_heldout.sh <tag>` | Qwen assessor (minimal + TextGrad prompts) on another generator's 300-block set | `run_llm_assessor_{gemma4,kimi}.job` (2×A100, 2h; submit with `--dependency=afterok`) | `data/finetune/<tag>/test_posts_<tag>.csv` | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` |
+| `utils.tools.multimodel_summary` (module, CPU) | generator × estimator MAE/bias table + figure | — | the eval CSVs above | `method_comparison/multimodel/` |
 | `run_bias_calibration.sh` | 28-level PHQ-9 bias table | `run_bias_calibration.job` (2×A100, 6h) | unseen persona pool | `phq9_bias_table.csv` (note: sims load the notebook-exported `_fullfit` variant) |
 | `run_phq9_on_bert_testset.sh` | prompts scored on BERT holdout | — (GPU needed) | embeddings cache (`data/test/Qwen/`) | `optimized_phq9/*/eval_on_*` |
 | `run_minimal_shift.sh` | minimal vs optimized prompt under shift | — (GPU needed) | `data/finetune/test_posts.csv` | `minimal_*/` subdirs + fig2 |
@@ -48,7 +50,12 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 in depth in `prompt_optimizer.md`.
 
 ## notes
-- No SLURM wrapper yet (GPU needed, run in an interactive GPU session): `run_finetune`,
+- Multi-model arms (2026-09): Gemma-4-31B-it and Kimi-Linear-48B-A3B run in `.venv_vllm_g4`
+  (`requirements_vllm_g4.txt`, vLLM 0.19.1 + transformers 5.5.4); their weights live in
+  `/gpfs/work5/0/prjs1820/hf_cache` (`HF_HUB_CACHE`, set in the jobs). Aliases + per-model
+  decoding in `src/utils/create_data/loaders.py` (`MODEL_ALIASES`, `STUDENT_DECODING`).
+  `jobs/smoke_multimodel.job` = 3-block smoke test per model.
+- No SLURM wrapper yet (GPU needed, run in an interactive GPU session):
   `run_minimal_shift`, `run_phq9_on_bert_testset`, `sa_run`, `sa_decoding_run`, `sa_prompt_run`.
 - Renames (2026-08): `run_simulation.sh`→`run_simulation_sda.sh`, `run_simulation2.sh`→`run_simulation_sdc.sh`;
   jobs `run_data_simulation{,2}.job`→`run_simulation_{sda,sdc}.job`, `run_bias_data.job`→`run_bias_calibration.job`,

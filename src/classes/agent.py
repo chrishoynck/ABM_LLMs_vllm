@@ -127,11 +127,22 @@ class Agent:
            Everything before (and including) the first </think> is reasoning.
         3. Unclosed <think> blocks (model started but never closed)
         4. Plain-text "Thinking Process:" blocks
+        5. Gemma 4 channel-style thought blocks (``<|channel>thought ... <channel|>``,
+           closed or unclosed) and a leaked ``<turn|>`` end-of-turn token. With
+           thinking disabled the Gemma 4 chat template already emits an empty
+           thought block inside the prompt, so this is defensive only.
         """
         # 0. Strip spurious leading "assistant" role header.
         stripped = text.lstrip()
         if stripped.lower().startswith("assistant"):
             text = stripped[len("assistant"):].lstrip("\n :")
+
+        # 0b. Gemma 4 format: drop closed thought channels, truncate at an
+        #     unclosed one (everything after it is reasoning), drop end-of-turn.
+        text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL)
+        if '<|channel>' in text:
+            text = text[:text.index('<|channel>')]
+        text = text.replace('<turn|>', '')
 
         # 1. Remove complete <think>...</think> XML blocks
         cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
