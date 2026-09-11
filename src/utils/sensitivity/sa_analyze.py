@@ -646,6 +646,225 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     print(f"[plot] {out_path}")
 
 
+
+def _per_anchor_perm_null(df: pd.DataFrame, rng: np.random.Generator,
+                          n_perm: int = 20, value_col: str = "cosine",
+                          anchor_cols=("agent_id", "round"),
+                          drop_sign: float = 1.0):
+    """Null distribution of the statistic `_per_anchor_drops` reports.
+
+    For each anchor, pool its within and cross values, reshuffle the
+    within/cross labels keeping the true group sizes (12 vs 54 on a 4-setting
+    axis), and recompute ``drop_sign * (mean within - mean cross)``. Under
+    "this axis does nothing" the two labels are exchangeable, so this is the
+    exact null of the plotted quantity: signed, centred on 0, and at the same
+    sample sizes as the real contrast.
+
+    Preferred over `_per_anchor_null_drops`, whose half-splits take an absolute
+    value (so they can never be negative) on halves of ~6 values (so they carry
+    far more sampling noise than the real contrast). That reference lands near
+    0.081 rather than 0, which reads as a noise floor but is really 0.46x the
+    within-anchor scatter and never looks at the axis at all.
+
+    Returns (per_anchor, mean_draws): an (n_anchors, n_perm) array of null
+    drops, and n_perm draws of the axis-level MEAN drop (the reference for the
+    forest panel). Callers plotting the null beside the real boxes should take
+    ONE draw per anchor -- a boxplot flags every point past 1.5x IQR, so a null
+    built from all n_perm draws carries n_perm times more points and its tail
+    reaches much further for that reason alone, not because the noise is larger.
+    """
+    per_anchor = []
+    for _, sub in df.groupby(list(anchor_cols)):
+        w = sub.loc[sub.pair_type == "within", value_col].values
+        c = sub.loc[sub.pair_type == "cross", value_col].values
+        if len(w) == 0 or len(c) == 0:
+            continue
+        pool = np.concatenate([w, c])
+        n_w = len(w)
+        draws = np.empty(n_perm)
+        for k in range(n_perm):
+            p = rng.permutation(pool)
+            draws[k] = drop_sign * (p[:n_w].mean() - p[n_w:].mean())
+        per_anchor.append(draws)
+    per_anchor = np.asarray(per_anchor)
+    return per_anchor, per_anchor.mean(axis=0)
+
+
+def comparison_combined_permnull(axis_dfs: dict, out_path: str,
+                                 n_bootstrap: int = 1000, seed: int = 0, *,
+                                 n_perm: int = 20, value_col: str = "cosine",
+                                 ylabel: str = "Cosine drop",
+                                 xlabel=None,
+                                 anchor_cols=("agent_id", "round"),
+                                 drop_sign: float = 1.0):
+    """`comparison_combined` with the LLM-noise reference rebuilt.
+
+    Same two panels and same layout. The grey box is now the permutation null
+    from `_per_anchor_perm_null`, which sits on 0 instead of on 0.081, and the
+    dashed line marks 0 -- where "no effect" actually is. The null for the
+    axis-level MEAN is ~+/-0.004 (600 anchors averages the scatter away), so on
+    the forest panel the same line at 0 is the correct reference.
+    """
+    rng = np.random.default_rng(seed)
+    names = list(axis_dfs.keys())
+    _COLOUR_BY_NAME = {
+        "Neighbour": "#8d2c03",
+        "Agent":     "#2e7ebc",
+        "Joint":     "#d96907",
+        "Decoding":  "#2e8b57",
+        "PHQ-9":     "#6a3d9a",
+    }
+    colours = [_COLOUR_BY_NAME.get(n, "#7f7f7f") for n in names]
+
+    drops = [_per_anchor_drops(axis_dfs[n], value_col=value_col,
+                               anchor_cols=anchor_cols, drop_sign=drop_sign).values
+             for n in names]
+
+    nulls, mean_nulls = [], []
+    for n in names:
+        per_anchor, mean_draws = _per_anchor_perm_null(
+            axis_dfs[n], rng, n_perm=n_perm, value_col=value_col,
+            anchor_cols=anchor_cols, drop_sign=drop_sign)
+        nulls.append(per_anchor); mean_nulls.append(mean_draws)
+    null_pooled = np.concatenate([p.ravel() for p in nulls])   # all draws: for stats
+    mean_null = np.concatenate(mean_nulls)
+
+    # The plotted null box uses ONE draw per anchor, subsampled to the size of a
+    # typical axis box. Otherwise it holds n_perm x n_axes times more points than
+    # the boxes beside it, and since boxplots mark every point past 1.5x IQR its
+    # whiskers and fliers reach much further purely from the extra sampling.
+    one_per_anchor = np.concatenate([p[:, 0] for p in nulls])
+    n_box = int(np.median([len(d) for d in drops]))
+    null_box = (rng.choice(one_per_anchor, n_box, replace=False)
+                if len(one_per_anchor) > n_box else one_per_anchor)
+
+    # Cluster bootstrap on anchors (see comparison_combined for why anchors and
+    # not pair rows). Clustering on persona instead of persona-round gives the
+    # same widths, so the round-to-round correlation is not inflating precision.
+    means, los, his = [], [], []
+    for anchor_drops in drops:
+        boots = [float(rng.choice(anchor_drops, size=len(anchor_drops),
+                                  replace=True).mean())
+                 for _ in range(n_bootstrap)]
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        means.append(float(anchor_drops.mean())); los.append(float(lo)); his.append(float(hi))
+
+    fig, (ax_box, ax_forest) = plt.subplots(
+        1, 2, figsize=(7.0, 3.3),
+        gridspec_kw={"width_ratios": [1.5, 1.0]},
+    )
+
+    # --- Box plot (left): per-anchor distributions + the centred null. ---
+    bp = ax_box.boxplot(drops + [null_box], tick_labels=names + ["LLM noise"],
+                        patch_artist=True, widths=0.55, showmeans=True,
+                        meanprops=dict(marker="D", markerfacecolor="black",
+                                       markeredgecolor="black", markersize=5),
+                        medianprops=dict(color="black", linewidth=1.2),
+                        flierprops=dict(marker="o", markersize=3, alpha=0.4,
+                                        markeredgecolor="none", markerfacecolor="grey"))
+    for patch, c in zip(bp["boxes"], colours + ["#bdc3c7"]):
+        patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor("black")
+    ax_box.axhline(0, color="#555555", linewidth=1.0, linestyle="--")
+    ax_box.set_ylabel(ylabel)
+    ax_box.grid(axis="y", linestyle=":", alpha=0.5)
+    ax_box.set_axisbelow(True)
+
+    # --- Forest plot (right): mean +/- 95 % CI against 0. ---
+    ys = np.arange(len(names))[::-1]
+    ax_forest.axvline(0, color="#555555", linewidth=1.0, linestyle="--", zorder=1)
+    for y, m, lo, hi, c in zip(ys, means, los, his, colours):
+        ax_forest.plot([lo, hi], [y, y], color="black", lw=1.4, zorder=2)
+        ax_forest.plot(m, y, "o", ms=8, color=c, zorder=3)
+        ax_forest.text(m, y + 0.24, f"{m:.3f}", ha="center", fontsize=8.5)
+    ax_forest.set_yticks(ys); ax_forest.set_yticklabels(names)
+    ax_forest.set_xlabel(xlabel or ylabel)
+    ax_forest.set_ylim(-0.75, len(names) - 0.35)
+    ax_forest.grid(axis="x", linestyle=":", alpha=0.5)
+    ax_forest.set_axisbelow(True)
+
+    _panel_y = -0.30
+    ax_box.text(0.5, _panel_y, "(a) Distribution per anchor",
+                transform=ax_box.transAxes, ha="center", va="top", fontsize=11)
+    ax_forest.text(0.5, _panel_y, "(b) Mean ± 95 % CI",
+                   transform=ax_forest.transAxes, ha="center", va="top", fontsize=11)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+    print(f"  null box: median={np.median(null_pooled):+.4f} "
+          f"IQR=[{np.percentile(null_pooled, 25):+.3f}, {np.percentile(null_pooled, 75):+.3f}]"
+          f"   null for the mean: 95% = [{np.percentile(mean_null, 2.5):+.4f}, "
+          f"{np.percentile(mean_null, 97.5):+.4f}]")
+
+
+def floor_vs_moved(axis_dfs: dict, out_path: str,
+                   n_bootstrap: int = 1000, seed: int = 0):
+    """Same comparison on the raw cosine scale, with the floor left on the axis.
+
+    `comparison_combined` plots the drop, which subtracts the floor away and so
+    needs a reference line reconstructed after the fact. Here the floor is a
+    drawn marker: hollow = within-setting cosine (same setting, different
+    unseeded replicate), filled = cross-setting cosine (the axis moved), bar =
+    the gap with a 95 % cluster-bootstrap CI. No null is needed -- an axis
+    matters exactly insofar as its filled marker sits left of its hollow one.
+    """
+    rng = np.random.default_rng(seed)
+    _COLOUR_BY_NAME = {
+        "Neighbour": "#8d2c03",
+        "Agent":     "#2e7ebc",
+        "Joint":     "#d96907",
+        "Decoding":  "#2e8b57",
+        "PHQ-9":     "#6a3d9a",
+    }
+
+    rows = []
+    for name, df in axis_dfs.items():
+        within = df[df.pair_type == "within"]
+        cross = df[df.pair_type == "cross"]
+        gap = (within.groupby(["agent_id", "round"]).cosine.mean()
+               - cross.groupby(["agent_id", "round"]).cosine.mean()).dropna().values
+        boots = [float(rng.choice(gap, gap.size, replace=True).mean())
+                 for _ in range(n_bootstrap)]
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        rows.append(dict(name=name, colour=_COLOUR_BY_NAME.get(name, "#7f7f7f"),
+                         floor=float(within.cosine.mean()),
+                         moved=float(cross.cosine.mean()),
+                         gap=float(gap.mean()), lo=float(lo), hi=float(hi)))
+
+    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+    ys = np.arange(len(rows))[::-1]
+    for y, r in zip(ys, rows):
+        ax.plot([r["moved"], r["floor"]], [y, y], color=r["colour"], lw=2.5,
+                alpha=0.55, zorder=1)
+        ax.plot(r["floor"], y, "o", ms=8, mfc="white", mec="#444444", mew=1.6, zorder=3)
+        ax.plot(r["moved"], y, "o", ms=9, color=r["colour"], zorder=3)
+        ax.text(r["moved"], y + 0.28, f'{r["moved"]:.3f}', ha="center",
+                fontsize=8.5, color=r["colour"])
+        ax.text((r["moved"] + r["floor"]) / 2, y - 0.34,
+                f'-{r["gap"]:.3f}  [{r["lo"]:.3f}, {r["hi"]:.3f}]',
+                ha="center", fontsize=7.8, color="#333333")
+
+    ax.plot([], [], "o", ms=8, mfc="white", mec="#444444", mew=1.6,
+            label="floor: same setting, different replicate")
+    ax.plot([], [], "o", ms=9, color="#666666", label="axis moved")
+    ax.set_yticks(ys); ax.set_yticklabels([r["name"] for r in rows])
+    ax.set_xlabel("S-BERT cosine")
+    ax.set_xlim(0, 0.6)
+    ax.set_ylim(-1.45, len(rows) - 0.25)
+    ax.grid(axis="x", linestyle=":", alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=8, loc="lower right", framealpha=0.95, ncol=2)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+    for r in rows:
+        print(f'  {r["name"]:10s} floor={r["floor"]:.3f}  moved={r["moved"]:.3f}  '
+              f'gap={r["gap"]:.3f}  CI=[{r["lo"]:.3f}, {r["hi"]:.3f}]')
+
+
 # =====================================================================
 # DECODING axis — per-setting CENTROID-shift comparison.
 #

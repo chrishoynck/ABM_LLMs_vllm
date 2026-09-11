@@ -16,10 +16,11 @@ generation harness, `generate_test_data.py` produces the labelled post blocks
 `tools/load_personas.py`; PHQ-9 targets grounded in the heavy-tailed HELIUS
 distribution (power-law fit γ=2.36, `experiment.ipynb` → `plots/phq9_distribution.png`).
 Driver: `scripts/data_generation/create_data_menu.sh`.
-Other student generators (PNAS multi-model arm, 2026-09): `--model gemma4-31b` /
-`kimi-linear` (`loaders.MODEL_ALIASES`), each with its own decoding pair in
+Other student generator (PNAS multi-model arm, 2026-09): `--model gemma4-31b`
+(`loaders.MODEL_ALIASES`), with its own decoding pair in
 `loaders.STUDENT_DECODING` (vendor-anchored relative to Qwen's 0.7/0.9), run in
-`.venv_vllm_g4`; the same Qwen human-optimized prompt is used for all.
+`.venv_vllm_g4`; the same Qwen human-optimized prompt is used for all. A
+Kimi-Linear arm was run and dropped (see `data/README.md` section 4a).
 
 ## 2. Prompt optimization — [CS] [PNAS]
 

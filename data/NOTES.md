@@ -19,6 +19,20 @@ TestLLMs interaction mode) and builds the PHQ-9 prompt persona-only.
 when no persona is passed) but its dangling `{persona}` placeholder — a
 guaranteed `KeyError` — was removed.
 
+## Multi-model arm (2026-09)
+- `finetune/<tag>/`, `test_post/bert_regression_finetuned_<tag>/`,
+  `test_post/bert_regression/eval_baseline_<tag>/`,
+  `test_post/bert_regression_finetuned/eval_<tag>300/`,
+  `test_post/optimized_phq9/*/{minimal,eval_on}_<tag>300/`,
+  `test_post/method_comparison/multimodel/` — LIVE, tag `gemma4` (the `kimi`
+  tag was dropped 2026-09-11; outputs archived, see README.md section 4a).
+  Layout + what is held fixed: [README.md §4a](README.md). Untagged Qwen paths
+  are untouched by these runs.
+- `finetune/personas_test_300.csv` — LIVE, the shared 300 test personas
+  (identical to the 120+180 behind `finetune/test_posts.csv`).
+- `finetune/smoke/` — throwaway 3-block output of `jobs/smoke_multimodel.job`;
+  safe to delete.
+
 ## Other
 - `methodology_paper/` — belongs to a DIFFERENT paper. Frozen; do not touch
   (its internal `prompts.json` included).

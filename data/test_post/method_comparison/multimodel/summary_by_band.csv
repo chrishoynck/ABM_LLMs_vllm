@@ -1,4 +1,29 @@
 generator,estimator,band,n,mae,bias
+Gemma-4-31B-it,BERT base (Qwen-trained),Minimal,260,1.3461538461538463,-0.5923076923076923
+Gemma-4-31B-it,BERT base (Qwen-trained),Mild,250,4.472,-4.472
+Gemma-4-31B-it,BERT base (Qwen-trained),Moderate,300,6.053333333333334,-6.053333333333334
+Gemma-4-31B-it,BERT base (Qwen-trained),Mod. severe,285,9.978947368421053,-9.978947368421053
+Gemma-4-31B-it,BERT base (Qwen-trained),Severe,405,12.562962962962963,-12.562962962962963
+Gemma-4-31B-it,BERT fine-tuned (Qwen posts),Minimal,260,1.5038461538461538,-1.103846153846154
+Gemma-4-31B-it,BERT fine-tuned (Qwen posts),Mild,250,4.876,-4.876
+Gemma-4-31B-it,BERT fine-tuned (Qwen posts),Moderate,300,6.29,-6.29
+Gemma-4-31B-it,BERT fine-tuned (Qwen posts),Mod. severe,285,10.014035087719298,-10.014035087719298
+Gemma-4-31B-it,BERT fine-tuned (Qwen posts),Severe,405,12.02716049382716,-12.02716049382716
+Gemma-4-31B-it,BERT fine-tuned (own posts),Minimal,260,1.426923076923077,0.5192307692307693
+Gemma-4-31B-it,BERT fine-tuned (own posts),Mild,250,2.368,-1.864
+Gemma-4-31B-it,BERT fine-tuned (own posts),Moderate,300,2.09,0.48333333333333334
+Gemma-4-31B-it,BERT fine-tuned (own posts),Mod. severe,285,2.263157894736842,-1.4350877192982456
+Gemma-4-31B-it,BERT fine-tuned (own posts),Severe,405,3.2049382716049384,-2.637037037037037
+Gemma-4-31B-it,LLM prompt (TextGrad),Minimal,260,2.076923076923077,-2.076923076923077
+Gemma-4-31B-it,LLM prompt (TextGrad),Mild,250,6.896,-6.896
+Gemma-4-31B-it,LLM prompt (TextGrad),Moderate,300,11.643333333333333,-11.616666666666667
+Gemma-4-31B-it,LLM prompt (TextGrad),Mod. severe,285,13.214035087719298,-13.214035087719298
+Gemma-4-31B-it,LLM prompt (TextGrad),Severe,405,16.587654320987653,-16.587654320987653
+Gemma-4-31B-it,LLM prompt (minimal),Minimal,260,2.076923076923077,-2.076923076923077
+Gemma-4-31B-it,LLM prompt (minimal),Mild,250,6.86,-6.86
+Gemma-4-31B-it,LLM prompt (minimal),Moderate,300,8.453333333333333,-7.773333333333333
+Gemma-4-31B-it,LLM prompt (minimal),Mod. severe,285,5.6947368421052635,-5.617543859649123
+Gemma-4-31B-it,LLM prompt (minimal),Severe,405,6.953086419753086,-6.824691358024691
 Qwen3.5-27B,BERT base (Qwen-trained),Minimal,260,1.9038461538461537,1.126923076923077
 Qwen3.5-27B,BERT base (Qwen-trained),Mild,250,2.648,-0.712
 Qwen3.5-27B,BERT base (Qwen-trained),Moderate,300,2.6166666666666667,-0.6166666666666667

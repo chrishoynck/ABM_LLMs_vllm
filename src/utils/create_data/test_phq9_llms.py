@@ -245,9 +245,10 @@ class TestLLMs:
                 messages, tokenize=False, add_generation_prompt=True,
                 enable_thinking=self.thinking,
             )
-            if self.iterations == 1 and len(prompts) == 0:
+            if len(prompts) == 0 and (self.iterations == 1
+                                      or os.environ.get("ABM_DEBUG_PROMPTS") == "1"):
                 print("=" * 70)
-                print(f"[FULL PROMPT] agent {agent.ID}, round 1 (exact string vLLM receives)")
+                print(f"[FULL PROMPT] agent {agent.ID}, round {self.iterations} (exact string vLLM receives)")
                 print("=" * 70)
                 print(templated)
                 print("=" * 70)

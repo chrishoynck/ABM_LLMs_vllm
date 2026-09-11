@@ -2262,6 +2262,111 @@ def plot_test_mae_and_bias_by_phq9(per_phq9: dict, output_dir: str, title: str):
     return out
 
 
+# Fine-tuned regressor per-band bias, one line per generator (multi-model arm).
+# Same bands / bias convention as plot_test_mae_and_bias_by_phq9; colours are the
+# first slots of the categorical palette (all-pairs CVD-safe).
+MULTIMODEL_GENERATORS = [
+    ("Qwen3.5-27B", "#eb6834", "data/test_post/bert_regression_finetuned/eval_finetuned"),
+    ("Gemma-4-31B-it", "#2a78d6", "data/test_post/bert_regression_finetuned_gemma4/eval_finetuned"),
+]
+
+
+def plot_multimodel_band_bias(out_path: str, generators: list | None = None):
+    """Per-band MAE and directional bias of the fine-tuned MentalBERT+MLP, per generator.
+
+    Multi-model counterpart of :func:`plot_test_mae_and_bias_by_phq9` in the SI
+    fine-tuning figure's style: (a) MAE per severity band, (b) signed bias per
+    band. For each generator the regressor is the one fine-tuned on that
+    generator's own posts, evaluated on that generator's own 300 held-out
+    blocks. Each line is the mean over the regressor seeds and the shaded band
+    is +/- 1 SD across those seeds (where the single-model figure showed the
+    individual runs). Generators with no eval CSVs are skipped.
+    """
+    bands = [(0, 4, "(0\u20134)"), (5, 9, "(5\u20139)"), (10, 14, "(10\u201314)"),
+             (15, 19, "(15\u201319)"), (20, 27, "(20\u201327)")]
+    x = np.arange(len(bands))
+    fig, (ax_mae, ax_bias) = plt.subplots(1, 2, figsize=(13, 5))
+    plotted = False
+    for label, colour, eval_dir in (generators or MULTIMODEL_GENERATORS):
+        seeds = [f for f in sorted(glob.glob(os.path.join(eval_dir, "seed*.csv")))
+                 if "summary" not in f]
+        if not seeds:
+            print(f"[multimodel-bias] skip {label}: no seed CSVs in {eval_dir}")
+            continue
+        maes, biases = [], []
+        for f in seeds:
+            d = pd.read_csv(f)
+            err = d["pred_phq9"] - d["true_phq9"]
+            sel = [d["true_phq9"].between(lo, hi) for lo, hi, _ in bands]
+            maes.append([err[m].abs().mean() for m in sel])
+            biases.append([err[m].mean() for m in sel])
+        for ax, vals in ((ax_mae, np.array(maes, float)), (ax_bias, np.array(biases, float))):
+            mean, sd = vals.mean(axis=0), vals.std(axis=0)
+            ax.fill_between(x, mean - sd, mean + sd, color=colour, alpha=0.22, linewidth=0)
+            ax.plot(x, mean, "-o", color=colour, linewidth=3, markersize=9,
+                    markeredgecolor="#3b3b3b", markeredgewidth=1.2,
+                    label=f"{label}  (mean $\\pm$ SD, n={len(seeds)})")
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    ax_bias.axhline(0, color="black", linewidth=1.2)
+    for ax, ylab, panel in ((ax_mae, "MAE", "(a) Test MAE"),
+                            (ax_bias, "Bias", "(b) Test bias")):
+        ax.set_xticks(x)
+        ax.set_xticklabels([lbl for _, _, lbl in bands], fontsize=14)
+        ax.tick_params(axis="y", labelsize=14)
+        ax.set_xlabel(f"Depression severity\n{panel}", fontsize=16)
+        ax.set_ylabel(ylab, fontsize=16)
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+    ax_bias.legend(frameon=False, fontsize=12, loc="upper right")
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"Multi-model per-band MAE/bias plot \u2192 {out_path}")
+    return out_path
+
+
+def plot_multimodel_mae_bias(summary: "pd.DataFrame", out_path: str):
+    """Grouped bars: MAE (left) and signed bias (right) per generator x estimator.
+
+    `summary` is the table built by utils.tools.multimodel_summary (one row per
+    generator/estimator with mae, mae_sd, bias, bias_sd). One bar group per
+    generator, one colour per estimator.
+    """
+    if not len(summary):
+        return None
+    colors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+    ests = list(dict.fromkeys(summary["estimator"]))
+    gens = list(dict.fromkeys(summary["generator"]))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    width = 0.8 / len(ests)
+    for ax, metric in zip(axes, ["mae", "bias"]):
+        for j, est in enumerate(ests):
+            sub = summary[summary["estimator"] == est].set_index("generator").reindex(gens)
+            xs = [i + (j - (len(ests) - 1) / 2) * width for i in range(len(gens))]
+            ax.bar(xs, sub[metric], width * 0.9, yerr=sub[f"{metric}_sd"], capsize=2,
+                   color=colors[j % len(colors)], label=est, linewidth=0)
+        ax.set_xticks(range(len(gens)))
+        ax.set_xticklabels(gens, fontsize=9)
+        ax.set_ylabel("MAE (PHQ-9 points)" if metric == "mae" else "Bias = mean(pred \u2212 true)")
+        ax.axhline(0, color="black", linewidth=1.0)
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.set_axisbelow(True)
+    axes[0].legend(frameon=False, fontsize=8)
+    fig.suptitle("PHQ-9 estimators on each generator's 300-block held-out set "
+                 "(mean $\\pm$ SD over seeds)")
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"Multi-model MAE/bias plot \u2192 {out_path}")
+    return out_path
+
+
 def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
                     output_dir: str, title: str):
     """Bar plot of best per-fold val MAE with a horizontal mean line and ±1 std band.

@@ -189,7 +189,7 @@ def _write_meta(out_csv: str, model_id: str, args, instr_path: str) -> None:
 
     Captures the generator, the resolved decoding parameters, seeds, prompt and
     neighbour settings, and the vLLM version, so per-model runs (Qwen / Gemma /
-    Kimi) stay auditable for the paper's decoding table.
+    ...) stay auditable for the paper's decoding table.
     """
     import json
     from datetime import datetime

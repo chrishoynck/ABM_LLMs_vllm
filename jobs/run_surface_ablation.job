@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --job-name=surface_abl
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=00:30:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+module purge
+module load 2025
+module load CUDA/12.8.0
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+export PYTHONPATH="$PYTHONPATH:$(pwd)/src"
+
+# Qwen-trained regressor on the Qwen test set; swap --csv for the gemma4 test set.
+PYTHONPATH=src srun python -m utils.analyses.surface_ablation \
+    --regressor data/test_post/bert_regression/Qwen3.5-27B_seed34/regressor.pt \
+    --csv data/finetune/test_posts.csv \
+    --out-dir data/test_post/surface_ablation/qwen_seed34

@@ -1232,6 +1232,11 @@ def rerun_test_phq9(
     student_engine, teacher_engine = _build_engines(
         model_name, tp, 0.90, max_model_len=max_model_len,
         student_temperature=0.2, student_max_tokens=256,
+        # Same workaround as the two optimizer call sites: vLLM v0.17.1 + TP=2
+        # deadlocks between consecutive student .generate() calls when KV state
+        # is shared across batches (worker hangs, EngineDeadError after the
+        # read timeout). Only matters when this runs on >1 GPU.
+        enable_prefix_caching=False,
         **vllm_kwargs,
     )
 

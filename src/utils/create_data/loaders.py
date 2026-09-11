@@ -65,8 +65,10 @@ MODEL_ALIASES = {
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
     "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
     "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
-    # Multi-model student arms (PNAS extension, 2026-09). Both run in
-    # .venv_vllm_g4 (vLLM >= 0.19); see requirements_vllm_g4.txt.
+    # Multi-model student arms (PNAS extension, 2026-09). Gemma runs in
+    # .venv_vllm_g4 (vLLM >= 0.19; see requirements_vllm_g4.txt). Kimi-Linear needs
+    # vLLM 0.15.1 (KDA state corruption in >= 0.16) and its arm was dropped on
+    # 2026-09-11: see data/README.md section 4a for the observed behaviour.
     "gemma4-31b": "google/gemma-4-31B-it",
     "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
@@ -110,6 +112,7 @@ def sanitize_model_name(model_id: str) -> str:
 #   google/gemma-4-31B-it        vendor 1.0 / 0.95 (generation_config.json) -> 1.0 / 0.975
 #   Kimi-Linear-48B-A3B-Instruct vendor 0.6 / 0.95 (Kimi-K2 instruct guidance;
 #                                the Kimi-Linear card gives none)          -> 0.6 / 0.975
+#                                (arm dropped 2026-09-11; row kept for provenance)
 # No top_k / penalties for any model: SamplingParams is built explicitly in
 # test_phq9_llms._generate_outputs, so vLLM's generation_config defaults
 # (e.g. Qwen's top_k=20, Gemma's top_k=64) are never applied.
@@ -141,9 +144,9 @@ def resolve_student_decoding(model_id: str, temp: float | None = None,
 def get_tokenizer(model_id: str):
     """Load a left-padded tokenizer; matches the simulation's tokenizer setup.
 
-    ``trust_remote_code=True`` is needed for Kimi-Linear's custom
-    ``TikTokenTokenizer`` (auto_map in tokenizer_config.json); it is a no-op for
-    Qwen / Gemma, which ship standard tokenizers.
+    ``trust_remote_code=True`` is needed for checkpoints that ship a custom
+    tokenizer class (auto_map in tokenizer_config.json, e.g. Kimi-Linear); it is
+    a no-op for Qwen / Gemma, which ship standard tokenizers.
     """
     cache_dir = os.environ.get("TRANSFORMERS_CACHE", None)
     tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, use_fast=True,
@@ -186,8 +189,6 @@ def get_llm(model_id: str, seed: int | None = SEED, max_model_len: int = 8192) -
         kwargs["limit_mm_per_prompt"] = {"image": 0, "audio": 0}
         kwargs["enable_prefix_caching"] = True
         gemma4_mm_fallback = {"image": 0}
-    # Kimi-Linear (hybrid KDA attention): no extra kwargs; vLLM decides whether
-    # prefix caching is supported for its hybrid KV layout.
     if os.environ.get("ABM_DISABLE_PREFIX_CACHING") == "1":
         # Escape hatch (TP=2 + prefix-caching deadlock seen in the TextGrad path
         # on vLLM 0.17.1; see prompt_optimizer._build_engines call sites).

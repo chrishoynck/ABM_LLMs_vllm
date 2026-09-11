@@ -8,6 +8,7 @@ writes MAE (mean +- SD over seeds), signed bias (pred - true) and per-band MAE:
     data/test_post/method_comparison/multimodel/summary_by_band.csv
     data/test_post/method_comparison/multimodel/table_multimodel.tex
     data/test_post/method_comparison/multimodel/multimodel_mae_bias.png
+    data/test_post/method_comparison/multimodel/mae_bias_per_band_finetuned.png
 
 Usage (CPU):
     PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.multimodel_summary
@@ -20,14 +21,14 @@ import os
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import pandas as pd
+
+from utils.visualization import plot_multimodel_band_bias, plot_multimodel_mae_bias
 
 LABELS = {"qwen": "Qwen3.5-27B", "gemma4": "Gemma-4-31B-it", "kimi": "Kimi-Linear-48B-A3B"}
 BANDS = [(0, 4, "Minimal"), (5, 9, "Mild"), (10, 14, "Moderate"),
          (15, 19, "Mod. severe"), (20, 27, "Severe")]
 OPT_DIR = "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}"
-COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]  # one per estimator
 
 
 def estimator_files(tag, bert_seeds, prompt_seeds):
@@ -53,7 +54,7 @@ def band(score):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--generators", nargs="+", default=["qwen", "gemma4", "kimi"])
+    ap.add_argument("--generators", nargs="+", default=["qwen", "gemma4"])
     ap.add_argument("--bert-seeds", nargs="+", type=int, default=[34, 35, 36, 37, 38])
     ap.add_argument("--prompt-seeds", nargs="+", type=int, default=[23, 24, 25, 32, 33])
     ap.add_argument("--out-dir", default="data/test_post/method_comparison/multimodel")
@@ -108,30 +109,10 @@ def main():
     with open(f"{args.out_dir}/table_multimodel.tex", "w") as fh:
         fh.write("\n".join(lines) + "\n")
 
-    # Figure: grouped bars, one panel for MAE and one for bias.
-    if len(summary):
-        ests = list(dict.fromkeys(summary["estimator"]))
-        gens = list(dict.fromkeys(summary["generator"]))
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4))
-        width = 0.8 / len(ests)
-        for ax, metric in zip(axes, ["mae", "bias"]):
-            for j, est in enumerate(ests):
-                sub = summary[summary["estimator"] == est].set_index("generator").reindex(gens)
-                x = [i + (j - (len(ests) - 1) / 2) * width for i in range(len(gens))]
-                ax.bar(x, sub[metric], width * 0.9, yerr=sub[f"{metric}_sd"], capsize=2,
-                       color=COLORS[j % len(COLORS)], label=est, linewidth=0)
-            ax.set_xticks(range(len(gens)))
-            ax.set_xticklabels(gens)
-            ax.set_ylabel("MAE (PHQ-9 points)" if metric == "mae" else "Bias (pred - true)")
-            ax.axhline(0, color="#c3c2b7", linewidth=1)
-            ax.grid(axis="y", color="#e1e0d9", linewidth=0.8)
-            ax.set_axisbelow(True)
-            for side in ("top", "right"):
-                ax.spines[side].set_visible(False)
-        axes[0].legend(frameon=False, fontsize=8)
-        fig.suptitle("PHQ-9 estimators on each generator's 300-block held-out set (mean $\\pm$ SD over seeds)")
-        fig.tight_layout()
-        fig.savefig(f"{args.out_dir}/multimodel_mae_bias.png", dpi=200)
+    # Figures live in utils.visualization next to the other MAE/bias plots.
+    plot_multimodel_mae_bias(summary, f"{args.out_dir}/multimodel_mae_bias.png")
+    plot_multimodel_band_bias(f"{args.out_dir}/mae_bias_per_band_finetuned.png")
+
     print(f"[done] -> {args.out_dir}/")
 
 
