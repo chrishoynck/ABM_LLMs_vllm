@@ -15,6 +15,7 @@ data details. All paths in this file are relative to the repo root.
 | `README.md` + `docs/` | all | project documentation (this file + the six companion docs; `README.md` is the front door) |
 | `src/` | all | live code (classes, utils, sensitivity, analyses) — module map in `src/README.md` |
 | `scripts/{simulation,sensitivity,assessment,plotting,data_generation}/` + `jobs/` | all | live drivers + versioned SLURM wrappers — see `SCRIPTS.md` for the full map |
+| `checks/` | CS + paper | small quality checks with their own jobs (surface cues, multi-model smoke run, CDS vs PHQ-9); see `checks/README.md` |
 | `data/prompts_optimal.json` | all | LIVE prompt file (`FC.PROMPTS_FILE`) — has dead keys, see `data/NOTES.md` |
 | `data/prompts_post.json` | provenance | HISTORICAL — the generation prompt (`tweet_gen.*`) behind the high-fidelity set; obsolete `phq9.*` keys removed 2026-08-27 (see `data/test_post/Qwen_Qwen3.5-27B/NOTES.md`) |
 | `data/prompts_post_minimal.json` | CS/paper | live (minimal prompt baseline) |
@@ -24,11 +25,11 @@ data details. All paths in this file are relative to the repo root.
 | `data/sensitivity/` | CS + GABM + paper | live SA trees (axes, decoding, phq9, network Sobol) |
 | `data/prompt_optimization_h/` | CS | human-in-the-loop prompt opt; prompt-variant SA (`prompt_sa*`, `SA_prompt`) kept but **in no manuscript** |
 | `data/finetune/`, `data/confidential/`, `data/personas_*.csv` | all | live inputs |
-| `data/grok_posts/` | none | generator output, no manuscript consumer |
+| `data/grok_posts/` | none | generator output, no manuscript consumer; the generator script was binned 2026-09 |
 | `data/methodology_paper/` | **different paper** | frozen — do not touch (incl. its own `prompts.json`) |
 | `plots/` | CS/GABM/paper | figure outputs (`cds_validation.png`, notebook PNGs, `lexical_entrainment/`) |
 | `logs/` | — | run logs only; nothing reads them back |
-| `bin/` | — | recoverable discard (cleanup 2026-08); restore = `mv bin/X X`; see `bin/NOTES.md` |
+| `bin/` | — | recoverable discard (cleanups 2026-08 and 2026-09); restore = `mv bin/X X`; see `bin/NOTES.md` |
 | `experiment.ipynb` | CS/paper | live entry point for several figures |
 
 ## Known quirks (flagged, deliberately not fixed here)
@@ -43,28 +44,21 @@ data details. All paths in this file are relative to the repo root.
   `SA_prompt` vs `prompt_sa` vs `prompt_sa_reps` (four near-identical names, one dir).
 - `data/prompts_optimal.json` dead/broken keys — see `data/NOTES.md`; removing them
   needs edits in `src/classes/agent.py:246,282` (later code-cleanup stage).
-- (audit 2026-08-26) Dead functions, documented here instead of deleted:
-  `visualization.py` — `plot_tf_idf_PCA:347`, `plot_bias:1030`, `plot_phq9_error:1063`,
-  `plot_combined_bias_error:1087`, `plot_model_comparison_by_settings:1227`;
-  `metrics.py` — `analyze_distorted_language:136`, `all_agent__tweet_cd:1124` (name typo),
-  `compute_prompt_robustness:1152` (live copy: `sa_analyze.py:1840`);
-  `sa_analyze.py` — `draw_prompt_sim_heatmap:1997` (live twin: `_draw_prompt_sim_heatmap:1894`).
-- `generate_synthetic_dataset._build_network:51` claims to duplicate
-  `llama_activate.build_network:121` but has diverged — omits 8 kwargs (`n_clusters`,
-  `latent_weight`, `age_weight`, `gamma`, `phq9_mode`, `bert_regressor_path`,
-  `bias_table_path`, `bert_mentalbert`), so it silently builds a differently
-  parameterized network.
-- PHQ-9 severity banding (0-4/5-9/10-14/15-19/20-27) is implemented 10×:
-  `agent.phq9_severity_category`, `prompt_optimizer:1354`, `test_phq9_llms:15`,
-  `generate_posts_grok:51`, `validate_cds:127`, `sa_analyze:59`,
-  `network_evolution:1078`, `plot_confusion_depression:84`,
-  `plot_sbert_cosine_conditioning:100`, `visualization:2052`. All live — a
-  divergence silently corrupts figures.
-- 3 independent CDS detectors: `metrics` (flat substring — weakest, but wired into
-  the live simulation), `validate_cds` (category-aware word-boundary regex — the
-  validated one, used by `network_evolution`), `cds_entrainment` (241-term TF-IDF
-  vocab). `llama_activate.call_visualizations:472-499` still emits the CDS panels
-  that `network_evolution.py`'s docstring documents as wrong.
+- (cleanup 2026-09-14) The dead functions that used to be listed here were deleted, and
+  `generate_synthetic_dataset.py` / `generate_posts_grok.py` were binned; `bin/NOTES.md`
+  has the full list and the recovery commands.
+- PHQ-9 severity banding (0-4/5-9/10-14/15-19/20-27) is implemented 10 times:
+  `agent.phq9_severity_category`, `prompt_optimizer._phq9_severity`,
+  `test_phq9_llms._phq9_severity`, `sa_analyze.PHQ9_BANDS`,
+  `network_evolution.cds_validation_summary`, `plot_assessment_diagnostics.PHQ9_BANDS`,
+  `visualization._phq9_severity_color`, `visualization._MM_BANDS`,
+  `visualization.plot_multimodel_band_bias` and `checks/check_cds_tracks_phq9.SEVERITY_BANDS`.
+  All live; a divergence silently corrupts figures.
+- 3 independent CDS detectors: `metrics` (flat substring, the weakest, but wired into
+  the live simulation), `tools/cds.py` (category-aware word-boundary regex, the
+  validated one, used by `network_evolution` and `checks/check_cds_tracks_phq9.py`),
+  `cds_entrainment` (241-term TF-IDF vocab). `llama_activate.call_visualizations`
+  still emits the CDS panels that `network_evolution.py` supersedes.
 - Package `src/utils/analyses/lexical_entrainment/global/` is named after a reserved
   keyword — `import …global.…` is a SyntaxError; only reachable via `python -m`
   (as `scripts/plotting/run_lexical_entrainment.sh` does). Never import it from code.

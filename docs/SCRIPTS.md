@@ -26,8 +26,8 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 | script | purpose | job | inputs | outputs |
 |---|---|---|---|---|
 | `run_finetune.sh` | generate posts + finetune BERT regressor + eval; env-var config, `GEN_TAG=<tag> GEN_MODEL=<alias>` for other generators (Qwen layout when unset) | `run_finetune_gemma4.job` (2×A100, 6h) | `data/finetune/` posts, `personas_test_300.csv` | `data/test_post/bert_regression_finetuned[_<tag>]/`, `bert_regression/eval_baseline[_<tag>]/` |
-| `run_llm_assessor_on_heldout.sh <tag>` | Qwen assessor (minimal + TextGrad prompts) on another generator's 300-block set | `run_llm_assessor_gemma4.job` (2×A100, 2h; submit with `--dependency=afterok`) | `data/finetune/<tag>/test_posts_<tag>.csv` | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` |
-| `utils.tools.multimodel_summary` (module, CPU) | generator × estimator MAE/bias table + figure | — | the eval CSVs above | `method_comparison/multimodel/` |
+| `run_llm_assessor_on_heldout.sh <tag>` | Qwen assessor (minimal + TextGrad prompts) on another generator's 300-block set, then the multimodel summary | `run_llm_assessor_gemma4.job` (2×A100, 2h; submit with `--dependency=afterok`) | `data/finetune/<tag>/test_posts_<tag>.csv` | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` |
+| `python -m utils.visualization multimodel` (CPU) | generator x estimator MAE/bias table + figures | — | the eval CSVs above | `method_comparison/multimodel/` |
 | `run_bias_calibration.sh` | 28-level PHQ-9 bias table | `run_bias_calibration.job` (2×A100, 6h) | unseen persona pool | `phq9_bias_table.csv` (note: sims load the notebook-exported `_fullfit` variant) |
 | `run_phq9_on_bert_testset.sh` | prompts scored on BERT holdout | — (GPU needed) | embeddings cache (`data/test/Qwen/`) | `optimized_phq9/*/eval_on_*` |
 | `run_minimal_shift.sh` | minimal vs optimized prompt under shift | — (GPU needed) | `data/finetune/test_posts.csv` | `minimal_*/` subdirs + fig2 |
@@ -49,12 +49,19 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 `run_prompt_optimizer_phq9.job` (H100 1h). The prompt-optimizer jobs are documented
 in depth in `prompt_optimizer.md`.
 
+## checks
+Small "how good is X" scripts with their own jobs, outside `src/`; see [../checks/README.md](../checks/README.md).
+| job | purpose | GPU/time |
+|---|---|---|
+| `checks/check_surface_cues.job` | regressor re-scored with emoji / punctuation stripped | gpu_mig, 30 min |
+| `checks/check_multimodel_smoke.job` | 3-block generation per model, then `check_multimodel_smoke.py` asserts on the CSVs | 2×A100, 45 min |
+
 ## notes
 - Multi-model arm (2026-09): Gemma-4-31B-it runs in `.venv_vllm_g4`
   (`requirements_vllm_g4.txt`, vLLM 0.19.1 + transformers 5.5.4); its weights live in
   `/gpfs/work5/0/prjs1820/hf_cache` (`HF_HUB_CACHE`, set in the jobs). Aliases + per-model
   decoding in `src/utils/create_data/loaders.py` (`MODEL_ALIASES`, `STUDENT_DECODING`).
-  `jobs/smoke_multimodel.job` = 3-block smoke test per model. A Kimi-Linear-48B-A3B arm was run
+  `checks/check_multimodel_smoke.job` = 3-block smoke test per model, checked by `checks/check_multimodel_smoke.py`. A Kimi-Linear-48B-A3B arm was run
   and dropped on 2026-09-11 (posts did not follow the PHQ-9 conditioning); behaviour and archive
   location in `data/README.md` section 4a.
 - No SLURM wrapper yet (GPU needed, run in an interactive GPU session):
@@ -68,6 +75,6 @@ in depth in `prompt_optimizer.md`.
 - Still in `$HOME`: `delete_out.sh` (cleans `*.out` in cwd — slurm logs now land at the repo
   root, so run it from there) and `useful_commands.sh` (snippet NOTES, **not executable** —
   contains `scancel -u $USER` and cache purges).
-- 8 hand-run CLIs have no `.sh`/`.job` wrapper at all (confusion/mobility/velocity/
-  network-target/entrainment plotting + `build_persona_phq9_eval`) — inventoried with
+- The hand-run CLIs have no `.sh`/`.job` wrapper at all (assessment-diagnostics/mobility/velocity/
+  network-target/entrainment plotting + `build_personas eval` + `sa_phq9`) — inventoried with
   run commands in [../src/README.md](../src/README.md) ("Hand-run CLIs").

@@ -80,7 +80,7 @@ One big file, but it splits into a few clear blocks. Skim this before diving in.
 - `_evaluate_tweet_instruction`, `parse_tweet_answers` score a prompt on val/test and parse the JSON output the student returns.
 
 **BERT regressor (separate, `--mode bert`)**
-- `setup_BERT_model`, `save_embeddings_for_file`, `train_BERT_model`, `neural_net_BERT`, `train_bert`, `evaluate_bert` — SBERT/MentalBERT embeddings + a small MLP regressor trained with Huber loss. Unrelated to the prompt optimization itself; lives here because it shares the dataset parsers.
+- `setup_BERT_model`, `save_embeddings_for_file`, `train_BERT_model`, `neural_net_BERT`, `train_bert` — SBERT/MentalBERT embeddings + a small MLP regressor trained with Huber loss. Unrelated to the prompt optimization itself; lives here because it shares the dataset parsers.
 
 **`__main__`**
 - Parses CLI args, then dispatches on `--mode` to `call_optimizer_phq9`, `call_optimizer_tweets`, or the BERT training path.

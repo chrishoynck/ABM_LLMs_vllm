@@ -29,7 +29,7 @@ historical) live in the per-folder `NOTES.md` files, which each table links to.
 |---|---|---|
 | `confidential/phq9.sav` | **HELIUS study** — SPSS export of real epidemiological PHQ-9 survey responses. **Confidential: never commit, copy out, or share.** | The empirical, heavy-tailed PHQ-9 distribution that grounds agent initialization (`load_phq9`, [src/llama_activate.py](../src/llama_activate.py) `:356`) and the power-law PHQ-9 figure in the paper and both theses (`experiment.ipynb`). |
 | `confidential/phq9_filtered.csv` | Derived from `phq9.sav` by `load_phq9` ([src/utils/tools/load_personas.py](../src/utils/tools/load_personas.py) `:260`): rows with missing `H1_PHQ9_sumscore`/`H1_PHQ9_deprsymp` dropped. Same confidentiality rules apply. | Direct input of the power-law figure. |
-| `distorted_language_ngrams.tsv` | **Bathina et al. (2021)**, *Nat. Hum. Behav.* — the cognitive-distortion-schemata (CDS) n-gram lexicon: 241 markers in 12 categories (`categories / markers / variants`). | The distorted-language metric everywhere: per-round distortion fraction in the simulation (`metrics.load_ngrams_tsv`), CDS-vs-PHQ-9 validation (`utils.tools.validate_cds` → `finetune/cds_by_phq9*.csv`), lexical-entrainment analysis, and the paper's cognitive-distortion section. |
+| `distorted_language_ngrams.tsv` | **Bathina et al. (2021)**, *Nat. Hum. Behav.* — the cognitive-distortion-schemata (CDS) n-gram lexicon: 241 markers in 12 categories (`categories / markers / variants`). | The distorted-language metric everywhere: per-round distortion fraction in the simulation (`metrics.load_ngrams_tsv`), CDS-vs-PHQ-9 validation (`checks/check_cds_tracks_phq9.py` → `finetune/cds_by_phq9*.csv`), lexical-entrainment analysis, and the paper's cognitive-distortion section. |
 
 No other real human data exists in the repo — **all posts are model-generated**.
 
@@ -41,10 +41,10 @@ deterministic samples of them built by scripts (source: [src/utils/tools/load_pe
 | File | Comes from | Used for |
 |---|---|---|
 | `personas_short_10k.csv` | HF **`proj-persona/PersonaHub`** (`persona` split): 10k shuffled sample, English-filtered, quotes normalized (`short_personas()`). | THE main persona pool — simulation agents (`llama_activate.py:352`) and the source every eval/finetune pool below is sampled from. |
-| `personas_10k.csv` | HF **`nvidia/Nemotron-Personas`**: 10k shuffled sample, ages 17–79 (`parse_persons()`). | Structured-persona pool (schema with age/occupation/hobbies…); `happy_persona.csv` follows this schema. |
-| `personas_eval_1000_phq9.csv` | `utils.create_data.build_persona_phq9_eval` — 1000 personas from the PersonaHub pool (excluding any persona seen in the teacher set) with PHQ-9 targets 0–27 assigned round-robin, fixed seed. | The shared (persona, PHQ-9) anchor set: every model/prompt evaluation and SA generation uses these same pairs so comparisons are paired. Hottest file in `data/`. |
-| `personas_finetune_phq9.csv` | `utils.create_data.build_finetune_personas`. | Training personas for the regressor fine-tune (`scripts/assessment/run_finetune.sh`). |
-| `finetune/personas_test_extra.csv` | `utils.create_data.build_test_personas` — eval-file rows after the first 120, minus finetune-train personas (no leakage). | Grows the fine-tune test set to 300 blocks. |
+| `personas_10k.csv` | HF **`nvidia/Nemotron-Personas`**: 10k shuffled sample, ages 17–79 (built once; its builder `parse_persons` was removed in the 2026-09 cleanup). | Structured-persona pool (schema with age/occupation/hobbies…); `happy_persona.csv` follows this schema. |
+| `personas_eval_1000_phq9.csv` | `utils.create_data.build_personas eval` — 1000 personas from the PersonaHub pool (excluding any persona seen in the teacher set) with PHQ-9 targets 0–27 assigned round-robin, fixed seed. | The shared (persona, PHQ-9) anchor set: every model/prompt evaluation and SA generation uses these same pairs so comparisons are paired. Hottest file in `data/`. |
+| `personas_finetune_phq9.csv` | `utils.create_data.build_personas finetune`. | Training personas for the regressor fine-tune (`scripts/assessment/run_finetune.sh`). |
+| `finetune/personas_test_extra.csv` | `utils.create_data.build_personas test-extra` — eval-file rows after the first 120, minus finetune-train personas (no leakage). | Grows the fine-tune test set to 300 blocks. |
 | `finetune/personas_unseen_pool.csv` | Built inline by `scripts/assessment/run_bias_calibration.sh` — PersonaHub pool minus every persona used anywhere else. | Balanced, fully unseen personas for the bias-calibration blocks. |
 | `happy_persona.csv` | **Hand-written** (1 row, Nemotron schema). | The "happy hub" intervention: the highest-degree agent gets this persona with PHQ-9 pinned to 0 (`llama_activate.py --happy` → `networks_post/happy/`). |
 
@@ -69,7 +69,7 @@ dangling default — some code references it but it is not on disk; the
 | `finetune/` (`train_posts.csv`, `test_posts.csv(+extra)`, `calibration_posts.csv`) | `scripts/assessment/run_finetune.sh` and `run_bias_calibration.sh`, generating with the **human-optimized iter_10 prompt**. | Fine-tuning + testing the deployed regressor; per-level bias table the simulation subtracts. `cds_by_phq9*.csv` = CDS validation outputs on these corpora. |
 | `sensitivity/` | SA drivers in `scripts/sensitivity/` → `generate_test_data` (axis trees, decoding, phq9 bands) and `sa_network.py` (Sobol). See [sensitivity/NOTES.md](sensitivity/NOTES.md). | All sensitivity-analysis results: content-stability axes, decoding, PHQ-9 band separability, network Sobol indices. CS + GABM theses + paper. |
 | `prompt_optimization_h/` | `generate_posts_opt_h.py` — human-in-the-loop prompt optimization trajectory (`iter_0` = minimal … `iter_10` = final). See [prompt_optimization_h/NOTES.md](prompt_optimization_h/NOTES.md). | `iter_0`/`iter_10` prompts are hot inputs everywhere; prompt-variant SA lives here too (in no manuscript). |
-| `grok_posts/` | `utils.create_data.generate_posts_grok` via the **xAI Grok API** (the one non-Qwen generator). | Cross-model comparison output; currently no manuscript consumer. |
+| `grok_posts/` | `generate_posts_grok.py` via the **xAI Grok API** (script binned 2026-09, see `bin/NOTES.md`). | Cross-model comparison output; currently no manuscript consumer. |
 | `test/Qwen/` | Embedding cache written by the eval pipeline. | Live cache. |
 | `methodology_paper/` | A **different paper** — frozen snapshot, own `prompts.json`. | Do not touch. |
 
@@ -96,7 +96,7 @@ recommended instruct defaults with the same relative adjustment Qwen got
 |---|---|---|
 | `finetune/<tag>/train_posts_<tag>.csv` | `run_finetune.sh` with `GEN_TAG=<tag> GEN_MODEL=<alias>`, iter_10 prompt, 3,000 personas | Fine-tuning that generator's own regressors |
 | `finetune/<tag>/test_posts_<tag>.csv` | same driver, 300 personas | That generator's held-out set — scored by every estimator |
-| `finetune/personas_test_300.csv` | `build_test_personas --n 300 --keep 0` | The **shared** test personas: byte-identical to the 120+180 behind Qwen's `finetune/test_posts.csv`, so the arms are paired |
+| `finetune/personas_test_300.csv` | `build_personas test-extra --n 300 --keep 0` | The **shared** test personas: byte-identical to the 120+180 behind Qwen's `finetune/test_posts.csv`, so the arms are paired |
 | `*.csv.meta.json` | written by `generate_test_data` next to every `--output-csv` | Provenance sidecar: model id, resolved temp/top-p, engine + sampling + neighbour seeds, prompt path, vLLM version, timestamp |
 
 **Held fixed across generators** (so the generator is the only moving part): the
@@ -237,7 +237,7 @@ from training pools.
 | `test_post/optimized_phq9/`, `test_post/optimized_tweets/` | TextGrad prompt optimization (`docs/prompt_optimizer.md`); "tweets" = post-generation prompts despite the name. | Optimized LLM-assessment prompt runs and evals; CS figures, paper tables. |
 | `test_post/method_comparison/` | `scripts/assessment/run_eval_comparison.sh`. | Assessor-comparison figures/tables (paper Tables 1–2). |
 | `test_post/bert_regression_finetuned_<tag>/` | `run_finetune.sh` with `GEN_TAG=<tag>` — regressors fine-tuned on that generator's posts, subdirs named `<model_short>_seed{34..38}/` (e.g. `gemma-4-31B-it_seed35/`). | The multi-model arm's own estimator; never deployed in the simulation. |
-| `test_post/method_comparison/multimodel/` | `utils.tools.multimodel_summary` (CPU). | `summary.csv`, `summary_by_band.csv`, `table_multimodel.tex`, `multimodel_mae_bias.png` — the generator × estimator table for the paper. |
+| `test_post/method_comparison/multimodel/` | `python -m utils.visualization multimodel` (CPU). | `summary.csv`, `summary_by_band.csv`, `table_multimodel.tex`, `multimodel_mae_bias.png` — the generator × estimator table for the paper. |
 | `networks_post/` | The GABM simulation itself (`llama_activate.py` via SLURM); layout in [networks_post/NOTES.md](networks_post/NOTES.md). | All simulation results in the GABM thesis (`basis/` vs `happy/` intervention, sda/sdc networks, 300 rounds × 100 agents). |
 
 ## Licensing / redistribution

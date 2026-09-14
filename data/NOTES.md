@@ -30,13 +30,13 @@ guaranteed `KeyError` — was removed.
   are untouched by these runs.
 - `finetune/personas_test_300.csv` — LIVE, the shared 300 test personas
   (identical to the 120+180 behind `finetune/test_posts.csv`).
-- `finetune/smoke/` — throwaway 3-block output of `jobs/smoke_multimodel.job`;
-  safe to delete.
+- `finetune/smoke/` — 3-block output of `checks/check_multimodel_smoke.job`; kept,
+  because `checks/check_multimodel_smoke.py` runs its asserts on these CSVs.
 
 ## Other
 - `methodology_paper/` — belongs to a DIFFERENT paper. Frozen; do not touch
   (its internal `prompts.json` included).
-- `grok_posts/` — `posts_with_phq9.*` = generator defaults (generate_posts_grok.py);
+- `grok_posts/` — `posts_with_phq9.*` = generator defaults (generate_posts_grok.py, binned 2026-09);
   `eval_bert_on_csv.py:14` docstring names a never-created
   `posts_eval_grok_aligned.csv`.
 - Personas: `personas_eval_1000_phq9.csv` = SA/eval anchor set (hottest file);

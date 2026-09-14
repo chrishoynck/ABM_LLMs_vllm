@@ -51,10 +51,11 @@ Stage-by-stage file map, tagged with the manuscript that uses each:
 |---|---|
 | `src/` | all live Python — module map in [src/README.md](src/README.md) |
 | `scripts/<stage>/` + `jobs/` | shell drivers + SLURM jobs — full map in [docs/SCRIPTS.md](docs/SCRIPTS.md) |
+| `checks/` | small "how good is X" checks with their own jobs (surface cues, multi-model smoke run, CDS vs PHQ-9), see [checks/README.md](checks/README.md) |
 | `data/` | inputs + run outputs — non-confidential research data is tracked in git; `confidential/` (HELIUS), `methodology_paper/`, `networks_post/` (14 GB) and `test/` stay local. **Provenance map (what comes from where, used for what): [data/README.md](data/README.md)**; cleanup/status notes in `data/NOTES.md` |
 | `plots/` | figure outputs (gitignored) |
 | `logs/` | run logs; nothing reads them back (gitignored) |
-| `bin/` | recoverable discard from the 2026-08 cleanup — restore with `mv bin/X X`, see `bin/NOTES.md` |
+| `bin/` | recoverable discard from the 2026-08 and 2026-09 cleanups — restore with `mv bin/X X`, see `bin/NOTES.md` |
 | `experiment.ipynb` | notebook entry point for several figures |
 | `docs/` | all documentation (index below) |
 
@@ -67,7 +68,8 @@ Stage-by-stage file map, tagged with the manuscript that uses each:
 - [docs/PAPER_MAP_PNAS.md](docs/PAPER_MAP_PNAS.md) — PNAS paper figure/table provenance
 - [docs/THESIS_MAP_CS.md](docs/THESIS_MAP_CS.md) — CS thesis chapter → code map
 - [docs/THESIS_MAP_GABM.md](docs/THESIS_MAP_GABM.md) — Computational Science (GABM) thesis chapter → code map
-- [src/README.md](src/README.md) — module map + the hand-run analysis CLIs
+- [src/README.md](src/README.md) — module map, the docstring style, the hand-run analysis CLIs
+- [checks/README.md](checks/README.md) — the small quality checks: what each one answers and how to run it
 - [data/README.md](data/README.md) — data provenance map: where every dataset comes from (real vs hand-made vs generated, and by which script) and what it is used for
 - per-folder `NOTES.md` files (under `data/`, `bin/`) — file-level status/cleanup details for the data trees
 

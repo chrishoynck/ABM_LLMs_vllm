@@ -14,4 +14,4 @@ Dual role (accidental name collision): (a) `TestPathManager` output base
 | `optimized_tweets/` | TextGrad post-generation prompt runs (name is a tweet-era leak — these are POST prompts) | CS appendix; prompts copied to `prompt_optimization_h/qwen27_baseline/inputs/` |
 | `bert_regression/eval_baseline_<tag>/`, `bert_regression_finetuned/eval_<tag>300/`, `bert_regression_finetuned_<tag>/` | multi-model arm (tag = `gemma4`): Qwen-trained regressors evaluated on / fine-tuned on that generator's posts (`run_finetune.sh` with `GEN_TAG`) | paper multi-model table |
 | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` | Qwen assessor on that generator's 300-block set (`run_llm_assessor_on_heldout.sh`) | paper multi-model table |
-| `method_comparison/multimodel/` | generator × estimator summary (`utils.tools.multimodel_summary`) | paper multi-model table |
+| `method_comparison/multimodel/` | generator × estimator summary (`python -m utils.visualization multimodel`) | paper multi-model table |

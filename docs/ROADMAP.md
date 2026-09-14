@@ -9,7 +9,7 @@ chapter/figure → code tables: [THESIS_MAP_CS.md](THESIS_MAP_CS.md),
 
 ## 1. Synthetic data generation — [CS] [PNAS]
 
-`src/utils/create_data/`: `build_persona_phq9_eval.py` builds the shared
+`src/utils/create_data/`: `build_personas.py eval` builds the shared
 (persona, PHQ-9) eval file, `test_phq9_llms.py` (`TestLLMs`) is the network-free
 generation harness, `generate_test_data.py` produces the labelled post blocks
 (~1,200 blocks / ~12,000 posts, `data/test_post/`). Personas from PersonaHub via
@@ -89,10 +89,9 @@ baseline (`local/cds_entrainment.py`); mobility (per-agent PHQ-9 RMSSD,
 
 ## 8. Empirical validation & figures — [CS] [PNAS]
 
-`tools/validate_cds.py` tests generated language against the Bathina et al.
+`checks/check_cds_tracks_phq9.py` (detector in `tools/cds.py`) tests generated language against the Bathina et al.
 cognitive-distortion n-gram lexicon, per category (the paper's r=+0.95 severity
 correlation and the per-category divergences) → `plots/cds_validation.png`.
-Appendix-level diagnostics: `tools/plot_confusion_depression.py` +
-`tools/plot_sbert_cosine_conditioning.py` (assessment error vs embedding-space
+Appendix-level diagnostics: `tools/plot_assessment_diagnostics.py` (assessment error vs embedding-space
 overlap). `experiment.ipynb` holds the HELIUS power-law figure and the
 train/val-curve cells.
