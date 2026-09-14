@@ -1,8 +1,8 @@
 import json
 import datetime
-from classes.network import RandomNetwork, SocialDistanceAttachment #, ScaleFreeNetwork
+from classes.network import RandomNetwork, SocialDistanceAttachment
 from utils.tools.path_manager import PathManager, TestPathManager
-import ast, torch, os, random
+import os, random
 import numpy as np
 
 class NetworkEncoder(json.JSONEncoder):

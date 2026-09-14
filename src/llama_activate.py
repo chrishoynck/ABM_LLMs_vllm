@@ -4,13 +4,10 @@ import gc
 import os, torch
 import sys, argparse, time
 import numpy as np
-import pandas as pd
-import inspect
-from vllm import LLM, SamplingParams
+from vllm import LLM
 import utils.metrics as metrics
-from utils.tools.path_manager import PathManager, TestPathManager
-from utils.tools.format_config import FC
-from classes.network import RandomNetwork,  SocialDistanceAttachment #, ScaleFreeNetwork,
+from utils.tools.path_manager import PathManager
+from classes.network import RandomNetwork, SocialDistanceAttachment
 import utils.tools.load_personas as lp
 import utils.visualization as vis
 import utils.tools.reading_in as ri
@@ -57,16 +54,9 @@ MODEL_ALIASES = {
     "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 
-DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-# DTYPE_STR = "bfloat16" if torch.cuda.is_available() else "float32"
-
 # set seeds for reproducibility
 SEED = 1234
-# os.environ["PYTHONHASHSEED"] = str(SEED)   # best set before Python starts                # if you still use np.random.*
-set_seed(SEED)                              # seeds Python, NumPy, Torch (HF helper)
-
-# trying this
-# os.environ["VLLM_BATCH_INVARIANT"] = "1"
+set_seed(SEED)  # seeds Python, NumPy, Torch (HF helper)
 
 
 def get_tokenizer(model_id=None):
@@ -78,11 +68,6 @@ def get_tokenizer(model_id=None):
         use_fast=True,
     )
     tok.padding_side = "left"
-    # vocab = tok.get_vocab()
-    # if "<|finetune_right_pad_id|>" in vocab:
-    #     tok.pad_token = "<|finetune_right_pad_id|>"
-    # elif "<|end_of_text|>" in vocab:
-    #     tok.pad_token = "<|end_of_text|>"
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     return tok
@@ -698,25 +683,8 @@ if __name__ == "__main__":
         plot_filename = path_manager.get_plot_name()
         
         print(f"\nVisualizing results for seed {network.seed}...")
-        # Clean tweet histories — build (or load cached) embeddings
-        mb_cache = os.path.join(data_path, f"{data_filename}_mentalbert_embs.npz")
-        sb_cache = os.path.join(data_path, f"{data_filename}_sbert_embs.npz")
-        # agent_embs_mb = metrics.build_agent_embeddings(network, mentalbert=True,  cache_path=mb_cache)
-        # agent_embs_sb = metrics.build_agent_embeddings(network, mentalbert=False, cache_path=sb_cache)
-
-        window_size = 20
-
         vis.plot_phq9_neighbor_correlation(network, path=plot_path, filename=plot_filename, save=args.save)
         vis.plot_phq9_assortativity(network, path=plot_path, filename=plot_filename, save=args.save, step=10)
-        # for emb_label, embs in [("mentalbert", agent_embs_mb), ("sbert", agent_embs_sb)]:
-        #     fn = f"{plot_filename}_{emb_label}"
-        #     vis.plot_semantic_entrainment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-        #     vis.plot_phq9_semantic_alignment(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-        #     vis.plot_depression_echo_chamber(network, agent_embs=embs, path=plot_path, smooth_window=window_size, filename=fn, save=args.save)
-        # metrics.print_histories(network, file_dir = data_path, file_name = data_filename, save=args.save)
-
-        # Visualizations
-        # call_visualizations(network, plot_path, plot_filename, args, running_fracs, fracs_dist_step)
 
     # Aggregate plots (over runs): save in parent folder with seeds in filename
     parent_plot_path = path_manager.get_aggregate_directory(is_plot=True)

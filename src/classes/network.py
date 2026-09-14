@@ -6,10 +6,9 @@ from utils.tools.phq9_bias import apply_bias_correction, load_bias_table
 from scipy.spatial.distance import cdist
 from powerlaw import Fit
 
-from vllm import LLM, SamplingParams
+from vllm import SamplingParams
 import os
 import time
-import bisect as bs_norm
 from scipy.optimize import bisect
 import utils.visualization as vis
 
@@ -189,23 +188,6 @@ class _Network:
             if not self.directed:
                 self.connections.add((agent2, agent1))
 
-    def remove_connection(self, agent1, agent2):
-        """
-        Remove the connection between two agents if it exists.
-
-        Args:
-            agent1 (Agent): The first agent to disconnect.
-            agent2 (Agent): The second agent to disconnect.
-        """
-        if agent1 != agent2:
-            agent1.remove_edge(agent2)
-            if not self.directed:
-                agent2.remove_edge(agent1)
-            self.connections.remove((agent1, agent2))
-            if not self.directed:
-                self.connections.remove((agent2, agent1))
-
-    
     def update_round(self, 
                      tokenizer, 
                      pipe, 

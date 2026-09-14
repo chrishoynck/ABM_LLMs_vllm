@@ -50,7 +50,6 @@ import glob
 import os
 from itertools import combinations, product
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -69,7 +68,6 @@ if not hasattr(_main, "neural_net_BERT"):
     _main.neural_net_BERT = neural_net_BERT
 
 from utils.sensitivity.sa_analyze import (
-    BAND_LABELS,
     _parse_setting,
     comparison_combined,
     phq9_to_band,

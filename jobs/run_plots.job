@@ -26,7 +26,3 @@ PYTHONPATH=src srun python src/llama_activate.py sda \
     --alpha 1.1655 --degree 4.5 --dim 5 \
     --seeds 14 15 16 17 18 \
     --use_saved_network --save
-
-# --- old simulation lines (different topology/seeds; kept for reference) ---
-# srun python src/llama_activate.py sda --num_agents 200 --rounds 600 --check_point 10 --degree 6 --save --directed --seeds 78 --use_saved_network
-# srun python src/llama_activate.py sda --num_agents 200 --rounds 600 --check_point 10 --degree 9 --save --directed --seeds 88 --use_saved_network

@@ -61,32 +61,5 @@ PYTHONPATH=src python -m utils.create_data.generate_posts_opt_h \
 #     --num_agents 12 \
 #     --seed 42
 
-
-# ============================================================================
-# 4. OLD-FRAMEWORK SYNTHETIC DATASET  (generate_synthetic_dataset.py)
-# ----------------------------------------------------------------------------
-# Legacy local-vLLM dataset builder using the agent-driven prompt builder
-# (NOT the optimizer-aligned student). Add --interaction to build a network
-# and sample neighbours from it; omit for isolated agents. Output lands under
-# data/test_post/<model>/temp_<t>_top_p_<p>_cp_<cp>_{inter,no_inter}/seed_<N>/.
-# Pass --model all to iterate the default model list.
-# PYTHONPATH=src python -m utils.create_data.generate_synthetic_dataset r \
-#     --model llama8 \
-#     --num_agents 12 \
-#     --seeds 42 \
-#     --check_point 10
-
-
-# ============================================================================
-# 5. GROK API DATASET  (generate_posts_grok.py)
-# ----------------------------------------------------------------------------
-# Build a tweets_with_phq9 dataset via the xAI Grok API instead of local vLLM.
-# Standalone — no GPU needed. One API request per block (persona+PHQ-9 pair)
-# returns all posts for that block in a single completion (cheaper than 1
-# request per post). Streams each block to disk so a crash / rate-limit doesn't
-# lose progress; safe to re-run with the same --output (appends, seed-prefixed
-# block ids prevent collisions).
-# export XAI_API_KEY=xai-...   # from https://console.x.ai
-# PYTHONPATH=src python -m utils.create_data.generate_posts_grok \
-#     --num-blocks 300 --posts-per-block 10 \
-#     --output data/grok_posts/posts_with_phq9.csv
+# The old-framework builder (generate_synthetic_dataset.py) and the Grok API
+# builder (generate_posts_grok.py) were binned on 2026-09-14; see bin/NOTES.md.

@@ -133,56 +133,6 @@ def contains_ngram(text: str, ngrams: set) -> bool:
             return True
     return False
 
-def analyze_distorted_language(network, ngrams_file: str, ngrams = None, n: int = 5, skip_header= True):
-    """
-    For each agent in the network, count distorted-language n-grams in:
-      - the first N tweets
-      - the last N tweets
-    Prints a summary and returns results as a dict.
-    
-    Args:
-        network: The network object (must have .all_agents attribute).
-        ngrams_file (str): Path to the TSV file with distorted-language n-grams.
-        n (int): Number of tweets from the start/end to analyze.
-    
-    Returns:
-        dict: {agent_id: {"first_n": count, "last_n": count, "total_tweets": int}}
-    """
-    if ngrams is None:
-        ngrams = load_ngrams_tsv(ngrams_file, skip_header=skip_header)
-    # print(ngrams)
-    print(f"Loaded {len(ngrams)} distorted-language n-grams from {ngrams_file}")
-    highest_frac = 0
-
-    results = {}
-    for agent in network.all_agents:
-        history = getattr(agent, "tweethistory", [])
- 
-        # now only consider actual tweets
-        history = [t for t in history if t!= FC.NO_CONTENT]
-        first_tweets = history[:n]
-        last_tweets = history[-n:] if len(history) >= n else history
-
-        first_tweets = [t for t in first_tweets if t != FC.NO_CONTENT]
-        last_tweets = [t for t in last_tweets if t != FC.NO_CONTENT]
-        
-        first_count = sum(1 for tweet in first_tweets if contains_ngram(tweet, ngrams))
-        last_count = sum(1 for tweet in last_tweets if contains_ngram(tweet, ngrams))
-        
-        results[agent.ID] = {
-            "first_n": first_count,
-            "last_n": last_count,
-            "Length_last_tweets": len(last_tweets),
-            "Length_first_tweets": len(first_tweets),
-            "total_tweets": len(history),
-            "frac_distorted_first": first_count / len(first_tweets) if len(first_tweets)>0 else 0,
-            "frac_distorted_last": last_count / len(last_tweets) if len(last_tweets)>0 else 0,
-        }
-        highest_frac = max(highest_frac, results[agent.ID]["frac_distorted_last"])
-        highest_frac = max(highest_frac, results[agent.ID]["frac_distorted_first"])
-    return results, highest_frac
-
-
 # =========================CDS parsing from neighbor_history=========================
 
 def neighbor_cds_records(agent, ngrams):
@@ -915,29 +865,6 @@ def pca_on_means(embedding_per_setting, n_components=2):
     }
     return mean_traj, pca
 
-def traj_variance_in_pca_space(runs_embedding_per_setting, pca):
-    """
-    runs_embedding_per_setting: dict[setting] -> list[np.ndarray] each (T, V)
-    pca: fitted PCA object
-    Returns:
-        std_traj: dict[setting] -> (T, D)
-        var_traj:  dict[setting] -> (T, D)
-    """
-    std_traj = {}
-    var_traj = {}
-
-    for setting, run_mats in runs_embedding_per_setting.items():
-        # run_mats: list of (T, V), all with same T by construction
-
-        # project each run into PCA space
-        run_trajs = [pca.transform(M) for M in run_mats]   # each (T, D)
-
-        stacked = np.stack(run_trajs, axis=0)             # (R, T, D)
-        var_traj[setting]  = stacked.var(axis=0)          # (T, D)
-        std_traj[setting] = stacked.std(axis=0)           # (T, D)
-
-    return std_traj, var_traj
-
 # =========================UMAP functions=========================
 def reduce_dimensionality_umap(embedding_matrices, n_components=2, n_neighbors=15, min_dist=0.1):
     '''Reduce dimensionality using UMAP.'''
@@ -1003,7 +930,6 @@ def umap_on_means(embedding_per_setting, n_components=2, shared_reducer=None):
         for s in settings
     }
     return mean_traj, reducer
-
 
 
 # =============================Tweet frequency statistics===============================
@@ -1096,7 +1022,6 @@ def calculate_agent_cd(sequence, window_size):
     return variances, autocorrs
 
 
-
 def all_agent_phq9_cd(network, window_size, shift=1):
     """
     Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
@@ -1120,89 +1045,4 @@ def all_agent_phq9_cd(network, window_size, shift=1):
     return cd_results
 
 
-
-def all_agent__tweet_cd(network, window_size, shift=1):
-    """
-    Calculate rolling variance and lag-1 autocorrelation for all agents in the network.
-    
-    Args:
-        network: The network object containing agents.
-        window_size (int): The size of the rolling window.
-    
-    Returns:
-        dict: {agent_id: {'variance': list, 'autocorrelation': list}}
-    """
-    cd_results = {}
-    for agent in network.all_agents:
-        history = getattr(agent, "tweethistory", [])
-        # Convert tweet history to binary sequence (1 if tweeted, 0 if NO_TWEET)
-        binary_sequence = [1 if tweet != FC.NO_CONTENT else 0 for tweet in history]
-        
-        variances, autocorrs = calculate_agent_cd(binary_sequence, window_size, shift)
-
-        cd_results[agent.ID] = {
-            'variance': variances.tolist(),
-            'autocorrelation': autocorrs.tolist()
-        }
-    return cd_results
-
-
 # ── Prompt robustness metrics ─────────────────────────────────────────────────
-
-def compute_prompt_robustness(prompts: list[str], test_scores: list[float],
-                               baseline_prompt: str = None,
-                               seeds: list = None,
-                               labels: list = None,
-                               model_name: str = "all-MiniLM-L6-v2") -> dict:
-    """Compute the pairwise cosine-similarity matrix across optimised prompts.
-
-    When `baseline_prompt` is provided, it is appended as the final row/column of the
-    matrix and labelled "minimal", so the heatmap visualises how each optimised prompt
-    relates to its starting point in addition to its peers.
-
-    Args:
-        prompts:         Optimised prompt strings (one per seed/run).
-        test_scores:     Corresponding test scores (same order as prompts).
-        baseline_prompt: Un-optimised starting prompt; appended to the matrix when given.
-        seeds:           Optional seeds aligned with `prompts`; used to build the default
-                         "seed N" labels if `labels` is not provided.
-        labels:          Optional explicit labels aligned with `prompts`. When given,
-                         override the seeds-derived defaults. "minimal" is still appended
-                         automatically for the baseline.
-        model_name:      SBERT model for embedding.
-
-    Returns dict with keys:
-        'sim_matrix'  – (N, N) or (N+1, N+1) pairwise cosine similarity
-        'labels'      – run labels (and "minimal" appended when baseline is included)
-        'test_scores' – echo of input (no entry added for baseline)
-        'has_baseline' – True if baseline_prompt was included in the matrix
-    """
-    all_prompts = list(prompts)
-    if baseline_prompt is not None:
-        all_prompts.append(baseline_prompt)
-
-    model = generate_sbert_model(model_name=model_name)
-    embeddings = model.encode(all_prompts, convert_to_numpy=True, show_progress_bar=False)
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    normed = embeddings / np.maximum(norms, 1e-10)
-    sim_matrix = (normed @ normed.T).astype(float)
-
-    if labels is not None:
-        if len(labels) != len(prompts):
-            raise ValueError(f"labels length {len(labels)} != prompts length {len(prompts)}")
-        resolved_labels = list(labels)
-    elif seeds is not None and len(seeds) == len(prompts):
-        resolved_labels = [f"seed {s}" for s in seeds]
-    else:
-        resolved_labels = [f"run {i+1}" for i in range(len(prompts))]
-    if baseline_prompt is not None:
-        resolved_labels.append("minimal")
-
-    return {
-        "sim_matrix": sim_matrix,
-        "labels": resolved_labels,
-        "test_scores": list(test_scores),
-        "has_baseline": baseline_prompt is not None,
-    }
-
-

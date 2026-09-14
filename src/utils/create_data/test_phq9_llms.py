@@ -5,8 +5,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import torch
-from vllm import LLM, SamplingParams
+from vllm import SamplingParams
 
 from classes.agent import Agent
 from utils.tools.format_config import FC
@@ -436,12 +435,6 @@ class TestLLMs:
         )
         print(f"[TestLLMs] Checkpoint saved to {path}")
         return path
-
-    @classmethod
-    def load_checkpoint(cls, file_path: str):
-        """Restore a TestLLMs instance from a checkpoint file. Returns (tester, mistake_dict)."""
-        from utils.tools.reading_in import load_tester_checkpoint
-        return load_tester_checkpoint(file_path)
 
     def run_simulation(self, tokenizer, pipe, n_rounds=100, n_grams=[],
                        check_point=20, temp=1.0, top_p=1.0,

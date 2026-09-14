@@ -1,7 +1,6 @@
 import ast
 import math
 import os
-import re
 import pandas as pd
 from datasets import load_dataset
 from langdetect import detect
@@ -10,19 +9,6 @@ from langdetect import detect
 # Clip every string field to max 120 chars
 MAX_LEN = 200
 NEW = True
-
-def parse_persona_traits():
-    ds_pers = load_dataset("SynthLabsAI/PERSONA", split="train")
-    ds_small = ds_pers.shuffle(seed=42).select(range(10000))
-    df = ds_small.to_pandas()
-
-    if "personas_traits_10k.csv" not in os.listdir("data/") or NEW:
-        columns_keep = ['Age', 'Sex', 'Race', 'Occupation', 'Big Five Traits', 'Quirks', 'Personal Time', 'Lifestyle' ]
-        df.to_csv("data/personas_traits_10k.csv", columns=columns_keep, index=False)
-    df = pd.read_csv("data/personas_traits_10k.csv")
-    
-    print(df.columns)
-    print(df.head())
 
 def short_personas(seed=42):
     ds_pers = load_dataset("proj-persona/PersonaHub", 'persona', split="train")
@@ -58,38 +44,6 @@ def short_personas(seed=42):
 
     print(df.columns)
     print(df.head())
-
-
-def _clip_cell(x, n=MAX_LEN):
-    if isinstance(x, str) and len(x) > n:
-        if x[0] == '[' and x[-1] == ']':
-            return x
-        return x[:n]
-    else:
-        return x
-
-def age_of_person(row):
-    try:
-        age = int(row['age'])
-    except Exception:
-        print(f"Could not convert age: {row['age']}")
-        return False
-    if age <= 16 or age >= 80:
-        return False
-    else:
-        return True
-
-def parse_persons(): 
-    ds = load_dataset("nvidia/Nemotron-Personas")
-    ds_small = ds["train"].shuffle(seed=42).select(range(10000))
-    df = ds_small.to_pandas()
-    df = df.map(_clip_cell)
-    df = df[df.apply(age_of_person, axis=1)]
-    columns_keep = ['persona', 'age', 'marital_status', 'hobbies_and_interests_list', 'skills_and_expertise_list','sex','bachelors_field', 'occupation', 'city' ]
-
-    if "personas_10k.csv" not in os.listdir("data/") or NEW:
-        df.to_csv("data/personas_10k.csv", columns=columns_keep, index=False)
-    df = pd.read_csv("data/personas_10k.csv")
 
 
 def parse_list_field(v):
@@ -131,10 +85,6 @@ def load_distorted_tweets(filepath="data/distorted_tweets.csv", numtweets=1000, 
 def load_happy_personas(filepath="data/happy_persona.csv", personass_to_load=1, seed=42):
     df = pd.read_csv(filepath)
     return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=True, random_state=seed).iterrows()]
-
-# def load_personas_from_file(filepath="data/personas_short_10k.csv", personass_to_load=10, seed=42):
-#     df = pd.read_csv(filepath)
-#     return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=False, random_state=seed).iterrows()]
 
 def load_personas_from_file(filepath="data/personas_short_10k.csv", personass_to_load=10, seed=42):
     df = pd.read_csv(filepath)
@@ -243,20 +193,6 @@ def parse_phq9(row, dataset="H1"):
         "Age_first_depressive_episode": row[f'{dataset}_WlbvLftdPeriode']
     }
 
-def parse_phq9_cov(row):
-    return {
-    "interest_pleasure" : row["CovQ1_Depression_Enthusiasm"],
-    "down_depressed": row["CovQ1_Depression_Dejection"],
-    "insomnia": row["CovQ1_Depression_Insomnia"],
-    "tired": row["CovQ1_Depression_Lethargy"],
-    "appetite_loss": row["CovQ1_Depression_Appetite"],
-    "failure_guilt": row["CovQ1_Depression_Failure"],
-    "concentration_loss": row["CovQ1_Depression_Concentration"],
-    "voice_low": row["CovQ1_Depression_Voice"],
-    "nervousness": row["CovQ1_Depression_Nervousness"],
-    "suicide": row["CovQ1_Depression_Suicide"]
-    }
-
 def load_phq9(filepath="data/confidential/phq9.sav", personass_to_load=10, seed=42):
     df = pd.read_spss(filepath)
     # print(df.columns)
@@ -270,18 +206,6 @@ def load_phq9(filepath="data/confidential/phq9.sav", personass_to_load=10, seed=
 
 # depressed_data = load_pghq9(personass_to_load=100)
 # print(depressed_data[:5])
-
-def write_phq9_to_file(filepath= "data/phq9/mood_data.csv", personas_to_write=1000):
-    '''
-    Write PHQ-9 data to CSV file
-    Args:
-        filepath (str): Path to the output CSV file
-        personas_to_write (int): Number of personas to write
-    '''
-    data = load_phq9(personass_to_load=personas_to_write)
-    panda_data = pd.DataFrame(data)
-    panda_data.to_csv(filepath, index=False)
-
 
 if __name__ == "__main__":
     short_personas()

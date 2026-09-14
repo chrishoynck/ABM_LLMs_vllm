@@ -34,13 +34,6 @@ def load_cds_patterns(ngrams_path=NGRAMS_PATH):
     return compile_category_patterns(load_ngrams_by_category(ngrams_path))
 
 
-def tweet_cds_categories(text, patterns):
-    """List of CDS categories whose n-grams appear in ``text`` (empty if none)."""
-    if not text or text == FC.NO_CONTENT:
-        return []
-    return [cat for cat, pat in patterns.items() if pat.search(text)]
-
-
 def _is_cds(text, patterns):
     """True if ``text`` is a real tweet containing at least one CDS n-gram."""
     if not text or text == FC.NO_CONTENT:

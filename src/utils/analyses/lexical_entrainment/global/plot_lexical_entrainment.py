@@ -136,19 +136,6 @@ def _reduce_each(means, reduction):
     return [_reduce([m], reduction)[0] for m in means]
 
 
-def _load_setting(paths_with_seeds, num_steps, shift, mentalbert, cache_dir,
-                  reduction):
-    """Per-seed reduced trajectories + per-window PHQ-9 for one topology.
-
-    Runs are kept separate (no averaging). The reducer is fit once on the pooled
-    per-run window matrices, so all seeds of this topology share one 2D space.
-    Returns (seeds, trajs, phq9s) — trajs[i] is (T, 2), phq9s[i] is (T,).
-    """
-    seeds, means, phq9s = _encode_means(
-        paths_with_seeds, num_steps, shift, mentalbert, cache_dir)
-    return seeds, _reduce(means, reduction), phq9s
-
-
 def _run_shared(opts, out_dir, emb_name, emb_slug, red_name):
     """SDA+SDC shared-mapping experiment: one reduction per direction.
 

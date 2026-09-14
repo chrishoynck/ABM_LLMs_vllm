@@ -81,5 +81,5 @@ done
 
 echo
 echo "[done] variants under ${SA_DIR}/"
-echo "       next: PYTHONPATH=src python -m utils.sensitivity.sa_prompt \\"
-echo "                  --sa-dir ${SA_DIR} --heatmap-exclude iter_10"
+echo "       next: bash scripts/sensitivity/sa_prompt_baseline_run.sh (reps), then"
+echo "             PYTHONPATH=src python -m utils.sensitivity.sa_analyze --prompt-reps"

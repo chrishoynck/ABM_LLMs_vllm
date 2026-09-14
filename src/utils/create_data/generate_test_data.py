@@ -43,11 +43,9 @@ import os
 import re
 import sys
 
-import numpy as np
 import torch
 from transformers import set_seed
 
-from utils.tools.path_manager import TestPathManager
 from utils.create_data.test_phq9_llms import TestLLMs
 
 from utils.create_data.loaders import (

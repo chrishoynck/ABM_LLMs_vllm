@@ -195,7 +195,3 @@ class TestPathManager:
     def get_tweets_path(self):
         """Path for the per-agent tweets-with-PHQ-9 CSV (per-seed)."""
         return self.get_run_directory(is_plot=False) / "tweets_with_phq9.csv"
-
-    def get_results_csv_path(self):
-        """Path to the shared results CSV."""
-        return self.results_csv

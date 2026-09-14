@@ -192,24 +192,6 @@ class Agent:
         return total_score
 
     
-    # def persona_prompt(self):
-    #     if self.persona is None:
-    #         return "You have no specific persona."
-    #     p = self.persona
-
-    #     hobbies = ", ".join(p["hobbies"][:5]) if p["hobbies"] else "no particular hobbies"
-    #     skills = ", ".join(p["skills"][:5]) if p["skills"] else "no specific skills"
-
-    #     # combine the free-text persona + structured info
-    #     base = f"You are {p['name']} " #, {p['persona_text'].rstrip()}. "
-    #     extra = (
-    #         f"You are {p['age']} years old, gender: {p['sex']},"
-    #         f"Marital status: {p['marital_status']}, living in {p['city']}. "
-    #         f"worklife: {p['occupation'].replace('_', ' ')}. "
-    #         f"your hobbies include {hobbies}, and your key skills are {skills}."
-    #     )
-    #     return base + extra
-    
     @staticmethod
     def well_being_prompt(well_being : dict):
 
@@ -468,17 +450,6 @@ class Agent:
         if new_phq9:
             self._tweets_since_phq9_update = 0
 
-        # update diagnosis flag???
-
-        # record history
-        # self.all_phq9_sumscores.append(sumscore)
-
-    def reset_activation_state(self):
-        '''
-        Reset the activation state of the agent.
-        '''
-        self.activation_state = False
-
     def parse_tweet_decision(self, text: str):
         """
         Parse the LLM output to determine if the agent decided to post/tweet.
@@ -618,17 +589,6 @@ class Agent:
         """
         self.agent_connections.discard(agent)
     
-    def reset_agent(self):
-        """
-        Reset the agent to its initial state.
-        """
-        self.activation_state = False
-        self.last_tweet = None
-        self.tweethistory = []
-        self.neighbor_history = []
-        self._pending_neighbor_context = None
-
-
     def __hash__(self):
         """
         Hash the agent by its ID.
@@ -649,4 +609,3 @@ class Agent:
         Check if the agent is equal to another agent.
         """
         return isinstance(other, Agent) and self.ID == other.ID 
-

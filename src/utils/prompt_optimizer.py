@@ -150,8 +150,6 @@ _OPTIMIZER_SYSTEM_PROMPT = (
 )
 
 
-
-
 class _StudentEngine(tg.engine.EngineLM):
     """ChatVLLM wrapper that disables reasoning per-request (Qwen/Mistral specific)."""
     def __init__(self, base: ChatVLLM, model_name: str,
@@ -531,8 +529,6 @@ def _build_user_message(format_block: str, tweet_block: list, prompts: dict, per
     return f"{format_block}\n\n{tweets_text}"
 
 
-
-
 def _evaluate_instruction(engine, instruction_text: str, format_block: str,
                           blocks: list, answers: list, prompts: dict,
                           personas: list = None,
@@ -718,75 +714,6 @@ def train_val_test_split(rng, file_paths:list[str],
     test_data  = _select(test_idx)
     print(f"Train: {len(train_idx)},  Val: {len(val_idx)},  Test: {len(test_idx)}")
     return train_data, val_data, test_data
-
-
-def find_overlapping_test_data(
-    seeds: list[int],
-    file_paths: list[str],
-    val_fraction: float = 0.10,
-    test_fraction: float = 0.10,
-):
-    """Return blocks that land in test for every seed in `seeds`.
-
-    Each seed defines its own train/val/test partition via the same logic as
-    `train_val_test_split`. A block is "overlapping test data" iff it falls in
-    test for every seed — equivalently, it is never in train or val for any
-    seed. Useful for evaluating instructions optimised on different seeds on a
-    shared, leakage-free test pool.
-
-    Args:
-        seeds: RNG seeds to intersect. Must match the seeds the runs were trained with.
-        file_paths: same files (and same order) the runs used. Order matters because
-            it determines the underlying block index.
-        val_fraction: validation fraction used by the runs being intersected.
-        test_fraction: test fraction used by the runs being intersected.
-
-    Returns:
-        (blocks, answers, personas, agent_ids) — same tuple shape as `train_val_test_split`'s
-        test_data, restricted to the intersection. Order is ascending block index.
-    """
-    # Load once: train_val_test_split shuffles via a seeded RNG but the underlying
-    # load order is seed-independent, so block index uniquely identifies a sample
-    # across seeds.
-    tweet_blocks_list, true_answers_list, personas_list, agent_ids_list = [], [], [], []
-    for file_path in file_paths:
-        if file_path.endswith(".csv"):
-            csv_path = file_path
-            txt_path = file_path.replace(".csv", ".txt")
-        else:
-            txt_path = file_path
-            csv_path = file_path.replace(".txt", ".csv") if file_path.endswith(".txt") else file_path + ".csv"
-
-        if os.path.isfile(csv_path):
-            tb, ta, pe, ai = parse_tweets_with_phq9_csv(csv_path)
-        else:
-            tb, ta = parse_tweets_with_phq9(txt_path)
-            pe = [None] * len(tb)
-            ai = ["unknown"] * len(tb)
-        tweet_blocks_list.extend(tb)
-        true_answers_list.extend(ta)
-        personas_list.extend(pe)
-        agent_ids_list.extend(ai)
-
-    n = len(tweet_blocks_list)
-    n_test = max(1, int(n * test_fraction))
-
-    common: set[int] | None = None
-    for seed in seeds:
-        rng = np.random.default_rng(seed)
-        perm = rng.permutation(n)
-        test_idx = {int(i) for i in perm[:n_test]}
-        common = test_idx if common is None else common & test_idx
-
-    common_sorted = sorted(common or [])
-    print(f"[overlap] {len(common_sorted)}/{n} blocks are in test across all "
-          f"{len(seeds)} seeds (seeds={list(seeds)}, n_test/seed={n_test})")
-    return (
-        [tweet_blocks_list[i] for i in common_sorted],
-        [true_answers_list[i] for i in common_sorted],
-        [personas_list[i]     for i in common_sorted],
-        [agent_ids_list[i]    for i in common_sorted],
-    )
 
 
 def call_optimizer_phq9(
@@ -2444,36 +2371,6 @@ def rerun_test_tweets(
 # =============================== BERT Model ===============================
 
 
-def create_dataset(file_path: str):
-    """Build an 80/10/10 train/val/test split of tweet blocks from a tweets_with_phq9.txt file.
-
-    Args:
-        file_path: path to a tweets_with_phq9.txt file.
-
-    Returns:
-        ([train_blocks, val_blocks, test_blocks], [train_answers, val_answers, test_answers]).
-    """
-    tweet_blocks, true_answers = parse_tweets_with_phq9(file_path)
-    permutation_blocks = np.random.permutation(len(tweet_blocks))
-    permuted_tweet_blocks = [tweet_blocks[i] for i in permutation_blocks]
-    permuted_true_answers = [true_answers[i] for i in permutation_blocks]
-
-    number_of_blocks = len(permuted_tweet_blocks)
-    ten_percent = number_of_blocks // 10
-
-    validation_blocks = permuted_tweet_blocks[0:ten_percent]
-    validation_true_answers = permuted_true_answers[0:ten_percent]
-    training_blocks = permuted_tweet_blocks[ten_percent:-ten_percent]
-    training_true_answers = permuted_true_answers[ten_percent:-ten_percent]
-    test_blocks = permuted_tweet_blocks[-ten_percent:]
-    test_true_answers = permuted_true_answers[-ten_percent:]
-
-    tweet_blocks = [training_blocks, validation_blocks, test_blocks]
-    true_answers = [training_true_answers, validation_true_answers, test_true_answers]
-
-    print(f"Training blocks: {len(training_blocks)}")
-    return tweet_blocks, true_answers
-
 def split_embeddings_and_labels(rng, embeddings, labels, agent_ids=None,
                                 train_frac=0.8, val_frac=0.1):
     """Split embeddings + labels into train/val/test tensors (remainder is test).
@@ -3058,34 +2955,6 @@ def train_bert(model,
         best_val_mae = float('nan')
 
     return best_model_state, best_val_mae, history
-
-def evaluate_bert(model, test_data, test_labels, device, mae=False):
-    """Run the regressor on `test_data` and return aggregated loss.
-
-    Args:
-        model: trained regressor.
-        test_data: evaluation embeddings.
-        test_labels: ground-truth PHQ-9 scores.
-        device: torch device.
-        mae: if True use L1 (MAE); otherwise Huber.
-
-    Returns:
-        Scalar loss value.
-    """
-    model.eval()
-    if mae:
-        criterion = nn.L1Loss()
-    else:
-        criterion = nn.HuberLoss(delta=1.0)
-
-    test_data = torch.as_tensor(test_data, dtype=torch.float32).to(device)
-    test_labels = torch.as_tensor(test_labels, dtype=torch.float32).to(device)
-
-    with torch.no_grad():
-        outputs = model(test_data).squeeze(-1)
-        loss = criterion(outputs, test_labels)
-    return loss.item()
-
 
 def _bert_eval_summary(model, data, labels, device, want_per_phq9: bool = False):
     """MAE/std (and optional per-PHQ-9 stats + raw scores) of a BERT regressor on `data`.
