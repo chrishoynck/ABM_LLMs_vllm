@@ -91,7 +91,7 @@ PYTHONPATH=src "${PYTHON}" -m utils.prompt_optimizer --mode phq9-rerun-test \
 # (CPU-only — just reads the per-sample CSVs. Mirrors run_eval_comparison.sh
 #  defaults but uses ${PYTHON} so it works without activating the venv.)
 echo "[3] rebuilding comparison figures"
-PYTHONPATH=src "${PYTHON}" -m utils.visualization \
+PYTHONPATH=src "${PYTHON}" -m utils.visualization eval-comparison \
     --out-dir data/test_post/method_comparison \
     --prompt-dir "${OPT_DIR}" \
     --prompt-seeds ${PROMPT_SEEDS}

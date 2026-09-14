@@ -75,7 +75,7 @@ def _parse_args():
                         help="Path to <run>/iter_<N>/prompt.txt. The iter index "
                              "is read from the parent dir's name.")
     parser.add_argument("--persona-phq9-file", required=True,
-                        help="(persona, phq9) CSV from utils.create_data.build_persona_phq9_eval.")
+                        help="(persona, phq9) CSV from `utils.create_data.build_personas eval`.")
     parser.add_argument("--model", default="qwen27",
                         help="Short alias (qwen27, gemma12, ...) or full HF ID.")
     parser.add_argument("--num_agents", type=int, default=12)

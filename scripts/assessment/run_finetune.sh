@@ -83,7 +83,7 @@ echo "[run] python_gen=${PYTHON_GEN} python_bert=${PYTHON_BERT}; logging to ${LO
 
 # === 1. Training personas (skip if already built) ===========================
 if [[ ! -f "${PERSONAS}" ]]; then
-    PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_finetune_personas --n "${N_TRAIN}" --out "${PERSONAS}"
+    PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_personas finetune --n "${N_TRAIN}" --out "${PERSONAS}"
 fi
 
 # === 2. Generate training posts (chunked + resumable; iter_10 prompt) ========
@@ -109,7 +109,7 @@ PYTHONPATH=src "${PYTHON_BERT}" -m utils.prompt_optimizer \
 if [[ -z "${GEN_TAG}" ]]; then
     # Legacy Qwen layout: reuse the existing 120 blocks, generate the rest, concat.
     if [[ "${TEST_N}" -gt "${EXISTING_TEST_N}" && ! -f "${TEST_EXTRA_PERSONAS}" ]]; then
-        PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_test_personas \
+        PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_personas test-extra \
             --n "${TEST_N}" --keep "${EXISTING_TEST_N}" --out "${TEST_EXTRA_PERSONAS}"
     fi
     if [[ "${TEST_N}" -gt "${EXISTING_TEST_N}" ]]; then
@@ -135,7 +135,7 @@ PY
 else
     # Tagged layout: all TEST_N blocks fresh from this generator, same personas as Qwen's set.
     if [[ ! -f "${TEST_PERSONAS}" ]]; then
-        PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_test_personas \
+        PYTHONPATH=src "${PYTHON_BERT}" -m utils.create_data.build_personas test-extra \
             --n "${TEST_N}" --keep 0 --out "${TEST_PERSONAS}"
     fi
     if [[ "$(n_blocks "${TEST_POSTS}")" -lt "${TEST_N}" ]]; then

@@ -21,7 +21,7 @@ BERT_SEEDS="34 35 36 37 38"
 PROMPT_SEEDS="23 24 25 32 33"
 
 export PYTHONUNBUFFERED=1
-PYTHONPATH=src python -m utils.visualization \
+PYTHONPATH=src python -m utils.visualization eval-comparison \
     --out-dir "${OUT_DIR}" \
     --bert-dir "${BERT_DIR}" \
     --bert-ft-dir "${BERT_FT_DIR}" \

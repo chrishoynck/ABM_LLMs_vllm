@@ -6,7 +6,7 @@
 # the same Qwen assessor, the same five prompt seeds, but the posts were written
 # by another student generator (e.g. Gemma 4) via run_finetune.sh with
 # GEN_TAG=<tag>. Together with the MentalBERT+MLP evals this gives the
-# generator x estimator table (utils.tools.multimodel_summary).
+# generator x estimator table (`utils.visualization multimodel`, run as the last step).
 #
 # Usage (GPU session, repo root; the Qwen venv, NOT .venv_vllm_g4):
 #   bash scripts/assessment/run_llm_assessor_on_heldout.sh gemma4
@@ -67,4 +67,7 @@ for s in ${PROMPT_SEEDS}; do
   echo "  ${OPT_DIR}/Qwen3.5-27B_seed${s}/${MIN_SUBDIR}/test_raw_scores.csv"
   echo "  ${OPT_DIR}/Qwen3.5-27B_seed${s}/${OPT_SUBDIR}/test_raw_scores.csv"
 done
-echo "Next: PYTHONPATH=src ${PYTHON} -m utils.tools.multimodel_summary"
+
+# === 3. Generator x estimator table + figures (CPU; missing inputs are skipped) =
+echo "[3] multimodel summary"
+PYTHONPATH=src "${PYTHON}" -m utils.visualization multimodel

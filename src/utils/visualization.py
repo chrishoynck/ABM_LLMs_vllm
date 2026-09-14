@@ -2333,9 +2333,13 @@ def plot_multimodel_band_bias(out_path: str, generators: list | None = None):
 def plot_multimodel_mae_bias(summary: "pd.DataFrame", out_path: str):
     """Grouped bars: MAE (left) and signed bias (right) per generator x estimator.
 
-    `summary` is the table built by utils.tools.multimodel_summary (one row per
-    generator/estimator with mae, mae_sd, bias, bias_sd). One bar group per
-    generator, one colour per estimator.
+    Args:
+        summary (pd.DataFrame): table from `run_multimodel_summary`, one row per
+            generator/estimator with mae, mae_sd, bias, bias_sd.
+        out_path (str): PNG to write.
+
+    Returns:
+        str | None: `out_path`, or None if `summary` is empty.
     """
     if not len(summary):
         return None
@@ -2365,6 +2369,100 @@ def plot_multimodel_mae_bias(summary: "pd.DataFrame", out_path: str):
     plt.close(fig)
     print(f"Multi-model MAE/bias plot \u2192 {out_path}")
     return out_path
+
+
+MULTIMODEL_LABELS = {"qwen": "Qwen3.5-27B", "gemma4": "Gemma-4-31B-it"}
+_MM_BANDS = [(0, 4, "Minimal"), (5, 9, "Mild"), (10, 14, "Moderate"),
+             (15, 19, "Mod. severe"), (20, 27, "Severe")]
+_MM_OPT_DIR = "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}"
+
+
+def _multimodel_estimator_files(tag, bert_seeds, prompt_seeds):
+    """Estimator name -> per-seed prediction CSVs (columns true_phq9, pred_phq9) for one generator."""
+    sfx = "" if tag == "qwen" else f"_{tag}"
+    held = "human300" if tag == "qwen" else f"{tag}300"
+    bert = lambda d: [f"{d}/seed{s}.csv" for s in bert_seeds]
+    prompt = lambda sub: [_MM_OPT_DIR.format(seed=s) + f"/{sub}/test_raw_scores.csv" for s in prompt_seeds]
+    files = {
+        "BERT base (Qwen-trained)": bert(f"data/test_post/bert_regression/eval_baseline{sfx}"),
+        "BERT fine-tuned (own posts)": bert(f"data/test_post/bert_regression_finetuned{sfx}/eval_finetuned"),
+        "LLM prompt (minimal)": prompt(f"minimal_{held}"),
+        "LLM prompt (TextGrad)": prompt(f"eval_on_{held}"),
+    }
+    if tag != "qwen":  # Qwen-fine-tuned regressors transferred to this generator's posts
+        files["BERT fine-tuned (Qwen posts)"] = bert(f"data/test_post/bert_regression_finetuned/eval_{tag}300")
+    return files
+
+
+def run_multimodel_summary(argv=None):
+    """CLI entry: generator x estimator MAE/bias table (CSV + LaTeX) and the two multimodel figures.
+
+    Reads the per-seed prediction CSVs written by run_finetune.sh (MentalBERT+MLP)
+    and run_llm_assessor_on_heldout.sh (Qwen LLM assessor). Missing inputs are
+    skipped with a warning, so it can run while jobs are still pending.
+    """
+    ap = argparse.ArgumentParser(description="Generator x estimator MAE/bias summary.")
+    ap.add_argument("--generators", nargs="+", default=["qwen", "gemma4"])
+    ap.add_argument("--bert-seeds", nargs="+", type=int, default=[34, 35, 36, 37, 38])
+    ap.add_argument("--prompt-seeds", nargs="+", type=int, default=[23, 24, 25, 32, 33])
+    ap.add_argument("--out-dir", default="data/test_post/method_comparison/multimodel")
+    args = ap.parse_args(argv)
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    def band(score):
+        return next(name for lo, hi, name in _MM_BANDS if lo <= score <= hi)
+
+    rows, band_rows = [], []
+    for tag in args.generators:
+        gen = MULTIMODEL_LABELS.get(tag, tag)
+        for est, paths in _multimodel_estimator_files(tag, args.bert_seeds, args.prompt_seeds).items():
+            per_seed, pooled = [], []
+            for p in paths:
+                if not os.path.isfile(p):
+                    print(f"[skip] {gen} / {est}: missing {p}")
+                    continue
+                df = pd.read_csv(p)
+                err = df["pred_phq9"] - df["true_phq9"]
+                per_seed.append({"mae": err.abs().mean(), "bias": err.mean()})
+                pooled.append(df.assign(err=err))
+            if not per_seed:
+                continue
+            ps = pd.DataFrame(per_seed)
+            rows.append({"generator": gen, "estimator": est, "n_seeds": len(ps),
+                         "mae": ps["mae"].mean(), "mae_sd": ps["mae"].std(ddof=0),
+                         "bias": ps["bias"].mean(), "bias_sd": ps["bias"].std(ddof=0)})
+            pooled = pd.concat(pooled)
+            pooled["band"] = pooled["true_phq9"].map(band)
+            for b, g in pooled.groupby("band", sort=False):
+                band_rows.append({"generator": gen, "estimator": est, "band": b, "n": len(g),
+                                  "mae": g["err"].abs().mean(), "bias": g["err"].mean()})
+
+    summary = pd.DataFrame(rows)
+    summary.to_csv(f"{args.out_dir}/summary.csv", index=False)
+    by_band = pd.DataFrame(band_rows)
+    order = [name for _, _, name in _MM_BANDS]
+    if len(by_band):
+        by_band["band"] = pd.Categorical(by_band["band"], order)
+        by_band = by_band.sort_values(["generator", "estimator", "band"])
+    by_band.to_csv(f"{args.out_dir}/summary_by_band.csv", index=False)
+    print(summary.round(2).to_string(index=False))
+
+    # LaTeX table (booktabs, same style as the SI fine-tune table).
+    lines = ["\\begin{tabular}{llcc}", "\\toprule",
+             "Generator & Estimator & MAE & Bias \\\\", "\\midrule"]
+    for gen, g in summary.groupby("generator", sort=False):
+        for i, r in enumerate(g.itertuples()):
+            name = gen if i == 0 else ""
+            lines.append(f"{name} & {r.estimator} & ${r.mae:.2f} \\pm {r.mae_sd:.2f}$ & ${r.bias:+.2f}$ \\\\")
+        lines.append("\\midrule")
+    lines[-1] = "\\bottomrule"
+    lines.append("\\end{tabular}")
+    with open(f"{args.out_dir}/table_multimodel.tex", "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    plot_multimodel_mae_bias(summary, f"{args.out_dir}/multimodel_mae_bias.png")
+    plot_multimodel_band_bias(f"{args.out_dir}/mae_bias_per_band_finetuned.png")
+    print(f"[done] -> {args.out_dir}/")
 
 
 def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
@@ -2410,29 +2508,12 @@ def plot_cv_results(cv_records: list, mean_val_mae: float, std_val_mae: float,
 
 # =========================================================================== #
 # Estimator comparison bar plots (MAE + signed bias, with error bars).
-#
-# Two figures, each a MAE panel + a bias panel side-by-side. Error bars are the
-# SD of the per-sample errors (|error| for MAE, signed error for bias), computed
-# per seed and averaged over seeds — the within-run spread, not seed-to-seed
-# variability. Everything is recomputed from the per-sample test_raw_scores.csv /
-# seed<seed>.csv files (columns true_phq9, pred_phq9), so bars/error-bars/table
-# share one source of truth.
-#
-#   Figure 1: BERT non-FT (human-opt) | fine-tuned (human-opt) | non-FT (synthetic)
-#   Figure 2: BERT vs post-assessment prompt, each on {synthetic, human-opt} test
-#
-# Test-set alignment (figure 2): both methods are scored on the SAME data sources
-# so the synthetic-vs-human gap is the distribution shift, not a change of test
-# set. The "synthetic" (in-distribution) side is the BERT regression test blocks:
-# BERT is its own 5-seed average (each seed on its held-out split, one of which is
-# test_blocks_seed35.csv), and the prompt is scored on test_blocks_seed35.csv via
-# the eval_on_test_blocks_seed35[/_minimal] subdirs — NOT the prompt's own
-# optimisation split. The "human-opt" side is the 300-block data/finetune/
-# test_posts.csv for every bar (BERT eval_baseline, prompt eval_on_human300,
-# minimal minimal_human300).
-#
-# Run via the shell wrapper scripts/assessment/run_eval_comparison.sh, or directly:
-#   PYTHONPATH=src python -m utils.visualization --out-dir data/test_post/method_comparison
+# Figure 1: BERT non-FT (human-opt) | fine-tuned (human-opt) | non-FT (synthetic).
+# Figure 2: BERT vs assessment prompt, each on {synthetic, human-opt} test.
+# Error bars are the SD of the per-sample errors, averaged over seeds. Both
+# methods are scored on the same test files, so the synthetic-vs-human gap is
+# the distribution shift (see run_eval_comparison for the paths).
+# CLI: scripts/assessment/run_eval_comparison.sh.
 # =========================================================================== #
 _EVAL_MODEL_SHORT = "Qwen3.5-27B"
 # Match the prompt-sensitivity (SA) palette used elsewhere in the thesis
@@ -2712,4 +2793,10 @@ def run_eval_comparison(argv=None):
 
 
 if __name__ == "__main__":
-    run_eval_comparison()
+    import sys
+    import matplotlib
+    matplotlib.use("Agg")  # CLI only; never set a backend at import time (the notebook imports this module)
+    _CMDS = {"eval-comparison": run_eval_comparison, "multimodel": run_multimodel_summary}
+    if len(sys.argv) < 2 or sys.argv[1] not in _CMDS:
+        sys.exit(f"usage: python -m utils.visualization {{{'|'.join(_CMDS)}}} [flags]  (--help per command)")
+    _CMDS[sys.argv[1]](sys.argv[2:])

@@ -78,7 +78,7 @@ def _parse_args():
                         help="Glob applied within --instruction-dir.")
 
     parser.add_argument("--persona-phq9-file", required=True,
-                        help="(persona, phq9) CSV from utils.create_data.build_persona_phq9_eval.")
+                        help="(persona, phq9) CSV from `utils.create_data.build_personas eval`.")
     parser.add_argument("--model", required=True,
                         help="Short alias (qwen27, gemma12, ...) or full HF ID.")
     parser.add_argument("--num_agents", type=int, default=12,
