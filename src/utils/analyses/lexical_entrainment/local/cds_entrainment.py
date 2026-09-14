@@ -1,41 +1,11 @@
-"""Local entrainment of Cognitive Distortion Schema (CDS) over directed topologies.
+"""Local CDS entrainment: are an agent's distortions more like its neighbours' than random?
 
-Question: does network topology (clustering / degree) drive the *local spread* of
-cognitive distortions?  For each agent we ask whether the cosine similarity of its
-CDS TF-IDF vector to its in-neighbours is higher than to a random (global) baseline
-(local entrainment, following the sent formula):
-
-    s_local(i,w)  = cos( v_i^w , mean_{j in N^-(i)}        v_j^w )
-    s_random(i,w) = cos( v_i^w , mean_{j in random, |.|=|N^-(i)|} v_j^w )   (avg over R draws)
-    Delta = s_local - s_random          (entrainment gap; >0 => neighbours more alike)
-
-The random baseline is SIZE-MATCHED: for each focal it averages over the same number
-of randomly chosen active agents as the agent has in-neighbours, repeated R times.
-This removes a group-size confound in the originally-sent global baseline (averaging
-over all ~N-1 agents collapses toward the shared centroid and inflates cosine, which
-produced a spurious negative Delta).
-
-Design choices (see plan):
-  * v_i^w is built over a sliding window of W rounds (default 10, step 1): each
-    agent's *real* tweets in [w, w+W) are pooled into one K=241 CDS-marker TF-IDF
-    vector.  Single-tweet vectors are too sparse; whole-run pooling measures static
-    homophily rather than time-aligned entrainment.
-  * K = 241 CDS markers; spelling variants collapse onto their base-marker dimension.
-  * IDF is fit once over *all* individual real tweets pooled across every config and
-    seed, so all vectors live in one comparable weighted space.
-  * Neighbour vectors are L2-normalised before averaging (each neighbour contributes
-    equally; cosine already normalises the focal vector).  Toggle with ``normalize``.
-
-Edge direction (verified empirically, not assumed):  in this ABM a stored edge
-``[i, j]`` means agent ``i`` is EXPOSED TO agent ``j``'s content, so the in-neighbours
-whose content ``i`` sees (N^-(i)) are ``i``'s SUCCESSORS.  This was confirmed against
-``neighbor_history`` (the agents whose tweets ``i`` actually saw each round) — see
-``verify_edge_direction`` and the runner's printed check.
-
-Standalone: reads ``net.json`` directly, so it does not pull the heavy
-``metrics``/``reading_in`` import chain (torch / umap / sentence_transformers).
-
-Run:  PYTHONPATH=src python src/utils/cds_entrainment.py
+Per agent and sliding window (W rounds) a 241-marker CDS TF-IDF vector is built from
+its real posts; its cosine to the mean in-neighbour vector (s_local) is compared with
+a size-matched random set of active agents (s_random, R draws). Delta = s_local -
+s_random; above zero means neighbours are more alike than chance. A stored edge
+[i, j] means i sees j's posts, so in-neighbours are successors (checked in
+`verify_edge_direction`). Reads net.json directly. Run: see src/README.md (Hand-run CLIs).
 """
 
 import os
@@ -83,9 +53,9 @@ SA_PALETTE = ["#2e7ebc", "#d96907", "#2e8b57", "#8d2c03", "#6a3d9a", "#e74c3c"]
 
 # ── CDS marker vocabulary ────────────────────────────────────────────────────
 def load_markers(path=NGRAMS_TSV):
-    """Return ordered list of (category, base_marker, [surface_forms]) — K markers.
+    """Return ordered list of (category, base_marker, [surface_forms]), K markers.
 
-    Mirrors ``metrics.load_ngrams_tsv`` parsing but keeps the marker grouping so
+    Mirrors `metrics.load_ngrams_tsv` parsing but keeps the marker grouping so
     base + variants map to ONE dimension.
     """
     markers = []
@@ -159,7 +129,7 @@ def load_net(path):
 
 def net_tf_sparse(history, pats, any_pat, K):
     """Scan every real tweet once. Return (idx, val, real) where idx/val are the
-    sparse non-zero entries of the (N, T, K) per-round TF tensor and ``real`` is the
+    sparse non-zero entries of the (N, T, K) per-round TF tensor and `real` is the
     (N, T) bool mask of rounds with an actual post."""
     N = len(history)
     T = len(history[0])
@@ -185,6 +155,7 @@ def net_tf_sparse(history, pats, any_pat, K):
 
 
 def dense_tf(idx, val, N, T, K):
+    """Expand sparse (index, value) term-frequency entries into a dense (N, T, K) array."""
     tf = np.zeros((N, T, K), dtype=np.float32)
     if len(val):
         tf[idx[:, 0], idx[:, 1], idx[:, 2]] = val
@@ -271,7 +242,7 @@ def entrainment_for_net(tf, real, A, idf, W=10, step=1, normalize=True, R=10, se
 
 
 def verify_edge_direction(path):
-    """Confirm that the agents recorded in ``neighbor_history`` (whom an agent saw)
+    """Confirm that the agents recorded in `neighbor_history` (whom an agent saw)
     are its SUCCESSORS, not predecessors. Returns (ok, detail)."""
     with open(path) as f:
         d = json.load(f)
@@ -297,7 +268,7 @@ def verify_edge_direction(path):
 # ── PHQ-9 columns ────────────────────────────────────────────────────────────
 def avg_dw_phq9(phq9, A):
     """Mean over time of the out-degree-weighted PHQ-9 (matches
-    ``metrics.degree_weighted_mean``: weight by agent_connections = out-degree)."""
+    `metrics.degree_weighted_mean`: weight by agent_connections = out-degree)."""
     deg = A.sum(1)                     # (N,) out-degree
     total = A.sum()
     if total == 0:
@@ -307,11 +278,26 @@ def avg_dw_phq9(phq9, A):
 
 
 def end_mean_phq9(phq9):
+    """Mean PHQ-9 over all agents at the last round."""
     return float(phq9[:, -1].mean())
 
 
 # ── table builder ────────────────────────────────────────────────────────────
 def build_table(configs=CONFIGS, W=10, step=1, normalize=True, R=10, seed=0, verbose=True):
+    """Compute s_local, s_random and Delta per agent and window for every config and seed.
+
+    Args:
+        configs: (label, run folder) pairs to scan.
+        W (int): window length in rounds.
+        step (int): window step.
+        normalize (bool): L2-normalise neighbour vectors before averaging.
+        R (int): random draws for the size-matched baseline.
+        seed (int): RNG seed of the baseline.
+        verbose (bool): print progress.
+
+    Returns:
+        the entrainment table, one row per (config, seed, agent, window).
+    """
     markers = load_markers()
     K = len(markers)
     assert K == 241, f"expected 241 CDS markers, got {K}"
@@ -398,7 +384,7 @@ def entrainment_timeseries_for_net(tf, real, A, idf, W=10, step=1,
                                    normalize=True, R=10, seed=0):
     """Per-window mean entrainment Delta over valid focal agents.
 
-    Same metric as ``entrainment_for_net`` but kept resolved by window instead of
+    Same metric as `entrainment_for_net` but kept resolved by window instead of
     pooled. Returns (centers, delta_w, n_w): window-centre round, mean Delta in that
     window (nan if no valid focal), and the number of valid focals per window.
     """
@@ -570,6 +556,7 @@ def plot_entrainment_seeds(centers, out, out_png, W, step, smooth=11, ncols=3):
 
 
 def main():
+    """Parse args, build the table, print the summary and write the CSV and figures."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--window", type=int, default=10, help="window length W (rounds)")
     ap.add_argument("--step", type=int, default=1, help="window step")

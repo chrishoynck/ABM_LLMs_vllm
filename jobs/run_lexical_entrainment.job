@@ -18,7 +18,7 @@
 # Submit:  sbatch jobs/run_lexical_entrainment.job
 # Re-runs reuse the caches and skip existing figures. Knobs (env vars, see
 # run_lexical_entrainment.sh): OVERWRITE=1, REDUCTION=umap, EMBEDDING=sbert.
-# One GPU is enough — sentence-transformers encodes on a single device.
+# One GPU is enough, sentence-transformers encodes on a single device.
 
 module purge
 cd ~/thesis/ABM_based_LLMS/

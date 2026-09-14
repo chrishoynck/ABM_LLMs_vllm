@@ -1,25 +1,11 @@
-"""Reconstruct the exact held-out TEST blocks a BERT+MLP regressor was scored on.
+"""Rebuild the exact held-out test blocks a BERT+MLP regressor was scored on, as a CSV.
 
-The non-finetuned MentalBERT+MLP regressor (`train_BERT_model`) never stores its
-test set as a file: the partition is implied by `(seed, the cached agent_ids,
-agent-level 80/10/10 split)` — see `prompt_optimizer.split_embeddings_and_labels`.
-This script replays that split deterministically (CPU-only, no model load, no
-teacher) and writes the test blocks back out as a `tweets_with_phq9` CSV so the
-LLM PHQ-9 prompt can be scored on the *same* blocks via:
-
-    python -m utils.prompt_optimizer --mode phq9-rerun-test \
-        --model Qwen/Qwen3.5-27B --seeds 23 \
-        --instruction-filename minimal_instruction.txt \
-        --posts-file <this CSV>
-
-Each selected block is re-emitted as one row per tweet with a fresh, globally
-unique agent_id and a constant phq9, so `parse_tweets_with_phq9_csv` re-groups it
-into the identical block (the grouping key is consecutive (agent_id, phq9)). The
-script asserts the rebuilt block count equals the regressor's recorded n_test.
-
-Usage:
-    python -m utils.tools.build_bert_testset --seed 35 \
-        --out data/test_post/bert_regression/test_blocks_seed35.csv
+The regressor never stores its test set; the split follows from (seed, cached
+agent_ids, agent-level 80/10/10 split) in `prompt_optimizer.split_embeddings_and_labels`.
+This replays it on CPU and writes the test blocks as a tweets_with_phq9 CSV (fresh
+unique agent_id per block, constant phq9) so the LLM prompts can be scored on the same
+blocks. Asserts the block count matches the regressor's recorded n_test.
+Run: scripts/assessment/run_phq9_on_bert_testset.sh.
 """
 
 import argparse
@@ -78,6 +64,7 @@ def test_agents_for_seed(agent_ids: list[str], seed: int,
 
 
 def main() -> None:
+    """Parse args, replay the split and write the test-block CSV."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=35,
                     help="Regressor seed whose held-out test partition to reconstruct (default: 35, the deployed seed).")

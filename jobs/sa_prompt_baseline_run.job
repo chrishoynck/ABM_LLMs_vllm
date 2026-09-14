@@ -12,7 +12,7 @@
 module purge
 cd ~/thesis/ABM_based_LLMS/
 source .venv_vllm/bin/activate
-# 1. generate (GPU) — 10 missing textgrad reps (minimal's 3 reps already present)
+# 1. generate (GPU), 10 missing textgrad reps (minimal's 3 reps already present)
 bash scripts/sensitivity/sa_prompt_baseline_run.sh
 
 # 2. embed all reps -> embeddings.npz (MentalBERT, same encoder as the cross-prompt run)

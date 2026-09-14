@@ -1,39 +1,11 @@
-"""Network-level PHQ-9 *mobility* map: structure (init PHQ-9 assortativity x
-clustering) coloured by how much agents move on the PHQ-9 axis.
+"""PHQ-9 mobility map of saved runs: network structure (x, y) coloured by how much agents move on PHQ-9.
 
-Each saved run (``net.json``) becomes ONE point. Its y is always the clustering
-coefficient C; x is one of two structural axes (one per column, see below):
-
-    x = mean degree <k>               (2E/N undirected; out-degree E/N directed)
-        OR initial PHQ-9 assortativity (numeric assortativity of the *undirected*
-                                        graph on each agent's phq9[0])
-    y = clustering coefficient C      (undirected average clustering for
-                                        undirected runs; out-clustering (Fagiolo
-                                        2007, out-degree based) for directed runs)
-    colour = network mobility         (mean over agents of each agent's RMSSD --
-                                        root mean square of successive PHQ-9
-                                        changes on the 10-round update grid)
-
-Both axes are recomputed *from the run data itself* (the graph in
-``Connections`` + each agent's ``phq9`` series), not read from ``meta.json`` --
-they reproduce ``meta.json``'s ``topology.clustering`` /
-``topology.phq9_assort_initial`` / degree exactly (verified), so the figure is
-self-contained and the computation is auditable.
-
-Output is TWO figures -- one non-debiased, one debiased -- each a 2x2 grid: rows
-are the two networks (SDA, SDC); columns are the two structure mappings
-(mean degree -> C, and initial PHQ-9 assortativity -> C). Splitting debiasing
-across figures (rather than columns) keeps the two structure mappings side by
-side within each debiasing condition, and the two figures share identical axes
-and colourbar so they compare directly.
-
-Run from the repo root with the project venv::
-
-    PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_phq9_mobility \
-        --scan data/networks_post/basis
-
-Stage 1 harvests every run into a small CSV (cache); Stage 2 draws from it.
-Re-running reuses the CSV unless ``--reharvest`` is passed.
+One point per saved run: y is the clustering coefficient, x is mean degree or initial
+PHQ-9 assortativity (one column each), colour is the mean per-agent RMSSD of PHQ-9 on
+the 10-round update grid. Both axes are recomputed from the run data (they match
+meta.json). Two 2x2 figures (non-debiased, debiased) with rows SDA / SDC. Stage 1
+harvests the runs into a CSV cache, stage 2 draws from it (--reharvest to redo).
+Run: see src/README.md (Hand-run CLIs).
 """
 
 import argparse
@@ -86,6 +58,7 @@ BRAND_CMAPS["brand_gbo_bright"] = BRAND_CMAPS["brand_bsbo"][1:]
 
 
 def make_cmap(name):
+    """Return a brand colormap by name, or any matplotlib colormap as a fallback."""
     if name in BRAND_CMAPS:
         return LinearSegmentedColormap.from_list(name, BRAND_CMAPS[name])
     return plt.get_cmap(name)  # allow any matplotlib name as an escape hatch
@@ -99,7 +72,7 @@ _PATH_RE = re.compile(
 
 
 def iter_runs(root, rounds):
-    """Yield (path, meta-dict) for every ``net.json`` under root matching rounds."""
+    """Yield (path, meta-dict) for every `net.json` under root matching rounds."""
     for path in sorted(glob.glob(os.path.join(root, "**", "net.json"),
                                  recursive=True)):
         m = _PATH_RE.search(path.replace(os.sep, "/"))
@@ -112,7 +85,7 @@ def iter_runs(root, rounds):
 
 # PHQ-9 is re-evaluated only every 10 rounds; the stored series repeats each
 # value 10x in between, so mobility is computed on the genuine update grid
-# (``series[::PHQ9_UPDATE_EVERY]``) rather than the filler-inflated raw series.
+# (`series[::PHQ9_UPDATE_EVERY]`) rather than the filler-inflated raw series.
 PHQ9_UPDATE_EVERY = 10
 
 
@@ -120,7 +93,7 @@ def _rmssd(series):
     """Mobility of one PHQ-9 trajectory = RMSSD on its update grid.
 
     RMSSD (root mean square of successive differences) =
-    ``sqrt(mean((x_{t+1} - x_t)**2))`` over the down-sampled update points. It is
+    `sqrt(mean((x_{t+1} - x_t)**2))` over the down-sampled update points. It is
     the root one-step mean-squared displacement -- i.e. the typical step size of
     the symptom score over time. Unlike net displacement it counts in-trajectory
     excursions (an agent that returns to its start still scores high), and unlike
@@ -138,7 +111,7 @@ def _grid_var(series):
     """Variance of one PHQ-9 trajectory on its update grid.
 
     Order-insensitive spread around the agent's own mean -- the *total*
-    excursion of the symptom score, regardless of path. Contrast with ``_rmssd``
+    excursion of the symptom score, regardless of path. Contrast with `_rmssd`
     (step-to-step movement). In squared PHQ-9 units, so its across-agent spread
     is more right-skewed than RMSSD's; prefer --rank-color / --log-color when
     colouring by it. Edge case: <2 update points -> 0.
@@ -157,8 +130,8 @@ def _out_clustering(DG):
     the clustering "calculated solely with out degree" -- the directed
     friend-of-a-friend measure on an influence network. Nodes with out-degree < 2
     contribute 0 (count_zeros convention), averaging over all nodes so the value
-    stays comparable to ``nx.average_clustering`` on the undirected runs. This
-    mirrors ``sa_network._out_clustering`` / ``reading_in``'s ``clustering_out``,
+    stays comparable to `nx.average_clustering` on the undirected runs. This
+    mirrors `sa_network._out_clustering` / `reading_in`'s `clustering_out`,
     so directed runs here use the same C as the rest of the directed analysis.
     """
     if DG.number_of_nodes() == 0:
@@ -176,14 +149,14 @@ def _out_clustering(DG):
 def analyse_run(path, directed=False):
     """Compute (assortativity, clustering, mobility, n_agents) from one net.json.
 
-    Assortativity is measured on the *undirected* projection of ``Connections``
-    for every run (matching ``meta.json``'s ``phq9_assort_initial``). Clustering
+    Assortativity is measured on the *undirected* projection of `Connections`
+    for every run (matching `meta.json`'s `phq9_assort_initial`). Clustering
     and mean degree follow the run's directedness: undirected runs use ordinary
     average clustering and degree 2E/N; directed runs use out-clustering (Fagiolo
-    2007) and mean out-degree E/N -- i.e. ``meta.json``'s ``clustering_out``, the
+    2007) and mean out-degree E/N -- i.e. `meta.json`'s `clustering_out`, the
     same convention as the sensitivity plots (on these graphs out-clustering runs
     ~half the undirected projection). Mobility is the mean over agents
-    of each agent's RMSSD on the 10-round PHQ-9 update grid (see ``_rmssd``).
+    of each agent's RMSSD on the 10-round PHQ-9 update grid (see `_rmssd`).
     Degree-0 (edge-less) runs are kept with C = assortativity = mean_degree = 0
     (no edges -> no clustering and no assortative structure, by convention).
     """
@@ -262,6 +235,7 @@ def harvest(root, rounds, csv_path):
 
 
 def load_csv(csv_path):
+    """Read the harvested-runs CSV cache into a list of dicts with the numeric fields parsed."""
     rows = []
     with open(csv_path) as fh:
         header = fh.readline().strip().split(",")
@@ -280,7 +254,7 @@ def load_csv(csv_path):
 
 
 # ── plotting ──────────────────────────────────────────────────────────────────
-# Each FIGURE matches an EXACT deb category. The legacy ``old_debiased`` batch is
+# Each FIGURE matches an EXACT deb category. The legacy `old_debiased` batch is
 # *not* a debiased counterpart of these runs (it has unmatched topologies, e.g.
 # combo 3_4312_d6_dim4), so it is excluded entirely rather than folded into the
 # debiased figure. Add a category here only if it is a genuine like-for-like set.
@@ -297,7 +271,16 @@ def _lim(vals, pad_frac=0.05):
 def plot(rows, out_path, deb_filter, cmap_name="RdYlGn_r", log_color=False,
          color_key="mobility", color_label="PHQ-9 mobility (RMSSD)",
          rank_color=False, power=None):
-    # One figure per debias category (``deb_filter``). Grid rows = networks
+    """Draw one 2x2 mobility figure (rows SDA / SDC, columns degree and assortativity) for one debias category.
+
+    Args:
+        rows (list[dict]): harvested runs.
+        out_path (str): PNG to write.
+        deb_filter (str): which debias category to draw.
+        cmap_name (str), log_color (bool), rank_color (bool), power (float | None): colour scaling.
+        color_key (str), color_label (str): the column that colours the points, and its label.
+    """
+    # One figure per debias category (`deb_filter`). Grid rows = networks
     # (SDA, SDC); grid columns = the two structure mappings -- mean degree ->
     # clustering and (init) PHQ-9 assortativity -> clustering. Marker encodes the
     # run's directedness (star = directed, dot = undirected), independent of the
@@ -410,6 +393,7 @@ COLOR_METRICS = {
 
 
 def main():
+    """Parse args, harvest the runs (or load the cache) and draw the figures."""
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scan", default="data/networks_post/basis",

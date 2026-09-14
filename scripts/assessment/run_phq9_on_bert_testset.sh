@@ -3,7 +3,7 @@
 # blocks the non-finetuned MentalBERT+MLP regressor was tested on, so all three
 # estimators give a per-PHQ-9 bias curve over identical in-distribution data.
 #
-# Pipeline (student model only — no teacher / optimizer is loaded):
+# Pipeline (student model only, no teacher / optimizer is loaded):
 #   0. reconstruct the regressor's seed-<SEED> held-out test blocks -> a CSV
 #      (deterministic replay of the agent-level 80/10/10 split; CPU-only)
 #   1. dump the minimal_post instruction (the one wired into format_config.py)

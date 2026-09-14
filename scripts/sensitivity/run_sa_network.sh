@@ -3,15 +3,15 @@
 # Usage:
 #   bash scripts/sensitivity/run_sa_network.sh [options]
 #
-# Options (all optional — defaults shown below):
+# Options (all optional, defaults shown below):
 #   --n-sobol   N      Sobol base size; total evals = N×12   (default: 512)
 #   --n-jobs    N      Parallel workers; -1 = all CPUs        (default: -1)
 #   --out-dir   PATH   Where to write CSVs + PNGs             (default: data/sensitivity/network)
 #
-# Example — quick run with 128 base samples (~1 500 builds):
+# Example, quick run with 128 base samples (~1 500 builds):
 #   bash scripts/sensitivity/run_sa_network.sh --n-sobol 128
 #
-# Example — publication run with all CPUs:
+# Example, publication run with all CPUs:
 #   bash scripts/sensitivity/run_sa_network.sh --n-sobol 512 --n-jobs -1
 
 set -euo pipefail

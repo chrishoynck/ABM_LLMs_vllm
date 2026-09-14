@@ -1,36 +1,11 @@
-"""Generate test posts using an optimizer-aligned (or otherwise tuned) instruction.
+"""Generate posts for one instruction file, or for every best_instruction*.txt in a folder.
 
-Two entry paths:
-
-  ``--instruction-file <one.txt>``
-      Run that single instruction. Typical when comparing a hand-tuned variant
-      against a baseline.
-
-  ``--instruction-dir <dir>``
-      Walk the directory recursively for ``best_instruction*.txt`` files and
-      run each one. Skipped files can be filtered by ``--filename-pattern``.
-
-The rules-substitution / fixed-tail structure is preserved (the instruction is
-spliced into the ``tweet_gen.system_forced`` prompt at the
-``### RULES ### / ### CONSTRAINTS ###`` markers — exact mirror of how
-``prompt_optimizer.py`` evaluates a student instruction).
-
-Neighbour posts are sampled from the Qwen3.5-27B ``test_post/`` tree by
-default (every ``seed_*/tweets_with_phq9.csv`` under both inter and no_inter),
-mirroring ``prompt_optimizer._generate_file_path`` + ``_sample_neighbor_tweets``.
-
-Output layout (sibling SA_prompt/ folder of the input dir):
-
-    <parent>/SA_prompt/
-        <instr_id>_<safe_model>.csv     # posts per (variant, model)
-        scores.csv                       # appended row per (variant, model)
-
-Usage
------
-    python -m utils.create_data.generate_test_data \\
-        --instruction-dir data/prompt_optimization_h/prompt_variants \\
-        --persona-phq9-file data/personas_eval_1000_phq9.csv \\
-        --model qwen27 --num_agents 12 --seed 42
+The instruction is spliced into the `tweet_gen.system_forced` prompt at the RULES /
+CONSTRAINTS markers, exactly as `prompt_optimizer` evaluates a student instruction.
+Neighbour posts come from the Qwen3.5-27B test_post tree by default. Output: a sibling
+SA_prompt/ folder with one CSV per (instruction, model) plus scores.csv, or the path
+given by --output-csv. This is the generator behind every sensitivity run and the
+fine-tune data. Run: scripts/sensitivity/*.sh, create_data_menu.sh block 3.
 """
 
 from __future__ import annotations
@@ -65,6 +40,7 @@ from utils.create_data.loaders import (
 
 
 def _parse_args():
+    """Build the CLI parser and parse argv."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
 
@@ -183,7 +159,7 @@ def _append_blocks(path: str, agents, global_ids, interaction: bool = False) -> 
 
 
 def _write_meta(out_csv: str, model_id: str, args, instr_path: str) -> None:
-    """Record generation provenance next to the posts CSV (``<csv>.meta.json``).
+    """Record generation provenance next to the posts CSV (`<csv>.meta.json`).
 
     Captures the generator, the resolved decoding parameters, seeds, prompt and
     neighbour settings, and the vLLM version, so per-model runs (Qwen / Gemma /
@@ -238,7 +214,7 @@ def _resolve_instruction_paths(args) -> tuple[list[str], str]:
 
 
 def _instr_identity(instr_path: str, sweep_root: str, fallback_idx: int) -> tuple[str, int]:
-    """Return (instr_id, variant_idx) — mirrors the legacy SA naming."""
+    """Return (instr_id, variant_idx), mirrors the legacy SA naming."""
     rel = os.path.relpath(instr_path, sweep_root)
     instr_id = rel.replace(os.sep, "_")
     if instr_id.lower().endswith(".txt"):
@@ -291,6 +267,7 @@ def _merge_scores_csv(path: str, new_rows: list[dict]) -> None:
 
 
 def main():
+    """Resolve the instruction files, generate posts for each and write the CSVs plus scores.csv."""
     args = _parse_args()
     set_seed(args.seed)
 
@@ -387,7 +364,7 @@ def main():
                 # corresponds to personas_slice[i]; renumber ID -> global so neighbour
                 # seeding (SeedSequence[..,int(agent.ID),..]) and output ids match a
                 # single-shot run exactly. TestLLMs keys phq9_sequences/phq9_indices by
-                # the ORIGINAL (local) ID, so remap those dict keys in lockstep — else
+                # the ORIGINAL (local) ID, so remap those dict keys in lockstep, else
                 # the PHQ-9 update step hits KeyError on chunks past the first.
                 old_ids = [ag.ID for ag in t.all_agents]
                 t.phq9_sequences = {gid: t.phq9_sequences[old] for old, gid in zip(old_ids, global_ids)}

@@ -1,3 +1,5 @@
+"""Shared analysis primitives: embedding caches (SBERT / MentalBERT), CDS n-gram detection, TF-IDF, PCA / UMAP and degree-weighted PHQ-9."""
+"""Shared analysis primitives: embedding caches (SBERT / MentalBERT), CDS n-gram detection, TF-IDF, PCA / UMAP and degree-weighted PHQ-9."""
 import re, csv, json, os
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import PCA
@@ -9,8 +11,7 @@ import umap
 from .tools.format_config import FC
 
 def print_histories(network, file_dir, file_name, save=False):
-    """
-    Parses and prints the tweet history for every agent in a readable format.
+    """Parses and prints the tweet history for every agent in a readable format.
     
     Args:
         network: The network object containing agents.
@@ -56,8 +57,7 @@ def print_histories(network, file_dir, file_name, save=False):
         print(f"\n[Info] Tweet history saved to: {export_file}")
     
 def degree_weighted_mean(network): 
-    """
-    Calculate the degree-weighted mean of agents phq9_sumscore at a given round.
+    """Calculate the degree-weighted mean of agents phq9_sumscore at a given round.
     
     Args:
         network: The network object containing agents.
@@ -86,8 +86,7 @@ def degree_weighted_mean(network):
     return np.array(phq9_per_round)
 
 def load_ngrams_tsv(filepath: str, skip_header=True) -> set:
-    """
-    Load distorted-language n-grams from a TSV file with columns:
+    """Load distorted-language n-grams from a TSV file with columns:
       categories | markers | variants
     
     - markers column: base n-gram
@@ -136,29 +135,19 @@ def contains_ngram(text: str, ngrams: set) -> bool:
 # =========================CDS parsing from neighbor_history=========================
 
 def neighbor_cds_records(agent, ngrams):
-    """Re-derive CDS / neighbour-PHQ-9 stats per round from ``agent.neighbor_history``.
+    """Per-round CDS and neighbour-PHQ-9 stats, recomputed from `agent.neighbor_history`.
 
-    Each ``neighbor_history`` entry stores the agent's own committed tweet/PHQ-9
-    plus the full tweets/IDs/PHQ-9 of every activated neighbour that round (see
-    ``Agent.commit``). This recomputes, per round, the CDS signals that used to
-    live only as the on-the-fly ``frac_distorted_neigh`` / ``network.cds_info``:
-
-        - ``frac_neigh_cds``  : fraction of activated neighbours whose tweet
-          contains a distorted-language n-gram (== the old frac_distorted_neigh).
-        - ``distorted``       : whether the agent's own tweet contains CDS — the
-          per-(agent, round) event behind "probability of sending CDS".
-        - ``mean_neigh_phq9`` : mean PHQ-9 of activated neighbours, for studying
-          the influence of neighbour well-being on the agent's language use.
-
-    Recomputing from the raw saved tweets (rather than trusting a stored flag)
-    lets you swap in a different CDS detector / n-gram set after the fact.
+    Each history entry holds the agent's own committed post and PHQ-9 plus the posts,
+    ids and PHQ-9 of every activated neighbour that round (see `Agent.commit`).
+    Recomputing from the saved text lets you swap the CDS detector or n-gram set later.
 
     Args:
-        agent: an Agent with a populated ``neighbor_history``.
-        ngrams (set): distorted-language n-grams, e.g. from ``load_ngrams_tsv``.
+        agent: an Agent with a populated `neighbor_history`.
+        ngrams (set): distorted-language n-grams, e.g. from `load_ngrams_tsv`.
 
     Returns:
-        list[dict]: one dict per round, in chronological order.
+        list[dict]: one dict per round with `frac_neigh_cds` (share of activated
+        neighbours whose post has CDS), `distorted` (own post has CDS) and `mean_neigh_phq9`.
     """
     out = []
     for rec in agent.neighbor_history:
@@ -180,13 +169,13 @@ def neighbor_cds_records(agent, ngrams):
 
 
 def cds_info_from_neighbor_history(network, ngrams):
-    """Reproduce ``network.cds_info`` from per-agent ``neighbor_history``.
+    """Reproduce `network.cds_info` from per-agent `neighbor_history`.
 
-    Returns a list of ``(frac_neigh_cds, activated, distorted)`` tuples in the
-    same round-major / ``all_agents`` order that
-    ``_Network._apply_outputs_and_update_state`` appends to ``network.cds_info``
-    — so it can be diffed against the live ``cds_info`` as a correctness check,
-    or fed directly to ``visualization.distorted_info``.
+    Returns a list of `(frac_neigh_cds, activated, distorted)` tuples in the
+    same round-major / `all_agents` order that
+    `_Network._apply_outputs_and_update_state` appends to `network.cds_info`
+    so it can be diffed against the live `cds_info` as a correctness check,
+    or fed directly to `visualization.distorted_info`.
     """
     if not network.all_agents:
         return []
@@ -229,8 +218,7 @@ def generate_sbert_model(model_name="all-MiniLM-L6-v2", mentalbert=False, device
     return model
 
 def build_network_graph(network):
-    """
-    Build a NetworkX graph from a network object and return it alongside
+    """Build a NetworkX graph from a network object and return it alongside
     a mapping from agent ID to index in network.all_agents.
 
     Returns:
@@ -335,7 +323,7 @@ def build_tweet_embedding_cache(all_networks, mentalbert=True, cache_dir=None):
 
     Embeddings are cached *per seed* so that recombining a different set of
     seeds never re-encodes a seed that was already computed. Each seed gets its
-    own ``seed_{seed}_tweet_embs_{emb_type}.npz`` file inside ``cache_dir``:
+    own `seed_{seed}_tweet_embs_{emb_type}.npz` file inside `cache_dir`:
     a seed is loaded from disk when its file exists, otherwise its tweets are
     encoded and saved. The per-seed dicts are merged into one lookup table.
 
@@ -397,8 +385,7 @@ def build_tweet_embedding_cache(all_networks, mentalbert=True, cache_dir=None):
 
 
 def build_agent_embeddings(network, mentalbert=True, cache_path=None):
-    """
-    Embed all unique tweets from a network and return a per-agent, per-timestep lookup.
+    """Embed all unique tweets from a network and return a per-agent, per-timestep lookup.
 
     If cache_path is given and the file exists, embeddings are loaded from disk
     instead of recomputed.  If cache_path is given but the file does not exist,
@@ -500,7 +487,7 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5,
         all_networks: List of network objects (each with "network" key).
         num_steps: Size of the sliding window (number of tweets)
         shift: Stride of the sliding window
-        tweet_to_emb: Optional dict[str, ndarray] — pre-computed tweet embeddings.
+        tweet_to_emb: Optional dict[str, ndarray], pre-computed tweet embeddings.
         embedding_dim: Required when tweet_to_emb is given and model is None.
     Returns:
         global_sbert_means: List of (Time, dim) arrays for each network
@@ -594,8 +581,7 @@ def mean_sbert_per_networks(model, all_networks, num_steps=30, shift=5,
 
 def sbert_for_runs(networks_per_setting: dict, num_steps=30, shift=5, mentalbert=True,
                    cache_dir=None):
-    """
-    Computes SBERT embeddings using Mean Pooling over time windows.
+    """Computes SBERT embeddings using Mean Pooling over time windows.
 
     If cache_path is given, tweet-level embeddings are loaded from / saved to
     that .npz file, avoiding re-encoding on subsequent runs.
@@ -754,6 +740,7 @@ def compute_tf_idf(all_tweets):
     return  vocab, vectorizer
 
 def retrieve_tf_idf(networks, num_steps=30, shift=5, n_grams=None):
+    """TF-IDF of the CDS n-gram vocabulary over sliding windows of each network's posts."""
     all_tweets_extracted, docs_per_network, docs_per_network_tweets = retrieve_windowed_data(
         networks, num_steps=num_steps, shift=shift, n_grams=n_grams
     )
@@ -934,8 +921,7 @@ def umap_on_means(embedding_per_setting, n_components=2, shared_reducer=None):
 
 # =============================Tweet frequency statistics===============================
 def calculate_tweet_frequency_stats(agent_histories, window_size=5):
-    """
-    Calculate the mean and variance of tweet frequency over time using a sliding window.
+    """Calculate the mean and variance of tweet frequency over time using a sliding window.
 
     Args:
         agent_histories (list of list of str): List of tweet histories for each agent.
@@ -974,8 +960,7 @@ def calculate_tweet_frequency_stats(agent_histories, window_size=5):
 
 
 def obtain_tweet_histories(networks):
-    """
-    Obtain tweet histories from a list of networks.
+    """Obtain tweet histories from a list of networks.
 
     Args:
         networks (list): List of network objects.
@@ -993,8 +978,7 @@ def obtain_tweet_histories(networks):
 # =========================Critical Slowing Down analysis=========================
 
 def calculate_agent_cd(sequence, window_size):
-    """
-    Calculates rolling variance and lag-1 autocorrelation using NumPy.
+    """Calculates rolling variance and lag-1 autocorrelation using NumPy.
     """
     seq = np.array(sequence)
     n = len(seq)
@@ -1023,8 +1007,7 @@ def calculate_agent_cd(sequence, window_size):
 
 
 def all_agent_phq9_cd(network, window_size, shift=1):
-    """
-    Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
+    """Calculate rolling variance and lag-1 autocorrelation for agents' PHQ-9 scores.
     
     Args:
         network: The network object containing agents.

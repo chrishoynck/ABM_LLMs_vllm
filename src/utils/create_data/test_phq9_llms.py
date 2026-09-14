@@ -1,3 +1,5 @@
+"""The `TestLLMs` harness: network-free post generation for (persona, PHQ-9) pairs, with checkpoints. Not a test."""
+"""The `TestLLMs` harness: network-free post generation for (persona, PHQ-9) pairs, with checkpoints. Not a test."""
 import csv
 import os
 import time
@@ -28,7 +30,7 @@ def load_instruction_file(path: str) -> str:
     """Load an optimizer-saved instruction file, stripping leading '# val score' headers.
 
     Only lines starting with `# ` (hash + space, i.e. metadata comments) are
-    stripped — markdown-style headers like `### RULES ###` are preserved.
+    stripped, markdown-style headers like `### RULES ###` are preserved.
     """
     with open(path, encoding="utf-8") as f:
         text = f.read()
@@ -54,6 +56,12 @@ def derive_tweet_format_block(prompts: dict, max_chars: int = 240) -> str:
 
 
 class TestLLMs:
+    """Network-free post generator: each agent writes `check_point` posts for its (persona, PHQ-9) pair.
+
+    Used by every data-generation pipeline (fine-tune data, sensitivity runs, the
+    human-in-the-loop arm). Not a test, despite the file name.
+    """
+
     def __init__(self, seed: int = 42, num_agents: int = 5,
                  personas: list = None, agents=None, well_being: list = None,
                  interaction: bool = False,
@@ -64,6 +72,23 @@ class TestLLMs:
                  neighbor_seed: int = None,
                  nondeterministic_sampling: bool = False,
                  gen_temp: float = 0.7, gen_top_p: float = 0.9):
+        """Set up the agents from personas and PHQ-9 assignments, plus the neighbour pool and decoding settings.
+
+        Args:
+            seed (int): RNG seed for persona order and sampling.
+            num_agents (int): agents to create when `agents` is None.
+            personas (list | None): persona texts.
+            agents (list | None): pre-built agents.
+            well_being (list | None): PHQ-9 dicts; derived from `phq9_assignments` when given.
+            interaction (bool): give agents neighbour posts as context.
+            tweet_instruction, tweet_format_block (str | None): optimizer-aligned prompt parts.
+            prompts (dict | None): parsed prompts JSON.
+            thinking (bool): let the model think before answering.
+            phq9_assignments (list | None): PHQ-9 per agent, aligned with `personas`.
+            neighbor_pool (list | None), num_neighbors (int), neighbor_seed (int | None): neighbour context.
+            nondeterministic_sampling (bool): unseeded sampling per request.
+            gen_temp (float), gen_top_p (float): decoding settings.
+        """
         self.rng = np.random.default_rng(seed)
         # Honour an explicit phq9_assignments by keeping persona order aligned to
         # it (no permutation), so personas[i] still pairs with phq9_assignments[i]
@@ -120,7 +145,7 @@ class TestLLMs:
         self.prompts = prompts
         self.thinking = thinking
         # External neighbour pool (flat list of (agent_id, post) tuples) loaded
-        # from a tweets_with_phq9 file — same source format Grok uses. Sampled
+        # from a tweets_with_phq9 file, same source format Grok uses. Sampled
         # fresh on every inference (per round), capped at `num_neighbors`.
         # `neighbor_seed`, when set, drives a per-(agent, round) sub-RNG so the
         # same agent at the same round gets the same neighbours across runs,
@@ -474,7 +499,7 @@ class TestLLMs:
                                 model_name, interaction=False):
         """Write the per-agent (step, phq9, tweet) CSV consumed downstream.
 
-        Accepts either a .csv or .txt path for backwards compatibility — a
+        Accepts either a .csv or .txt path for backwards compatibility, a
         trailing .txt is rewritten to .csv before writing.
         """
         if file_path.endswith(".txt"):

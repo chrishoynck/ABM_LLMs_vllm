@@ -1,28 +1,10 @@
-"""Human-in-the-loop prompt-iteration tool.
+"""Human-in-the-loop prompt iteration: generate posts for the prompt in iter_<N>/prompt.txt.
 
-You play the teacher role: the prompt for each iteration lives at
-``<run>/iter_<N>/prompt.txt``. Edit it in place, run the script, read the
-posts.csv that lands next to it, then create ``iter_<N+1>/prompt.txt`` (cp +
-edit) and re-run. The script never moves or copies the prompt — it just
-generates ``posts.csv`` and ``feedback.md`` next to the prompt you pointed at.
-
-The iteration index N is read from the parent dir's basename (``iter_<N>``),
-not from the prompt filename, so the prompt itself can stay named ``prompt.txt``
-across every iteration.
-
-Output layout::
-
-    data/prompt_optimization_h/<run-name>/iter_<N>/
-        prompt.txt    # you edit this; the script reads it
-        posts.csv     # generated; overwritten on each run
-        feedback.md   # scaffold written once; you fill in scores
-
-Usage
------
-    python -m utils.create_data.generate_posts_opt_h \\
-        --prompt-file data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt \\
-        --persona-phq9-file data/personas_eval_1000_phq9.csv \\
-        --num_agents 7
+You are the teacher: edit `<run>/iter_<N>/prompt.txt`, run this, read the posts.csv
+written next to it, then copy the prompt to `iter_<N+1>/` and repeat. The script never
+moves the prompt; it writes posts.csv (overwritten each run) and a feedback.md scaffold
+(written once) next to it. N is read from the parent folder name.
+Run: scripts/data_generation/create_data_menu.sh, block 1.
 """
 
 from __future__ import annotations
@@ -68,6 +50,7 @@ test_score:
 
 
 def _parse_args():
+    """Build the CLI parser and parse argv."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--prompt-file", required=True,
@@ -95,6 +78,7 @@ def _parse_args():
 
 
 def main():
+    """Generate posts.csv and a feedback.md scaffold next to the given iter_<N>/prompt.txt."""
     args = _parse_args()
     if not os.path.isfile(args.prompt_file):
         sys.exit(f"prompt-file not found: {args.prompt_file}")

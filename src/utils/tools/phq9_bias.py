@@ -1,36 +1,11 @@
-"""Per-category PHQ-9 bias correction for the BERT+MLP assessment path.
+"""Per-level bias table for the BERT+MLP regressor, and the correction the simulation applies.
 
-The fine-tuned regressor is biased per PHQ-9 level: it over-predicts low scores
-and under-predicts high ones (regression-to-the-mean shrinkage). When the
-regressor sits inside the simulation's feedback loop (its output becomes the
-score the next batch of posts is generated from), that level-dependent bias is
-an instrument artifact mixed into the well-being drift.
-
-This module estimates the signed bias of the regressor at each PHQ-9 level from
-its own held-out test points and exposes it as a lookup table so the simulation
-can subtract it at inference, indexed by the agent's *previous* PHQ-9 (the score
-the assessed posts were generated at).
-
-Math
-----
-Given test pairs {(t_i, p_i)}  (t_i = ground-truth label, p_i = raw prediction),
-the per-level bias is the mean signed error at that level:
-
-    b(k) = mean_{i : round(t_i)=k} (p_i - t_i)        for k = 0 .. 27
-
-At inference, for an agent with previous PHQ-9 s_prev whose posts the regressor
-scored as `pred`, the de-biased score is:
-
-    pred_corrected = pred - b(round(s_prev))
-
-Indexing by s_prev (not by `pred`) removes the systematic offset the instrument
-adds at that level while leaving the environment-driven deviation
-(pred - g(s_prev)) intact, so social influence still drives the drift. Note this
-subtracts a constant offset only; it does not undo the slope compression, so the
-environment signal is preserved in direction but not rescaled.
-
-Levels with no test support are filled by linear interpolation over the
-populated levels (flat-extended at the ends).
+The fine-tuned regressor over-predicts low PHQ-9 and under-predicts high PHQ-9
+(shrinkage to the mean). Inside the simulation loop that error would feed back into
+the next round of posts. This module measures the mean signed error b(k) = mean(pred -
+true) at each level k from held-out test pairs (missing levels interpolated), and the
+network subtracts b(round(prev_phq9)) from each new prediction, indexed by the score
+the posts were written at. Built by scripts/assessment/run_bias_calibration.sh.
 """
 
 import csv
@@ -74,7 +49,7 @@ def compute_bias_table(true, pred, n_levels=N_LEVELS, min_count=1):
 
     populated = ~np.isnan(bias)
     if not populated.any():
-        # No usable test data — fall back to a no-op (all-zero) correction.
+        # No usable test data, fall back to a no-op (all-zero) correction.
         bias[:] = 0.0
     else:
         # Linear interpolation across gaps; np.interp flat-extends past the ends.
@@ -94,7 +69,7 @@ def load_bias_table_from_csv(csv_path, true_col="true_phq9", pred_col=None,
     at the extremes), otherwise `pred_phq9`.
 
     Returns:
-        (bias, counts) — see compute_bias_table.
+        (bias, counts), see compute_bias_table.
     """
     true, pred = [], []
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -142,7 +117,7 @@ def save_bias_table(scores_csv, out_path, n_levels=N_LEVELS, min_count=1):
     aggregation happens once here rather than every run.
 
     Returns:
-        (bias, counts) — see compute_bias_table.
+        (bias, counts), see compute_bias_table.
     """
     bias, counts = load_bias_table_from_csv(scores_csv, n_levels=n_levels,
                                             min_count=min_count)
@@ -175,6 +150,7 @@ def load_bias_table(path, n_levels=N_LEVELS):
 
 
 def main():
+    """CLI: compute the bias table from a scores CSV and save it."""
     import argparse
 
     ap = argparse.ArgumentParser(description="Precompute the per-level PHQ-9 bias table.")

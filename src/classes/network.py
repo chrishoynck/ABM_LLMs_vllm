@@ -1,3 +1,5 @@
+"""Agent networks and the simulation round loop: `_Network` base, `RandomNetwork` and `SocialDistanceAttachment` (SDA / SDC)."""
+"""Agent networks and the simulation round loop: `_Network` base, `RandomNetwork` and `SocialDistanceAttachment` (SDA / SDC)."""
 import numpy as np
 import torch
 from classes.agent import Agent
@@ -13,11 +15,12 @@ from scipy.optimize import bisect
 import utils.visualization as vis
 
 class _Network:
-    """
-    This function is the parent class for the RandomNetwork and ScaleFreeNetwork classes.
-    A network of agents, with a specified number of agents and a correlation between the two media hubs.
-    The network can be initialized as a random network or a scale-free network.
-    The network can be updated by responding to news intensities and adjusting the network accordingly.    
+    """Base class for the agent networks: holds the agents, the edges and the round loop.
+
+    Subclasses (`RandomNetwork`, `SocialDistanceAttachment`) only add the wiring rule.
+    Each round: activate agents, generate posts with the LLM from persona plus own and
+    neighbour history, and every `check_point` rounds re-assess PHQ-9 with the LLM
+    questionnaire or the MentalBERT+MLP regressor (`phq9_mode`).
     """
 
     def __init__(self, num_agents=200,
@@ -33,31 +36,23 @@ class _Network:
                  bias_table_path=None,
                  bert_mentalbert=True,
                  bert_device=None):
-        """
-        Initialize the network with a specified number of agents, mean, correlation, update fraction, and seed.
+        """Create the agents and the empty edge set; load the BERT assessor if asked.
 
         Args:
-            num_agents (int): The number of agents in the network.
-            seed (int): The seed for the random number generator.
-            phq9_mode (str): "llm" (default) routes PHQ-9 scoring through the LLM
-                pipe + tokenizer. "bert" encodes each agent's recent tweets with a
-                MentalBERT/SBERT encoder and feeds the centroid (mean ∥ max ∥ std)
-                through a pretrained MLP regressor instead. Tweet generation is
-                unaffected and still uses the LLM in both modes.
-            bert_regressor: pre-loaded neural_net_BERT (overrides bert_regressor_path).
+            num_agents (int): number of agents.
+            directed (bool): build a directed graph.
+            seed (int): RNG seed; agent i gets its own generator seeded with seed + i.
+            well_being (list[dict] | None): PHQ-9 / age dicts, shuffled over the agents.
+            personas (list | None): persona texts, shuffled over the agents.
+            state (str): run label used in output paths ("basis", "happy", ...).
+            phq9_mode (str): "llm" scores PHQ-9 with the LLM questionnaire; "bert" encodes
+                recent posts and feeds the (mean | max | std) centroid to the MLP regressor.
+            bert_regressor: pre-loaded regressor (overrides bert_regressor_path).
             bert_encoder: pre-loaded SentenceTransformer (overrides bert_mentalbert).
-            bert_regressor_path: path to a regressor saved via torch.save(model, ...)
-                by train_BERT_model (e.g. data/test_post/bert_regression/{model}_seed{s}/regressor.pt).
-            bert_mentalbert: if no encoder is passed, controls which SBERT variant is loaded.
-            bert_device: torch device for the BERT components; defaults to CUDA if available.
-
-        Attributes:
-            iterations (int): The number of iterations the network has been updated.
-            activated (set): The set of activated agents.
-            rng (np.random.Generator): The random number generator.
-            well_being (list): The list of well-being scores for the agents.
-            connections (set): The set of connections between agents.
-            all_agents (list): The list of all agents in the network.
+            bert_regressor_path (str | None): regressor.pt saved by train_BERT_model.
+            bias_table_path (str | None): per-level bias table; correction is on only when given.
+            bert_mentalbert (bool): which encoder to load when none is passed.
+            bert_device: torch device for the BERT parts; default CUDA if available.
         """
         self.iterations = 0
         self.activated = set()
@@ -79,7 +74,7 @@ class _Network:
         self.connections = set()
         self.cds_info = []
         # When True, also record the legacy on-the-fly CDS tuples in cds_info
-        # each round. Default False — the per-agent neighbor_history (written in
+        # each round. Default False, the per-agent neighbor_history (written in
         # Agent.commit) is the primary source, and cds_info is re-derivable from
         # it via metrics.cds_info_from_neighbor_history. Read-in may flip this on
         # to pursue a checkpoint that had dynamic CDS enabled.
@@ -142,8 +137,8 @@ class _Network:
 
         # Per-level bias-correction table for the assessment loop. The regressor
         # over-/under-predicts in a level-dependent way (regression-to-the-mean);
-        # subtracting this offset — indexed by the agent's previous PHQ-9, the
-        # score its assessed posts were generated at — removes the instrument
+        # subtracting this offset, indexed by the agent's previous PHQ-9, the
+        # score its assessed posts were generated at, removes the instrument
         # bias so the well-being drift is driven by social influence rather than
         # the regressor. The table is PRECOMPUTED separately (scripts/assessment/run_bias_calibration.sh
         # -> utils.tools.phq9_bias) and saved as phq9_bias_table.csv next to
@@ -151,7 +146,7 @@ class _Network:
         # PHQ-9 bias correction is OPT-IN: applied only when an explicit
         # bias_table_path is passed (e.g. a full- or interior-fit table). The old
         # phq9_bias_table.csv that used to be auto-loaded next to the regressor is
-        # NO LONGER used by default — it over-corrected inside the feedback loop.
+        # NO LONGER used by default, it over-corrected inside the feedback loop.
         # Leave unset (or pass "none"/"off") to run the assessment UNcorrected.
         self._phq9_bias_table = None
         self._bias_table_path = None
@@ -173,8 +168,7 @@ class _Network:
 
 
     def add_connection(self, agent1, agent2):
-        """
-        Add an undirected connection between two agents (if not already present).
+        """Add an undirected connection between two agents (if not already present).
 
         Args:
             agent1 (Agent): The first agent to connect.
@@ -199,8 +193,7 @@ class _Network:
                      sample_phq9=None,
                      cap_phq9=False,
                      phq9_threshold=0):
-        """
-        Update the network for one round by responding to news intensities and adjusting the network accordingly.
+        """Update the network for one round by responding to news intensities and adjusting the network accordingly.
 
         Order (aligned with TestLLMs):
         1. Prepare prompts  (reads current well_being for tweet tone)
@@ -251,8 +244,7 @@ class _Network:
         return mean_distorted_frac, dist_this_step_norm
 
     def _prepare_prompts(self, tokenizer, update_fraction):
-        """
-        Prepare prompts and collect agents that will receive prompts for this round.
+        """Prepare prompts and collect agents that will receive prompts for this round.
         """
         prompts = []
         agents_w_prompt = []
@@ -307,8 +299,7 @@ class _Network:
     
     def _phq9_questionnaire(self, tokenizer, pipe, check_point=20,
                             agents=None, cap_phq9=False, phq9_threshold=0):
-        """
-        Have agents complete the PHQ-9 questionnaire and update their well-being scores.
+        """Have agents complete the PHQ-9 questionnaire and update their well-being scores.
 
         Dispatches to either the LLM-based questionnaire (default) or the BERT+MLP
         regressor depending on `self.phq9_mode`.
@@ -374,7 +365,7 @@ class _Network:
         regressor was trained on (see prompt_optimizer.setup_BERT_model), run the
         MLP, and apply the same threshold + cap update policy as the LLM path.
 
-        Agents with zero usable tweets in the window are skipped — there is no
+        Agents with zero usable tweets in the window are skipped, there is no
         signal to score them from.
         """
         if agents is None:
@@ -444,8 +435,7 @@ class _Network:
 
     # VLLM
     def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False):
-        """
-        Run vLLM generation. 
+        """Run vLLM generation.
         Note: batch_size argument is largely ignored here because vLLM 
         handles batching internally (Continuous Batching).
         """
@@ -476,8 +466,7 @@ class _Network:
         return outputs
 
     def _apply_outputs_and_update_state(self, agents_w_prompt, out, n_grams, distorted_tweets):
-        """
-        Use LLM outputs to update agents' tweets and activation states,
+        """Use LLM outputs to update agents' tweets and activation states,
         then compute distorted tweet statistics for this round.
         """
         # agents send out their tweets
@@ -568,8 +557,7 @@ class _Network:
 
 
 class RandomNetwork(_Network):
-    """
-    This class represents a random network of agents.
+    """This class represents a random network of agents.
     It inherits from the _Network class and initializes the network by connecting all agents with a probability `p`.
     """
 
@@ -579,10 +567,9 @@ class RandomNetwork(_Network):
                  happy_personas=None,
                  form_connections=True,
                  **kwargs):
-        """
-        Initialize the network by connecting all agents with a probability `p`.
+        """Initialize the network by connecting all agents with a probability `p`.
         If `p` is very low, the network will resemble a regular network with fixed degree `k`.
-        If `p` is high, it will resemble an Erdős–Rényi random network.
+        If `p` is high, it will resemble an Erdős-Rényi random network.
 
         Args:
             p (float): The probability of connecting two agents.
@@ -596,8 +583,7 @@ class RandomNetwork(_Network):
             self.initialize_network(happy_personas=happy_personas)
 
     def initialize_network(self, happy_personas=None):
-        """
-        Initialize the network
+        """Initialize the network
         """
         if self.k == 0 and self.p == 0:
             self.agent_w_highest_deg = self.all_agents[0]
@@ -624,7 +610,7 @@ class RandomNetwork(_Network):
                             self.add_connection(agent1, agent2)
         else:
             print(f'A random network is initialized with p: {self.p} and {len(self.all_agents)} agents')
-            # If no degree `k` is provided, fall back to the Erdős–Rényi model
+            # If no degree `k` is provided, fall back to the Erdős-Rényi model
             for agent1 in self.all_agents:
                 for agent2 in self.all_agents:
                     if agent1 != agent2 and (agent2 not in agent1.agent_connections):
@@ -635,8 +621,7 @@ class RandomNetwork(_Network):
 
 
 class SocialDistanceAttachment(_Network):
-    """
-    This class represents a social distance attachment network of agents.
+    """This class represents a social distance attachment network of agents.
     It inherits from the _Network class and initializes the network by connecting agents based on social distance.
     """
     def __init__(self,
@@ -654,8 +639,7 @@ class SocialDistanceAttachment(_Network):
                  latent_weight=1.0,
                  n_clusters=4,
                  **kwargs):
-        """
-        Initialize the network by connecting agents based on social distance.
+        """Initialize the network by connecting agents based on social distance.
         """
         super().__init__(**kwargs)
         # Additional initialization for social distance attachment can be added here
@@ -676,8 +660,7 @@ class SocialDistanceAttachment(_Network):
             self.initialize_network(happy_personas=happy_personas, plot=plot)
 
     def initialize_network(self, happy_personas=None, plot=False):
-        """
-        Initialize the network based on social distance attachment.
+        """Initialize the network based on social distance attachment.
         """
 
         # handle degree 0 case
@@ -781,7 +764,7 @@ class SocialDistanceAttachment(_Network):
             # make column array to stack later
             phq9_array = np.array(phq9_scores).reshape(-1, 1)
 
-            # Normalize to [-1, 1] — consistent with age and latent dimensions
+            # Normalize to [-1, 1], consistent with age and latent dimensions
             if phq9_array.max() > phq9_array.min():
                 phq9_norm = (phq9_array - phq9_array.min()) / (phq9_array.max() - phq9_array.min())
                 phq9_norm = 2 * phq9_norm - 1
@@ -826,8 +809,7 @@ class SocialDistanceAttachment(_Network):
         return pij.sum() / N
 
     def find_b_for_target_Ek(self, tol=1e-3):
-        """
-        find b such that expected degree is degree using bisection
+        """find b such that expected degree is degree using bisection
         by searching in log space
         """
         # work in log-space: b = exp(z)
@@ -908,7 +890,7 @@ class SocialDistanceAttachment(_Network):
 
         The degree *shape* is drawn from a bounded power-law P(k) ∝ k^-gamma on
         support k ∈ [1, N-1]. Bounded support is normalisable for ANY exponent,
-        so gamma may be ≤ 1 (heavier tails) — unlike numpy's zipf, which requires
+        so gamma may be ≤ 1 (heavier tails), unlike numpy's zipf, which requires
         gamma > 1. The mean is rescaled to the target `degree` below regardless,
         so gamma controls only the tail heaviness, not the mean.
 
@@ -1004,8 +986,7 @@ class SocialDistanceAttachment(_Network):
         return A
     
     def verify_scale_free_distribution(self, plot):
-        """
-        Check if the network exhibits scale-free characteristics
+        """Check if the network exhibits scale-free characteristics
         """
         # Calculate node degrees
         degrees = [len(agent.agent_connections) for agent in self.all_agents]

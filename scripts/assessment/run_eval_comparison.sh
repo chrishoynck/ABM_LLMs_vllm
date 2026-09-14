@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the two estimator-comparison figures (MAE + signed bias, with error bars):
-#   fig1 — BERT regressor: non-finetuned vs fine-tuned vs in-distribution (synthetic) test
-#   fig2 — robustness to distribution shift: BERT vs the post-assessment prompt
+#   fig1, BERT regressor: non-finetuned vs fine-tuned vs in-distribution (synthetic) test
+#   fig2, robustness to distribution shift: BERT vs the post-assessment prompt
 # Reads the per-sample test_raw_scores.csv / seed<seed>.csv files already on disk
 # (no GPU / model load needed) and writes PNGs + prints the underlying table.
 #

@@ -1,3 +1,5 @@
+"""Persona and PHQ-9 loaders: PersonaHub / Nemotron pools, the shared eval pool and the HELIUS PHQ-9 survey."""
+"""Persona and PHQ-9 loaders: PersonaHub / Nemotron pools, the shared eval pool and the HELIUS PHQ-9 survey."""
 import ast
 import math
 import os
@@ -11,6 +13,7 @@ MAX_LEN = 200
 NEW = True
 
 def short_personas(seed=42):
+    """Sample 10k English PersonaHub personas and write data/personas_short_10k.csv."""
     ds_pers = load_dataset("proj-persona/PersonaHub", 'persona', split="train")
     ds_small = ds_pers.shuffle(seed=seed).select(range(10000))
     df = ds_small.to_pandas()
@@ -47,6 +50,7 @@ def short_personas(seed=42):
 
 
 def parse_list_field(v):
+    """Parse a list-like CSV cell (JSON list or comma-separated) into a list of strings."""
     if pd.isna(v):
         return []
     v = str(v).strip()
@@ -60,10 +64,12 @@ def parse_list_field(v):
     return [x.strip() for x in v.split(",") if x.strip()]
 
 def extract_name(persona_text):
+    """First two words of a persona text, used as the agent's name."""
     parts = persona_text.strip().split()
     return " ".join(parts[:2])  # first two words
 
 def row_to_persona(row):
+    """Turn one Nemotron-style CSV row into the persona dict the prompts use."""
     return {
         "name": extract_name(row["persona"]),
         "persona_text": row["persona"],  # the long description text
@@ -78,15 +84,18 @@ def row_to_persona(row):
     }
 
 def load_distorted_tweets(filepath="data/distorted_tweets.csv", numtweets=1000, seed=42):
+    """Sample `numtweets` posts (with replacement) from a distorted-tweets CSV."""
     df = pd.read_csv(filepath)
     df_sampled = df.sample(n=numtweets, replace=True, random_state=seed)
     return df_sampled['tweet'].tolist()
 
 def load_happy_personas(filepath="data/happy_persona.csv", personass_to_load=1, seed=42):
+    """Load the hand-written happy-hub persona(s) as persona dicts."""
     df = pd.read_csv(filepath)
     return [row_to_persona(row) for _, row in df.sample(n=personass_to_load, replace=True, random_state=seed).iterrows()]
 
 def load_personas_from_file(filepath="data/personas_short_10k.csv", personass_to_load=10, seed=42):
+    """Sample `personass_to_load` persona texts without replacement from a persona CSV."""
     df = pd.read_csv(filepath)
     return [row["persona"] for _, row in df.sample(n=personass_to_load, replace=False, random_state=seed).iterrows()]
 
@@ -106,27 +115,24 @@ def load_or_build_persona_pool(
     exclude_files: list[str] | None = None,
     seed: int = 1000,
 ):
-    """Return the first `n_needed` personas from a shared eval pool, building the pool once.
+    """Return the first `n_needed` personas of a shared eval pool, building the pool once.
 
-    The pool is sampled a single time from `source`, excluding any persona that
-    already appears in `exclude_dirs` (recursively scanned for *.csv files with
-    a `persona` column) or `exclude_files`, then written to `pool_path`.
-    Subsequent calls just read `pool_path` — so every model (local Qwen,
-    Grok, anything else) sees the same fresh personas in the same order.
+    On first use the pool is sampled from `source`, skipping personas that appear in
+    any CSV under `exclude_dirs` or in `exclude_files`, and written to `pool_path`.
+    Later calls just read `pool_path`, so every model sees the same personas in order.
 
     Args:
-        n_needed: how many personas the caller wants. Must be <= pool size.
-        pool_path: cache file; if it exists it is used as-is (no re-sampling).
-        pool_size: number of personas to sample on first build.
-        source: source CSV with a `persona` column.
-        exclude_dirs: dirs walked recursively for *.csv files whose personas
-            should be excluded. Defaults to the Qwen3.5-27B training-data dir.
-        exclude_files: extra explicit CSVs to exclude (same `persona` column).
-        seed: RNG seed for the one-shot sample. Only affects which personas
-            land in the pool on first build.
+        n_needed (int): how many personas to return; must be <= pool_size.
+        pool_path (str): cache file; used as-is if it exists.
+        pool_size (int): personas to sample on first build.
+        source (str): CSV with a `persona` column.
+        exclude_dirs (list[str] | None): folders scanned for CSVs to exclude; default
+            the Qwen3.5-27B training-data folder.
+        exclude_files (list[str] | None): extra CSVs to exclude.
+        seed (int): seed of the one-off sample.
 
     Returns:
-        List of persona strings, length `n_needed`, prefix of the pool.
+        list[str]: the first `n_needed` personas of the pool.
     """
     if os.path.isfile(pool_path):
         df = pd.read_csv(pool_path)
@@ -156,7 +162,7 @@ def load_or_build_persona_pool(
         try:
             df_ex = pd.read_csv(path, usecols=["persona"])
         except (ValueError, FileNotFoundError):
-            # CSV without a `persona` column or missing — skip silently.
+            # CSV without a `persona` column or missing, skip silently.
             continue
         excluded.update(df_ex["persona"].dropna().astype(str).tolist())
 
@@ -181,6 +187,7 @@ def load_or_build_persona_pool(
     return personas[:n_needed]
 
 def parse_phq9(row, dataset="H1"):
+    """Pick the PHQ-9 sum score, age and symptom columns of one HELIUS row (`dataset` = wave prefix)."""
     return {
         "age": row[f'{dataset}_lft'],
         "phq9_sumscore": row[f'{dataset}_PHQ9_sumscore'],
@@ -194,6 +201,7 @@ def parse_phq9(row, dataset="H1"):
     }
 
 def load_phq9(filepath="data/confidential/phq9.sav", personass_to_load=10, seed=42):
+    """Load the HELIUS PHQ-9 survey (.sav), drop rows without a sum score and sample well-being dicts (also writes phq9_filtered.csv)."""
     df = pd.read_spss(filepath)
     # print(df.columns)
     # print(df.columns[100:200])

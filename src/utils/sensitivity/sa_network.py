@@ -1,64 +1,12 @@
-"""
-Network topology Sensitivity Analysis: Sobol SA over 5 SDA parameters.
+"""Sobol sensitivity analysis and calibration of the SDA / SDC network topology (CPU only).
 
-Parameters varied
------------------
-    alpha         [0.5, 5.0]   – connection-prob decay sharpness
-    n_clusters    [2, 10]      – number of Gaussian clusters (integer)
-    latent_weight [0.5, 20.0]  – scaling of latent dims
-    dim           [2, 6]       – total dims, incl. age + phq9 slots (integer)
-    age_weight    [0.5, 5.0]   – scaling of age dim
-
-Metrics computed on the *initial* undirected graph (no LLM involved)
-----------------------------------------------------------------------
-    C            – average clustering coefficient
-    age_assort   – numeric assortativity by age
-    phq9_assort  – numeric assortativity by PHQ-9
-    gamma        – power-law exponent of degree distribution
-    ks           – KS goodness-of-fit to power law (lower = better fit)
-    lcc          – fraction of nodes in the largest connected component
-                   (detects fragmented topologies; observed only)
-
-Reference targets (Twitter / online social networks, McPherson et al.)
-----------------------------------------------------------------------
-    C          : 0.10 – 0.20   (ER baseline ≈ k/N ≈ 0.03)
-    age_assort : 0.25           (point target)
-    phq9_assort: 0.03           (point target)
-    gamma      : 2.0 – 3.0     (observed only)
-    ks         : < 0.10        (observed only)
-
-This module covers two network modes (select with ``--net``):
-    sda  – SocialDistanceAttachment (sdc=False): calibrate C + assortativities.
-    sdc  – SDA + stub matching (sdc=True): scale-free degree sequence; calibrate
-           the degree distribution (gamma band, KS < 0.10, mean degree ≈ goal)
-           together with clustering C (wide range) and PHQ-9 assortativity
-           (soft/informative wide band). Swept: alpha, stub_gamma, degree, dim,
-           latent_weight; n_clusters and age_weight are fixed (S1≈0 on targets).
-           The degree sweep brackets the goal so the realized mean (which falls
-           below the target fed in, due to the stub shortfall) straddles it.
-
-Usage – CLI
------------
-    # SDA (default)
-    PYTHONPATH=src python -m utils.sensitivity.sa_network \\
-        --well-being data/confidential/phq9.sav \\
-        --n-sobol 512 --n-jobs -1 \\
-        --out-dir data/sensitivity/network
-
-    # SDC
-    PYTHONPATH=src python -m utils.sensitivity.sa_network --net sdc \\
-        --well-being data/confidential/phq9.sav \\
-        --n-sobol 512 --n-jobs -1 \\
-        --out-dir data/sensitivity/network_sdc
-
-Usage – notebook
-----------------
-    import sys; sys.path.insert(0, "src")
-    import utils.tools.load_personas as lp
-    from utils.sensitivity.sa_network import run_network_sa
-
-    well_being = lp.load_phq9("data/confidential/phq9.sav", 200, seed=43)
-    df, si_df, best = run_network_sa(well_being)
+Varies alpha, n_clusters, latent_weight, dim and age_weight (SDA) or alpha, stub_gamma,
+degree, dim and latent_weight (SDC), builds the initial graph for each Sobol sample and
+measures clustering C, age and PHQ-9 assortativity, power-law gamma, KS fit and the
+largest-component fraction. Targets (`REF_RANGES`, `set_mode`): C 0.10-0.20, age
+assortativity 0.25, PHQ-9 assortativity 0.03; SDC adds gamma 2-3, KS < 0.10 and a
+mean-degree goal. Multi-seed runs share one sample matrix, so seed differences are
+realization noise. Run: scripts/sensitivity/run_sa_network.sh.
 """
 
 from __future__ import annotations
@@ -87,9 +35,9 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Problem definitions — two network modes share this module
-#   "sda" : SocialDistanceAttachment (sdc=False) — calibrate C + assortativities
-#   "sdc" : SDA with stub-matching   (sdc=True)  — calibrate degree distribution
+# Problem definitions, two network modes share this module
+#   "sda" : SocialDistanceAttachment (sdc=False), calibrate C + assortativities
+#   "sdc" : SDA with stub-matching   (sdc=True), calibrate degree distribution
 #
 # Mode is selected with set_mode(net) (CLI: --net). It rebinds the module-level
 # PROBLEM / PARAM_NAMES / TARGETS / METRICS / REF_RANGES so every function below
@@ -134,7 +82,7 @@ _REF_SDA = {
 
 # ── SDC: SDA + stub matching (scale-free degree sequence) ─────────────────────
 # stub_gamma is the power-law exponent fed to generate_stub_list. It is NOT the
-# realized exponent — that is re-estimated off the built graph as the `gamma`
+# realized exponent, that is re-estimated off the built graph as the `gamma`
 # metric. degree is swept across a band that brackets the goal: the realized mean
 # falls below the target fed in (network_powerlaw leaves stubs unmatched), so the
 # sweep spans above and below to straddle the goal.
@@ -178,9 +126,9 @@ _REF_SDC = {
 # SDC loss normalisation scales (1 unit = one "acceptable" deviation)
 _SDC_KS_SCALE   = 0.10   # KS units above the 0.10 limit
 _SDC_DEG_SCALE  = 2.0    # degree units outside the ±tol band
-_SDC_PHQ9_SCALE = 0.20   # phq9_assort units outside its band — loose (informative, not a hard goal)
+_SDC_PHQ9_SCALE = 0.20   # phq9_assort units outside its band, loose (informative, not a hard goal)
 _SDC_LCC_SCALE  = 0.10   # largest-component fraction below the floor (one-sided)
-# (C uses its band width for normalisation, like gamma — see _compute_losses)
+# (C uses its band width for normalisation, like gamma, see _compute_losses)
 
 # Calibration metrics that enter the loss, per mode (others are observed-only)
 _LOSS_METRICS = {
@@ -188,7 +136,7 @@ _LOSS_METRICS = {
     "sdc": ["mean_degree", "gamma", "ks", "C", "phq9_assort", "lcc"],
 }
 
-# Names (metrics OR params) dropped from the SCATTER GRID only — declutter.
+# Names (metrics OR params) dropped from the SCATTER GRID only, declutter.
 # Everything is still computed, saved, and shown in the Sobol-index and stability
 # plots (so the low-sensitivity argument for dropping these is still visible there).
 _SCATTER_EXCLUDE = {
@@ -204,7 +152,7 @@ _SEARCH_FIXES = {
     "sdc": {"n_clusters": N_CLUSTERS_FIXED, "age_weight": AGE_WEIGHT_FIXED},
 }
 
-# Every metric _eval_one can return — used to build NaN rows in joblib workers,
+# Every metric _eval_one can return, used to build NaN rows in joblib workers,
 # which otherwise see only the default mode's (shorter) METRICS list.
 _ALL_METRICS = ["mean_degree", "C", "age_assort", "phq9_assort", "gamma", "ks", "lcc"]
 
@@ -222,7 +170,7 @@ REF_RANGES  = _REF_SDA
 def set_mode(net: str) -> None:
     """Rebind the module-level config globals to the chosen network mode.
 
-    Call once before run_*; idempotent. joblib workers do NOT inherit this —
+    Call once before run_*; idempotent. joblib workers do NOT inherit this,
     _eval_one and _compute_losses take/branch on the mode explicitly.
     """
     global _NET, PROBLEM, PARAM_NAMES, TARGETS, METRICS, REF_RANGES
@@ -257,28 +205,24 @@ def _search_fixes() -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _eval_one(params, well_being, N, degree, seed, dist_type, src_path, net="sda"):
-    """Build one network (SDA or SDC) and return topology metrics.
+    """Build one SDA or SDC network and return its topology metrics.
 
-    Uses SocialDistanceAttachment directly (no code duplication). Stdout/stderr
-    from the network build are suppressed so joblib progress stays clean.
+    Runs inside joblib workers, so the build's stdout is suppressed and `src_path` is
+    added to sys.path there. The dict always has every key of `_ALL_METRICS`.
 
-    Parameters
-    ----------
-    params : array-like
-        SDA: [alpha, n_clusters, latent_weight, dim, age_weight]
-        SDC: [alpha, stub_gamma, degree, dim, n_clusters, latent_weight, age_weight]
-    degree : int
-        Fixed target degree for SDA. Ignored for SDC (read from ``params``).
-    net : {"sda", "sdc"}
-        Build mode. SDC sets sdc=True and feeds stub_gamma as the Zipf exponent.
-    well_being : list[dict]
-        Real well-being data as returned by lp.load_phq9.
-    src_path : str
-        Absolute path to the ``src`` directory; added to sys.path in the
-        worker so SocialDistanceAttachment is importable without venv hacks.
+    Args:
+        params: SDA [alpha, n_clusters, latent_weight, dim, age_weight] or
+            SDC [alpha, stub_gamma, degree, dim, n_clusters, latent_weight, age_weight].
+        well_being (list[dict]): real well-being rows from `lp.load_phq9`.
+        N (int): number of agents.
+        degree (int): target degree for SDA; ignored for SDC (it is in `params`).
+        seed (int): build seed.
+        dist_type (str): latent-space distribution.
+        src_path (str): absolute path of src/.
+        net (str): "sda" or "sdc".
 
-    The returned dict always contains every key in _ALL_METRICS so that workers
-    (which see only the default mode's METRICS) still emit well-formed rows.
+    Returns:
+        dict: metric name -> value (nan where undefined).
     """
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
@@ -360,9 +304,9 @@ def _out_clustering(g: "nx.DiGraph") -> float:
 
     For every node: the number of ordered out-neighbour pairs (j, h) that are
     themselves linked by an edge j→h, divided by d_out·(d_out−1). Only the
-    out-degree enters the denominator — the in-edges of a node never count — so
+    out-degree enters the denominator, the in-edges of a node never count, so
     this is the clustering "calculated solely with out degree". Nodes with
-    out-degree < 2 contribute 0, matching ``nx.average_clustering``'s default
+    out-degree < 2 contribute 0, matching `nx.average_clustering`'s default
     (count_zeros=True) so the directed value is comparable to the undirected one.
     """
     coeffs = []
@@ -381,25 +325,17 @@ def _out_clustering(g: "nx.DiGraph") -> float:
 
 def directed_metrics(params, well_being, N, degree, seed, dist_type, src_path,
                      net="sda"):
-    """Build the DIRECTED counterpart of one configuration and measure every metric.
+    """Build the directed counterpart of one config and measure every metric on the DiGraph.
 
-    Identical construction to :func:`_eval_one` (same params, same seed) but with
-    ``directed=True``: each ordered edge i→j is sampled independently instead of
-    being symmetrised, so the resulting ``nx.DiGraph`` — and every metric below —
-    genuinely differs from the undirected build. Degree-based metrics use the
-    *out*-degree throughout (matching the out-clustering), which keeps the mean on
-    the same scale as the undirected panel (out-edges per node ≈ undirected
-    neighbours, since each mirrored edge becomes ~one out-edge):
+    Same params and seed as `_eval_one` but `directed=True`: each ordered edge is sampled
+    on its own, so all metrics differ from the undirected build. Degree-based metrics
+    use the out-degree (mean out-degree, out-clustering after Fagiolo 2007, power-law
+    fit of the out-degree sequence); lcc is the weakly connected fraction.
 
-        mean_degree  – mean out-degree (edges / N)
-        C            – mean local out-clustering (Fagiolo 2007; see _out_clustering)
-        age_assort   – numeric assortativity by age over the directed edges
-        phq9_assort  – numeric assortativity by PHQ-9 over the directed edges
-        gamma, ks    – power-law fit of the out-degree sequence
-        lcc          – largest *weakly* connected component fraction
+    Args: same as `_eval_one`.
 
-    Returns a dict with every key in _ALL_METRICS (``nan`` on build failure or
-    where a fit is undefined), mirroring :func:`_eval_one`.
+    Returns:
+        dict: every key of `_ALL_METRICS` (nan on build failure or an undefined fit).
     """
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
@@ -491,17 +427,23 @@ def run_sobol_sa(well_being: list[dict],
                  out_dir: str = "data/sensitivity/network",
                  samples=None,
                  net: str = "sda") -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run Sobol SA for one seed; return (samples_df, sobol_indices_df).
+    """Run the Sobol sensitivity analysis for one seed.
 
-    Total evaluations = n_sobol × (2 × num_vars + 2) = n_sobol × 12.
-    For n_sobol=512 that is 6 144 graph builds (no LLM).
+    Total graph builds = n_sobol x (2 x num_vars + 2); 6,144 for n_sobol=512.
 
-    Parameters
-    ----------
-    samples : optional pre-computed Sobol sample matrix (shape n×5).
-        Pass the same array across multiple seeds to share the parameter
-        grid — differences in results then reflect only network realization
-        noise, not different parameter coverage.
+    Args:
+        well_being (list[dict]): real well-being rows.
+        N (int), degree (int), seed (int): network size, target degree and build seed.
+        n_sobol (int): Saltelli base sample size.
+        n_jobs (int): joblib workers (-1 = all cores).
+        dist_type (str): latent-space distribution.
+        out_dir (str): where CSVs and plots go.
+        samples: optional pre-computed Sobol matrix; pass the same one to several seeds
+            so their differences are realization noise only.
+        net (str): "sda" or "sdc".
+
+    Returns:
+        tuple[pd.DataFrame, pd.DataFrame]: (samples with metrics, Sobol indices).
     """
     set_mode(net)
     os.makedirs(out_dir, exist_ok=True)
@@ -593,14 +535,13 @@ def plot_sobol_indices(si_df: pd.DataFrame, out_dir: str) -> None:
 def plot_scatter_grid(df: pd.DataFrame, out_dir: str,
                       filename: str = "scatter_grid.png",
                       params: list[str] | None = None) -> None:
-    """rows = metrics, cols = parameters; green band / line = target.
+    """Scatter grid of metrics (rows) against parameters (columns), with the target band in green.
 
-    Parameters
-    ----------
-    params : which columns to use as parameters. Defaults to all non-metric
-        columns minus the per-mode scatter exclusions (_SCATTER_EXCLUDE), so
-        low-sensitivity params (e.g. n_clusters, age_weight) are dropped here
-        for clarity while still appearing in the Sobol-index/stability plots.
+    Args:
+        df (pd.DataFrame): Sobol samples with metric columns.
+        out_dir (str), filename (str): where to write the PNG.
+        params (list[str] | None): parameter columns to show; default all non-metric
+            columns minus the mode's `_SCATTER_EXCLUDE` (low-sensitivity params).
     """
     excl = _scatter_exclude()
     _non_metric = [c for c in df.columns if c not in METRICS and c not in excl]
@@ -649,7 +590,7 @@ def plot_scatter_grid_averaged(seed_dfs: dict[int, pd.DataFrame],
         return
     seeds = sorted(seed_dfs.keys())
 
-    # Parameter columns are identical across seeds — take from first.
+    # Parameter columns are identical across seeds, take from first.
     # Use all non-metric columns so removed params (e.g. n_clusters) still appear.
     first = seed_dfs[seeds[0]]
     param_cols = [c for c in first.columns if c not in METRICS]
@@ -704,6 +645,7 @@ def plot_parallel_coords(df: pd.DataFrame, out_dir: str, top_n: int = 50) -> Non
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _range_dist(v: float, lo: float, hi: float) -> float:
+    """Distance of v to the interval [lo, hi]; 0 inside it."""
     if lo <= v <= hi:
         return 0.0
     return min(abs(v - lo), abs(v - hi))
@@ -713,15 +655,16 @@ def _compute_losses(df: pd.DataFrame,
                     targets: dict | None = None) -> np.ndarray:
     """Scalar calibration loss per row (NaN if any key metric is NaN).
 
-    C           : range-distance to target range, normalised by width
-    age_assort  : |v - target| / 0.15
-    phq9_assort : |v - target| / 0.03
+    C uses the distance to its target range divided by the range width; age and PHQ-9
+    assortativity use |value - target| / 0.15 and / 0.03.
 
-    Parameters
-    ----------
-    targets : override the module-level TARGETS dict.
-        Pass e.g. {"C": (0.12, 0.18), "age_assort": 0.30, "phq9_assort": 0.05}
-        to recalibrate without re-running the Sobol evaluation.
+    Args:
+        df (pd.DataFrame): Sobol samples with metric columns.
+        targets (dict | None): override of the module `TARGETS`, e.g.
+            {"C": (0.12, 0.18), "age_assort": 0.30, "phq9_assort": 0.05}.
+
+    Returns:
+        np.ndarray: one loss per row.
     """
     t = targets if targets is not None else TARGETS
 
@@ -731,7 +674,7 @@ def _compute_losses(df: pd.DataFrame,
     #   degree → squared range-distance to the ±tol band (match)
     #   C      → squared range-distance to the clustering band (match)
     #   phq9   → squared range-distance to a wide band, loosely scaled
-    #            (soft/informative — nudges, does not drive the optimisation)
+    #            (soft/informative, nudges, does not drive the optimisation)
     #   lcc    → squared shortfall below the connectivity floor (constraint, one-sided)
     if _NET == "sdc":
         g_lo, g_hi     = t["gamma"]
@@ -779,16 +722,18 @@ def _compute_losses(df: pd.DataFrame,
 
 def calibrate_from_samples(df: pd.DataFrame, out_dir: str,
                             targets: dict | None = None) -> pd.Series:
-    """Find the best row in the Sobol sample set; print and save summary.
+    """Pick the best row of a Sobol sample set, print it and save best_params.csv / top10_params.csv.
 
-    Parameters
-    ----------
-    targets : optional target override — same format as module-level TARGETS.
-        Lets you recalibrate with new targets without re-running the SA.
+    The search applies the mode's `_SEARCH_FIXES` (SDC holds n_clusters and age_weight
+    fixed) without changing the caller's df.
 
-    The optimum is searched with the mode's _SEARCH_FIXES applied (e.g. SDC holds
-    n_clusters/age_weight fixed), so the full SA stays in the saved CSV/plots but
-    the *best pick* respects the fix. Does not mutate the caller's df.
+    Args:
+        df (pd.DataFrame): Sobol samples with metric columns.
+        out_dir (str): where the CSVs go.
+        targets (dict | None): target override, same format as `TARGETS`.
+
+    Returns:
+        pd.Series: the best row.
     """
     sf = _search_fixes()
     if sf:
@@ -878,19 +823,14 @@ def run_network_sa(well_being: list[dict],
 
 def recalibrate_from_csv(out_dir: str, targets: dict | None = None,
                          net: str | None = None) -> None:
-    """Re-run calibration on already-saved sobol_samples.csv files.
+    """Re-run the calibration on saved sobol_samples.csv files, e.g. with new targets.
 
-    Useful when you want to try different target values without paying the
-    cost of the Sobol evaluation again.  Overwrites best_params.csv and
-    top10_params.csv in each seed subdirectory (or the root if no seed
-    subdirs exist).
+    Overwrites best_params.csv and top10_params.csv in each seed folder (or the root).
 
-    Parameters
-    ----------
-    out_dir : root output directory (same as passed to run_network_sa[_multi_seed]).
-    targets : new targets dict, e.g.
-        {"C": (0.12, 0.18), "age_assort": 0.30, "phq9_assort": 0.05}
-        Defaults to the module-level TARGETS if not provided.
+    Args:
+        out_dir (str): root passed to run_network_sa[_multi_seed].
+        targets (dict | None): new targets, same format as `TARGETS`.
+        net (str | None): "sda" or "sdc"; selects the target table.
     """
     if net is not None:
         set_mode(net)
@@ -931,8 +871,8 @@ _STABILITY_PANEL_LABELS = {
 }
 
 # Project colour scheme (mirrors sa_analyze.py)
-_COL_S1 = "#2e7ebc"   # blue  — first-order
-_COL_ST = "#d96907"   # orange — total-order
+_COL_S1 = "#2e7ebc"   # blue, first-order
+_COL_ST = "#d96907"   # orange, total-order
 
 
 def plot_stability_indices(seed_si: dict[int, pd.DataFrame], out_dir: str) -> None:
@@ -1017,10 +957,10 @@ def plot_stability_indices(seed_si: dict[int, pd.DataFrame], out_dir: str) -> No
 
 
 def replot_stability(out_dir: str, net: str | None = None) -> None:
-    """Reload saved CSVs and regenerate all stability plots — no network builds.
+    """Reload saved CSVs and regenerate all stability plots, no network builds.
 
-    Reads ``seed_*/sobol_indices.csv`` for the S1/ST plots and
-    ``seed_*/sobol_samples.csv`` for the rank-correlation plot.
+    Reads `seed_*/sobol_indices.csv` for the S1/ST plots and
+    `seed_*/sobol_samples.csv` for the rank-correlation plot.
     """
     if net is not None:
         set_mode(net)
@@ -1055,20 +995,18 @@ def replot_stability(out_dir: str, net: str | None = None) -> None:
 
 def plot_loss_rank_correlation(seed_dfs: dict[int, pd.DataFrame],
                                out_dir: str) -> pd.DataFrame:
-    """Pairwise Spearman rank correlation of calibration loss vectors.
+    """Pairwise Spearman correlation of the calibration-loss vectors across seeds.
 
-    Because all seeds share the same Sobol sample matrix, each seed produces
-    a loss value for the exact same parameter combinations.  Spearman
-    correlation between those loss vectors answers: does the same parameter
-    region rank well regardless of which seed was used?
+    All seeds share one Sobol matrix, so each seed scores the same parameter points.
+    rho near 1 means the loss landscape is stable across seeds; near 0 means
+    realization noise dominates. Writes stability_rank_corr.png and .csv to `out_dir`.
 
-    rho ≈ 1  → the landscape is stable; seed choice doesn't matter
-    rho ≈ 0  → network realization noise dominates; results can't be trusted
+    Args:
+        seed_dfs (dict[int, pd.DataFrame]): seed -> samples with metrics.
+        out_dir (str): output folder.
 
-    Outputs
-    -------
-    stability_rank_corr.png   — annotated heatmap
-    stability_rank_corr.csv   — correlation matrix
+    Returns:
+        pd.DataFrame: the correlation matrix.
     """
     from scipy.stats import spearmanr
 
@@ -1174,11 +1112,11 @@ def pick_best_across_seeds(out_dir: str,
     them. The combination with the lowest *mean* loss is robust to network
     realization noise. The std tells you how confident you can be.
 
-    Reads existing ``seed_*/sobol_samples.csv`` files — no network builds.
+    Reads existing `seed_*/sobol_samples.csv` files, no network builds.
 
     Returns a DataFrame of the top-10 combinations ranked by mean loss,
     with columns: parameters, per-seed metrics (mean across seeds),
-    mean_loss, std_loss.  Also saves ``averaged_best.csv``.
+    mean_loss, std_loss.  Also saves `averaged_best.csv`.
     """
     if net is not None:
         set_mode(net)
@@ -1200,8 +1138,8 @@ def pick_best_across_seeds(out_dir: str,
 
     seeds = sorted(seed_dfs.keys())
 
-    # Apply parameter fixes — the mode's _SEARCH_FIXES (e.g. SDC: n_clusters,
-    # age_weight) plus any CLI --fix (which overrides) — filtered identically.
+    # Apply parameter fixes, the mode's _SEARCH_FIXES (e.g. SDC: n_clusters,
+    # age_weight) plus any CLI --fix (which overrides), filtered identically.
     eff_fixes = _search_fixes()
     if fixes:
         eff_fixes.update(fixes)
@@ -1211,7 +1149,7 @@ def pick_best_across_seeds(out_dir: str,
     print(f"[sa_network] Averaging loss across {len(seeds)} seeds "
           f"({len(seed_dfs[seeds[0]])} rows after filtering)")
 
-    # Compute loss per seed — shape (n_samples,) per seed
+    # Compute loss per seed, shape (n_samples,) per seed
     loss_matrix = np.stack(
         [_compute_losses(seed_dfs[s], targets=t) for s in seeds],
         axis=1
@@ -1297,18 +1235,18 @@ def run_network_sa_multi_seed(well_being: list[dict],
                                dist_type: str = "gaussian_clusters",
                                out_dir: str = "data/sensitivity/network",
                                net: str = "sda") -> dict:
-    """Run the full SA pipeline for each seed; aggregate stability metrics.
+    """Run the full SA pipeline for several seeds plus the cross-seed stability plots.
 
-    Sobol samples are generated once and shared across all seeds so that
-    differences in S1/ST reflect network realization noise, not different
-    parameter coverage.
+    Sobol samples are drawn once and shared by all seeds, so S1/ST differences are
+    realization noise. Per-seed outputs go to out_dir/seed_<s>/, stability outputs to out_dir/.
 
-    Per-seed outputs go to  ``out_dir/seed_{s}/``.
-    Stability outputs (S1 plot, consensus best) go to ``out_dir/``.
+    Args:
+        well_being (list[dict]): real well-being rows.
+        seeds (list[int]): build seeds.
+        N, degree, n_sobol, n_jobs, dist_type, out_dir, net: as in `run_sobol_sa`.
 
-    Returns
-    -------
-    dict mapping seed → (samples_df, si_df, best_row)
+    Returns:
+        dict: seed -> (samples_df, si_df, best_row).
     """
     set_mode(net)
     os.makedirs(out_dir, exist_ok=True)
@@ -1360,6 +1298,7 @@ def run_network_sa_multi_seed(well_being: list[dict],
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    """Parse args and run the multi-seed SA (or a recalibration) for the chosen network mode."""
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--net",             default="sda", choices=["sda", "sdc"],

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Precompute the per-level PHQ-9 bias table the simulation subtracts.
 #
-# Pipeline (all reusing existing tooling — no bespoke generators):
+# Pipeline (all reusing existing tooling, no bespoke generators):
 #   1. generate balanced, UNSEEN calibration blocks   (generate_test_data.py)
 #   2. score them with the DEPLOYED BERT+MLP regressor (prompt_optimizer --mode
 #      bert-eval, same flag path run_finetune.sh uses)
 #   3. aggregate to the 28-level table                 (utils.tools.phq9_bias)
 #
-# Output: phq9_bias_table.csv next to the regressor — the simulation loads it
+# Output: phq9_bias_table.csv next to the regressor, the simulation loads it
 # automatically (network.py), no flag.
 #
 # Run interactively or from a SLURM job:  bash scripts/assessment/run_bias_calibration.sh

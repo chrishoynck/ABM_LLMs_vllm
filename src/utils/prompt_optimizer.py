@@ -1,3 +1,17 @@
+"""TextGrad prompt optimization for post generation and PHQ-9 assessment, plus the MentalBERT+MLP regressor.
+
+Modes are selected with --mode (see docs/prompt_optimizer.md): phq9 / tweets optimize a
+prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, bert trains the
+regressor on cached embeddings, bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
+and jobs/run_bert_optimizer.job.
+"""
+"""TextGrad prompt optimization for post generation and PHQ-9 assessment, plus the MentalBERT+MLP regressor.
+
+Modes are selected with --mode (see docs/prompt_optimizer.md): phq9 / tweets optimize a
+prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, bert trains the
+regressor on cached embeddings, bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
+and jobs/run_bert_optimizer.job.
+"""
 import os
 import shutil
 import datetime
@@ -128,7 +142,7 @@ def _teacher_call_kind(content: str) -> str:
         return "backward"
     return "loss"
 
-# Custom optimizer system prompt — TextGrad's default includes literal "{improved variable}"
+# Custom optimizer system prompt, TextGrad's default includes literal "{improved variable}"
 # placeholders that thinking models (Qwen3.5, Mistral) echo back verbatim.
 _OPTIMIZER_SYSTEM_PROMPT = (
     "The feedback may be noisy — identify what is important and what is correct. "
@@ -154,6 +168,7 @@ class _StudentEngine(tg.engine.EngineLM):
     """ChatVLLM wrapper that disables reasoning per-request (Qwen/Mistral specific)."""
     def __init__(self, base: ChatVLLM, model_name: str,
                  temperature: float = 0.7, max_tokens: int = 512):
+        """Wrap a ChatVLLM engine with the student's decoding settings."""
         self.base = base
         self.model_string = base.model_string
         self._model_name = model_name
@@ -161,6 +176,7 @@ class _StudentEngine(tg.engine.EngineLM):
         self._max_tokens = max_tokens
 
     def __call__(self, content, system_prompt=None, **kwargs):
+        """Alias of `generate`, the call form TextGrad expects."""
         return self.generate(content, system_prompt=system_prompt, **kwargs)
 
     def generate(self, content, system_prompt=None, temperature=None, max_tokens=None, **kwargs):
@@ -212,11 +228,13 @@ class _StudentEngine(tg.engine.EngineLM):
 class _TeacherEngine(tg.engine.EngineLM):
     """Thinking-enabled engine used as the TextGrad backward/optimizer engine."""
     def __init__(self, base: ChatVLLM, model_name: str):
+        """Wrap a ChatVLLM engine as the (thinking) teacher."""
         self.base = base
         self.model_string = base.model_string
         self._model_name = model_name
 
     def __call__(self, content, system_prompt=None, **kwargs):
+        """Alias of `generate`, the call form TextGrad expects."""
         return self.generate(content, system_prompt=system_prompt, **kwargs)
 
     def generate(self, content, system_prompt=None, **kwargs):
@@ -248,7 +266,7 @@ class _TeacherEngine(tg.engine.EngineLM):
             # Backward calls need >8k so instruction-variable gradients aren't truncated mid-thinking.
             default_tokens = 8192 if "IMPROVED_VARIABLE" in content else 10240
             base_max_tokens = kwargs.get("max_tokens", default_tokens)
-            # Only retry on optimizer calls (IMPROVED_VARIABLE) — an empty response
+            # Only retry on optimizer calls (IMPROVED_VARIABLE), an empty response
             # there crashes TextGrad's TGD tag parser. Loss/backward calls tolerate
             # empty results, so retrying them would just waste compute.
             max_attempts = 2 if "IMPROVED_VARIABLE" in content else 1
@@ -534,29 +552,23 @@ def _evaluate_instruction(engine, instruction_text: str, format_block: str,
                           personas: list = None,
                           temperature: float = 0.2, max_tokens: int = 256,
                           want_raw: bool = False) -> tuple:
-    """Run the current PHQ-9 instruction on all blocks and return aggregated MAE.
-
-    Signed bias is always tracked per PHQ-9 score (cheap), and on `want_raw=True`
-    the per-sample (true, pred) arrays are returned as well so callers can write
-    a raw-scores CSV without re-running the engine.
+    """Run a PHQ-9 instruction on all blocks; return MAE, per-score bias and optionally raw predictions.
 
     Args:
-        engine: student _StudentEngine.
-        instruction_text: current system instruction being evaluated.
-        format_block: fixed PHQ-9 format block appended to every user message.
-        blocks: list of tweet blocks (one per agent).
-        answers: ground-truth PHQ-9 score per block.
-        prompts: parsed prompts JSON.
-        personas: optional personas aligned with `blocks`.
-        temperature: student sampling temperature.
-        max_tokens: student token budget.
-        want_raw: if True, also return raw {"true": [...], "pred": [...]} arrays.
+        engine: student `_StudentEngine`.
+        instruction_text (str): system instruction under evaluation.
+        format_block (str): fixed PHQ-9 format block appended to every user message.
+        blocks (list): post blocks, one per agent.
+        answers (list): true PHQ-9 per block.
+        prompts (dict): parsed prompts JSON.
+        personas (list | None): personas aligned with `blocks`.
+        temperature (float), max_tokens (int): student sampling settings.
+        want_raw (bool): also return the per-sample true / pred arrays.
 
     Returns:
-        (mean_mae, std_mae, per_phq9) by default, or
-        (mean_mae, std_mae, per_phq9, raw) when `want_raw=True`.
-        per_phq9 = {true_score: {"avg_mae", "avg_bias", "std_bias", "n_samples"}}
-                   — avg_bias = mean(pred − true); positive means over-estimation.
+        tuple: (mean_mae, std_mae, per_phq9) or, with want_raw, (..., raw). per_phq9 maps
+        each true score to avg_mae, avg_bias (mean pred - true, positive = over-estimate),
+        std_bias and n_samples.
     """
     user_msgs = []
     for i, tweet_block in enumerate(blocks):
@@ -663,7 +675,7 @@ def train_val_test_split(rng, file_paths:list[str],
         test_fraction: fraction held out for test (drawn first, then val, then train).
 
     Returns:
-        (train_data, val_data, test_data) — each a tuple (blocks, answers, personas, agent_ids).
+        (train_data, val_data, test_data), each a tuple (blocks, answers, personas, agent_ids).
     """
     tweet_blocks_list = []
     true_answers_list = []
@@ -936,7 +948,7 @@ def call_optimizer_phq9(
             # Leave prediction.value as the student's RAW output so the teacher's
             # backward sees what the student actually produced (any format that
             # parses cleanly is acceptable). Rewriting it to a synthetic summary
-            # made the teacher hallucinate "format violation" gradients — the
+            # made the teacher hallucinate "format violation" gradients, the
             # parsed score is already passed via the loss prompt below.
 
             loss_fn = tg.TextLoss(_make_loss_prompt(true_answer, predicted_score, tweet_block, persona))
@@ -945,7 +957,7 @@ def call_optimizer_phq9(
 
         # Even after the engine's retry, the teacher can return empty on the
         # optimizer call (e.g. thinking still didn't finish). TextGrad's TGD
-        # parser raises IndexError on empty/malformed responses — catch it so
+        # parser raises IndexError on empty/malformed responses, catch it so
         # an unparseable rewrite simply means no instruction update this step.
         try:
             optimizer.step()
@@ -1092,40 +1104,28 @@ def rerun_test_phq9(
     result_subdir: str | None = None,
     **vllm_kwargs,
 ):
-    """Reload a saved instruction and re-run only the PHQ-9 test phase.
+    """Reload a saved PHQ-9 instruction and re-run only the test phase (no training).
 
-    Skips training entirely — useful for upgrading old runs to the new schema
-    (avg_bias, std_bias, test_raw_scores.csv) without re-doing the expensive
-    optimisation loop. The train/val/test split is deterministic given the seed
-    and file_paths, so the test set matches the original run.
+    The train/val/test split is deterministic given `seed` and `file_paths`, so the
+    test set matches the original run. With `posts_file` the whole CSV is the test set
+    instead, so several optimization seeds can be scored on one shared held-out set.
 
     Args:
-        seed: RNG seed used by the original run (drives the split).
-        file_paths: same tweets_with_phq9 files the original run used. Ignored
-            when ``posts_file`` is set.
-        output_dir: where to read/write; defaults to the standard
-            `data/test_post/optimized_phq9/<model_short>_seed<seed>` path.
-        model_name: HuggingFace model id for the student engine.
-        instruction_filename: which prompt file to load from `output_dir`. Defaults
-            to `optimized_instruction.txt`, the prompt the original test used.
-        val_fraction, test_fraction: must match the original run.
-        max_model_len: vLLM context budget.
-        posts_file: optional override — when set, the entire CSV is used as the
-            test set (no split), so multiple optimization seeds can be evaluated
-            on a single shared, freshly-generated held-out set. Each seed's
-            output dir still gets its own per-seed result CSVs, but the
-            ``trajectory.csv`` test row is NOT overwritten (the original
-            in-distribution test number is preserved).
-        result_subdir: optional name of a subdir under ``output_dir`` to write
-            results into (e.g. ``"minimal_synth"``). When set, results go to
-            ``<output_dir>/<result_subdir>/`` and ``training_trajectory.csv`` is
-            left untouched — use this to score a DIFFERENT instruction (e.g. the
-            minimal prompt) on the same split/posts without clobbering the
-            optimized prompt's ``test_raw_scores.csv`` / ``eval_on_*`` dirs.
+        seed (int): seed of the original run (drives the split).
+        file_paths (list[str]): the original tweets_with_phq9 files; ignored with posts_file.
+        output_dir (str | None): run folder; default data/test_post/optimized_phq9/<model>_seed<seed>.
+        model_name (str): HuggingFace id of the student.
+        instruction_filename (str): prompt file to load from output_dir.
+        val_fraction, test_fraction (float): must match the original run.
+        max_model_len (int): vLLM context budget.
+        posts_file (str | None): CSV to use as the whole test set (no split).
+        result_subdir (str | None): write results to <output_dir>/<subdir>/ and leave
+            training_trajectory.csv and the main test files untouched; use it to score
+            a different instruction (e.g. the minimal prompt) on the same posts.
         **vllm_kwargs: forwarded to ChatVLLM.
 
     Returns:
-        (test_mae, test_std, per_phq9, raw) from `_evaluate_instruction(want_raw=True)`.
+        tuple: (test_mae, test_std, per_phq9, raw) from `_evaluate_instruction(want_raw=True)`.
     """
     import gc
 
@@ -1236,7 +1236,7 @@ def rerun_test_phq9(
                 "std_score": round(test_std, 4), "n_samples": len(test_blocks),
             })
 
-    # Raw per-sample (true, pred) — new schema.
+    # Raw per-sample (true, pred), new schema.
     raw_csv = os.path.join(write_dir, "test_raw_scores.csv")
     with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["model", "seed", "true_phq9", "pred_phq9"])
@@ -1246,7 +1246,7 @@ def rerun_test_phq9(
                              "true_phq9": int(t), "pred_phq9": int(p)})
     print(f"Raw test scores → {raw_csv}")
 
-    # Per-PHQ-9 with bias — new schema.
+    # Per-PHQ-9 with bias, new schema.
     csv_path = os.path.join(write_dir, "test_scores_phq9.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
@@ -1368,7 +1368,7 @@ def parse_tweet_answers(raw_output: str) -> str:
         raw_output: full student response (may contain thinking blocks and POST:/TWEET: prefixes).
 
     Returns:
-        Cleaned tweet text — first paragraph after the last recognised prefix, or the first paragraph
+        Cleaned tweet text, first paragraph after the last recognised prefix, or the first paragraph
         of the cleaned text if no prefix is found.
     """
     cleaned = Agent.strip_model_thinking(raw_output)
@@ -1557,7 +1557,7 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
     n_samples_by_phq9 = defaultdict(int)
     empty_by_phq9    = defaultdict(int)
 
-    # Phase 1 — generate tweets. Each agent has its own growing context seeded with 0-4
+    # Phase 1, generate tweets. Each agent has its own growing context seeded with 0-4
     # historical tweets (matching training); batching across agents keeps contexts isolated.
     all_parsed = [[] for _ in range(n)]   # all_parsed[sample_idx][tweet_idx]
 
@@ -1600,7 +1600,7 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
                 print(response)
                 print(f"  --- parsed: {parsed!r} ---")
 
-    # Phase 2 — build rating prompts; record all-empty samples as score 0.
+    # Phase 2, build rating prompts; record all-empty samples as score 0.
     scores = [None] * n
     pending = []   # (sample_idx, phq9, rating_prompt)
 
@@ -1632,7 +1632,7 @@ def _evaluate_tweet_instruction(student_engine, teacher_engine, instruction_text
             rating_prompt = _make_loss_prompt_tweet_set(parsed_tweets, persona, phq9)
             pending.append((i, phq9, rating_prompt))
 
-    # Phase 3 — one batched teacher call rates all pending sets.
+    # Phase 3, one batched teacher call rates all pending sets.
     if pending:
         rating_responses = _batch_teacher_rate(
             teacher_engine, [p[2] for p in pending], max_tokens=4096
@@ -1709,7 +1709,7 @@ def call_optimizer_tweets(
 ):
     """Optimise the tweet-generation system prompt via TextGrad.
 
-    Student (non-thinking) generates tweets; teacher (thinking) rates each set standalone — no reference
+    Student (non-thinking) generates tweets; teacher (thinking) rates each set standalone, no reference
     tweets. Neighbor posts (max 6) are sampled from the combined inter/no_inter pool for context.
 
     Args:
@@ -1762,7 +1762,7 @@ def call_optimizer_tweets(
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or len((os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(","))
     # Prefix caching disabled here only: vLLM v0.17.1 + TP=2 deadlocks between
     # consecutive student .generate() calls during val/test when KV state is
-    # shared across batches. PHQ-9 optimizer is unaffected — leaves it on.
+    # shared across batches. PHQ-9 optimizer is unaffected, leaves it on.
     student_engine, teacher_engine = _build_engines(model_name, tp, 0.90,
                                                     max_model_len=max_model_len,
                                                     enable_prefix_caching=False,
@@ -1777,9 +1777,9 @@ def call_optimizer_tweets(
     raw_instruction = raw_instruction.replace("{max_chars}", str(max_chars))
 
     # Two-stage split:
-    # 1. Split at ### RULES ### — the intro (including "Do NOT think") becomes
+    # 1. Split at ### RULES ###, the intro (including "Do NOT think") becomes
     #    the fixed prefix, only the rules content is optimisable.
-    # 2. Split the rules tail at ### CONSTRAINTS ### — constraints + format are
+    # 2. Split the rules tail at ### CONSTRAINTS ###, constraints + format are
     #    also fixed and appended to every user message.
     _rules_marker = "### RULES ###"
     _constraints_marker = "### CONSTRAINTS ###"
@@ -1830,7 +1830,7 @@ def call_optimizer_tweets(
     best_val_score = -float("inf")
     best_instruction = instruction.value
 
-    # Trajectory CSV — written incrementally so partial runs stay usable.
+    # Trajectory CSV, written incrementally so partial runs stay usable.
     model_short = model_name.split("/")[-1]
     os.makedirs(output_dir, exist_ok=True)
     trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
@@ -1909,7 +1909,7 @@ def call_optimizer_tweets(
             else:
                 context = []
 
-            predictions = []   # tg.Variables — kept so the backward graph stays
+            predictions = []   # tg.Variables, kept so the backward graph stays
                                 # connected to `instruction` (severed if we build
                                 # `combined` from raw strings via tg.Variable).
             raw_tweets = []
@@ -1972,7 +1972,7 @@ def call_optimizer_tweets(
         if grads:
             print(f"  [teacher gradient]: {list(grads)[0].value[:400]}\n")
 
-        # See PHQ-9 branch — guard against TextGrad's TGD parser crashing on
+        # See PHQ-9 branch, guard against TextGrad's TGD parser crashing on
         # an empty/malformed optimizer response.
         try:
             optimizer.step()
@@ -2137,36 +2137,28 @@ def rerun_test_tweets(
     max_model_len: int = 16384,
     **vllm_kwargs,
 ):
-    """Score a saved tweet instruction by running the train-time eval pipeline.
+    """Score a saved post-generation instruction with the train-time teacher, on fresh personas.
 
-    Mirrors the final test phase of :func:`call_optimizer_tweets`, but on a
-    fresh persona-PHQ-9 sample (no historical context — agents post cold):
+    Same as the final test phase of `call_optimizer_tweets` but cold-start: sample
+    `num_agents` (persona, PHQ-9) pairs with `sample_seed`, build the neighbour pool
+    from the Qwen3.5-27B test_post tree, let the student write `tweets_per_sample`
+    posts per agent and let the teacher rate each set. `sample_seed` defaults to the N
+    of the prompt's iter_<N>/ folder, so iter_7/prompt.txt is scored on iter_7's agents.
+    Writes test_raw_scores.csv, test_scores_phq9.csv, test_posts.csv and eval_meta.txt
+    next to the instruction, in the same schema as the PHQ-9 mode.
 
-      1. Sample ``num_agents`` (persona, phq9) pairs from ``persona_phq9_file``
-         using ``sample_seed`` — same RNG seed reproduces the same agents.
-      2. Build a neighbour pool from the Qwen3.5-27B test_post tree (same
-         pool :mod:`generate_posts_opt_h` uses) so neighbour context matches
-         generation-time conditions. ``seed`` drives the neighbour-sampling RNG.
-      3. Each agent gets ``tweets_per_sample`` fresh posts generated by the
-         student with the loaded instruction.
-      4. The teacher rates each agent's set; per-PHQ-9 stats + mean/std are
-         written to ``<iter_dir>/eval_test.json``.
-
-    ``sample_seed`` defaults to the ``N`` in the prompt-file's ``iter_<N>/``
-    parent dir — so by default ``iter_7/prompt.txt`` is evaluated on the same
-    seven agents ``iter_7/posts.csv`` was generated with.
-
-    Four files are written next to the instruction, mirroring the CSV schema
-    the PHQ-9 mode already uses (so plotting / aggregation helpers transfer):
-
-      * ``test_raw_scores.csv`` — one row per agent: model, seed, sample_seed,
-        agent_id, phq9, score (the per-agent teacher rating).
-      * ``test_scores_phq9.csv`` — one row per PHQ-9 bucket: model, seed,
-        sample_seed, phq9, avg_score, n_samples, n_empty.
-      * ``test_posts.csv`` — one row per generated tweet: agent_id, persona,
-        phq9, agent_score, tweet_idx, tweet.
-      * ``eval_meta.txt`` — plain-text reproducibility log (file paths, seeds,
-        pool sizes, sampled row indices, final mean/std).
+    Args:
+        instruction_file (str): the prompt to score.
+        persona_phq9_file (str): (persona, phq9) CSV to sample agents from.
+        num_agents (int): agents to sample.
+        sample_seed (int | None): seed of the persona sample.
+        neighbor_pool_roots (list[str] | None): folders with neighbour posts.
+        model_name (str): student and teacher model id.
+        seed (int): seed of the neighbour sampling.
+        tweets_per_sample (int): posts per agent.
+        max_chars (int): per-post character budget in the prompt.
+        max_model_len (int): vLLM context budget.
+        **vllm_kwargs: forwarded to ChatVLLM.
     """
     import gc
     import re as _re
@@ -2282,7 +2274,7 @@ def rerun_test_tweets(
 
     model_short = model_name.split("/")[-1]
 
-    # Per-agent raw scores — same schema family as PHQ-9 mode's test_raw_scores.csv.
+    # Per-agent raw scores, same schema family as PHQ-9 mode's test_raw_scores.csv.
     raw_csv = os.path.join(iter_dir, "test_raw_scores.csv")
     with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=[
@@ -2298,7 +2290,7 @@ def rerun_test_tweets(
             })
     print(f"[tweet-rerun] wrote {raw_csv}")
 
-    # Per-PHQ-9 aggregate — same schema family as PHQ-9 mode's test_scores_phq9.csv.
+    # Per-PHQ-9 aggregate, same schema family as PHQ-9 mode's test_scores_phq9.csv.
     per_phq9_csv = os.path.join(iter_dir, "test_scores_phq9.csv")
     with open(per_phq9_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=[
@@ -2316,7 +2308,7 @@ def rerun_test_tweets(
             })
     print(f"[tweet-rerun] wrote {per_phq9_csv}")
 
-    # Generated tweets — one row per post, with the per-agent teacher score.
+    # Generated tweets, one row per post, with the per-agent teacher score.
     posts_csv = os.path.join(iter_dir, "test_posts.csv")
     with open(posts_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -2331,7 +2323,7 @@ def rerun_test_tweets(
                                  score_str, j, clean])
     print(f"[tweet-rerun] wrote {posts_csv}")
 
-    # Reproducibility log — paths, seeds, pool sizes, sampled indices, summary.
+    # Reproducibility log, paths, seeds, pool sizes, sampled indices, summary.
     meta_path = os.path.join(iter_dir, "eval_meta.txt")
     with open(meta_path, "w", encoding="utf-8") as fh:
         fh.write(
@@ -2474,10 +2466,10 @@ def _kfold_cv_pass(pool_embs, pool_labels, mental_bert: bool, device,
 
     Group-aware: when `pool_agent_ids` is provided, folds are over agents (every
     block of a given agent stays in the same fold). Otherwise falls back to
-    block-level folds (legacy — leaks agents across folds).
+    block-level folds (legacy, leaks agents across folds).
 
     Fold assignment is deterministic from `seed`. Torch is re-seeded to `seed`
-    once per fold so weight init is identical across folds — fold variance
+    once per fold so weight init is identical across folds, fold variance
     therefore reflects data-partition effects only, not init noise.
 
     Returns:
@@ -2585,7 +2577,7 @@ def run_bert_cv_diagnostic(embeddings_path, base_model_name, device, mental_bert
                            epochs: int = 30):
     """One-shot partition-variance diagnostic: 80/20 pool/test split + k-fold CV on the pool.
 
-    Test set is held out (not used) — this entry point only characterizes how
+    Test set is held out (not used), this entry point only characterizes how
     much the validation MAE varies across data partitions. Use the regular
     `--mode bert` training afterwards for the actual production model(s).
 
@@ -2641,48 +2633,29 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
                      seed: int = 42, batch_size: int = 8, weight_decay: float = 1e-4,
                      learning_rate: float = 1e-4, epochs: int = 30,
                      init_from: str | None = None, out_dir: str | None = None):
-    """Load cached embeddings, do an 80/10/10 split, train the regressor, write metrics + plots.
+    """Load cached embeddings, split 80/10/10 by agent, train the MLP regressor and write metrics + plots.
 
-    Set `init_from` to a saved `regressor.pt` to CONTINUE training that model
-    (fine-tuning) instead of Kaiming-initialising a fresh one — pair with a low
-    `learning_rate` and an `out_dir` so the source regressor is left untouched.
-
-    The output layout mirrors `call_optimizer_phq9`:
-        {out_dir or data/test_post/bert_regression}/{model_short}_seed{seed}/
-            ├── regressor.pt
-            ├── training_trajectory.csv   (model, seed, step, split, mean_score, std_score, n_samples)
-            ├── test_scores_phq9.csv      (model, seed, phq9, avg_mae, avg_bias, std_bias, n_samples)
-            ├── test_raw_scores.csv       (model, seed, true_phq9, pred_phq9)
-            ├── performance.json
-            ├── trajectory.png
-            └── test_scores_by_phq9.png
-
-    Seed semantics:
-        A single `seed` drives both the numpy split RNG (so each seed sees a
-        different 80/10/10 partition) and the torch RNG used for weight init +
-        dropout. Variance across `--seeds` therefore reflects combined
-        partition + init noise — the standard "how stable is this experiment
-        if I rerun it" reading. Run `--mode bert-cv` once for a partition-only
-        variance diagnostic (k-fold CV).
+    One `seed` drives both the split and the torch init, so variance over seeds is
+    partition plus init noise (use `--mode bert-cv` for partition-only variance).
+    Set `init_from` to continue training a saved regressor (fine-tuning) with a low
+    learning rate and an `out_dir`, so the source regressor stays untouched. Outputs
+    under {out_dir or data/test_post/bert_regression}/{model_short}_seed{seed}/:
+    regressor.pt, training_trajectory.csv, test_scores_phq9.csv, test_raw_scores.csv,
+    performance.json and two PNGs.
 
     Args:
-        embeddings_path: path to a `.pt` containing {embeddings, labels}.
-        base_model_name: model id used to construct the save directory.
+        embeddings_path (str): .pt with {embeddings, labels}.
+        base_model_name (str): model id that names the output folder.
         device: torch device.
-        mental_bert: True if embeddings came from MentalBERT (controls regressor input size).
-        seed: RNG seed driving both data partition and model init.
-        batch_size: minibatch size for the inner `train_bert` loop.
-        weight_decay: AdamW weight-decay coefficient.
-        learning_rate: initial AdamW LR (use a small value, e.g. 2e-5, when fine-tuning).
-        epochs: max training epochs.
-        init_from: optional path to a saved regressor.pt to continue training from
-            (fine-tuning); when None a fresh Kaiming-initialised model is trained.
-        out_dir: optional base dir for the per-seed output folder; defaults to
-            data/test_post/bert_regression. Set this when fine-tuning so the
-            source regressor isn't overwritten.
+        mental_bert (bool): embeddings come from MentalBERT (sets the input size).
+        seed (int): seed for the split and the init.
+        batch_size (int), weight_decay (float), learning_rate (float), epochs (int):
+            AdamW training settings.
+        init_from (str | None): regressor.pt to continue training from.
+        out_dir (str | None): base output folder.
 
     Returns:
-        (best_model, best_val_mae, test_mae).
+        tuple: (best_model, best_val_mae, test_mae).
     """
     with open(embeddings_path, "rb") as f:
         data = torch.load(f)
@@ -2778,7 +2751,7 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     torch.save(nn_model, save_path)
     print(f"Regressor saved to {save_path}")
 
-    # Raw per-sample (true, pred) — kept for downstream analysis (calibration plots,
+    # Raw per-sample (true, pred), kept for downstream analysis (calibration plots,
     # confusion matrices, error distributions, etc.) without re-running the regressor.
     raw_csv = os.path.join(save_dir, "test_raw_scores.csv")
     with open(raw_csv, "w", newline="", encoding="utf-8") as fh:
@@ -2841,6 +2814,7 @@ class neural_net_BERT(nn.Module):
         dropout_rate: dropout applied at the input and after the first hidden layer.
     """
     def __init__(self, mentalbert: bool = False, dropout_rate=0.2):
+        """Build the MLP; input is 3x768 (MentalBERT) or 3x384 (SBERT) for the (mean | max | std) centroid."""
         if mentalbert:
             input_size = 768*3
         else:
@@ -2861,6 +2835,7 @@ class neural_net_BERT(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
+        """Predict one PHQ-9 score per row of x."""
         return self.model(x)
     
 def train_bert(model,
@@ -2873,34 +2848,22 @@ def train_bert(model,
                 batch_size=8,
                 learning_rate=0.0001,
                 weight_decay: float = 1e-4):
-    """Train the MLP regressor (Huber gradient, MAE tracking, AdamW).
+    """Train the MLP regressor with AdamW and a Huber loss, tracking MAE per epoch.
 
-    Per-epoch MAE/std are recorded for both train and val (when provided) on the
-    *full* split so the resulting history is directly comparable to the PHQ-9
-    optimizer's trajectory CSV (which also reports MAE).
-
-    Pass `val_data=None` (and `val_labels=None`) for "full training" runs that
-    use the entire pool with no holdout val. In that mode there's no best-model
-    selection and the final-epoch model is returned; val_mae/val_std rows in
-    `history` are NaN.
+    Pass `val_data=None` for full-data training: then there is no best-model selection,
+    the final-epoch model is returned and the val columns of `history` are NaN.
 
     Args:
-        model: regressor (already on device).
-        train_data: train embeddings.
-        train_labels: train PHQ-9 scores.
-        val_data: val embeddings, or None to disable val tracking.
-        val_labels: val PHQ-9 scores, or None.
+        model: regressor already on `device`.
+        train_data, train_labels: training embeddings and PHQ-9 scores.
+        val_data, val_labels: validation set, or None to disable it.
         device: torch device.
-        epochs: max training epochs.
-        batch_size: minibatch size.
-        learning_rate: initial AdamW learning rate.
-        weight_decay: AdamW weight-decay coefficient (L2 regularization).
+        epochs (int), batch_size (int), learning_rate (float), weight_decay (float):
+            training settings.
 
     Returns:
-        (best_model, best_val_mae, history) where history is a list of dicts
-        with keys {"epoch", "train_mae", "train_std", "val_mae", "val_std"}.
-        When val is provided, best model is selected on val MAE; otherwise
-        best_val_mae is NaN and best_model is the final-epoch model.
+        tuple: (best_model, best_val_mae, history); history is a list of dicts with
+        epoch, train_mae, train_std, val_mae, val_std.
     """
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     has_val = val_data is not None
@@ -2916,7 +2879,7 @@ def train_bert(model,
     n_train = len(train_data)
     for epoch in range(epochs):
         model.train()
-        # Reshuffle each epoch so batch composition varies — reproducible via the
+        # Reshuffle each epoch so batch composition varies, reproducible via the
         # torch seed set before train_bert is called.
         perm = torch.randperm(n_train, device=device)
         for i in range(0, n_train, batch_size):
@@ -2973,7 +2936,7 @@ def _bert_eval_summary(model, data, labels, device, want_per_phq9: bool = False)
     Returns:
         (mae, std) or (mae, std, per_phq9, raw) where:
             per_phq9 = {true_score: {"avg_mae", "avg_bias", "std_bias", "n_samples"}}
-                       — avg_bias is mean(pred − true); positive means over-estimation.
+                       avg_bias is mean(pred − true); positive means over-estimation.
             raw      = {"true": [...], "pred": [...]} per-sample arrays.
     """
     model.eval()
@@ -3034,7 +2997,7 @@ def save_embeddings_for_file(file_path, base_model_name: str, device, mentalbert
             group_ids.extend([f"{fp}::{aid}" for aid in aids])
         else:
             blocks, answers = parse_tweets_with_phq9(fp)
-            # No agent info in .txt — each block is its own group (degenerate = old block-level split).
+            # No agent info in .txt, each block is its own group (degenerate = old block-level split).
             group_ids.extend([f"{fp}::block_{i}" for i in range(len(blocks))])
         tweet_blocks.extend(blocks)
         true_answers.extend(answers)
@@ -3364,7 +3327,7 @@ if __name__ == "__main__":
             embeddings_path = os.path.join("data", "test", base_model_name, dir_name, "embeddings_and_labels.pt")
         need_rebuild = create_new_embeddings or not os.path.isfile(embeddings_path)
         if not need_rebuild:
-            # Old caches lack `agent_ids` — rebuild so the agent-level split has the group keys it needs.
+            # Old caches lack `agent_ids`, rebuild so the agent-level split has the group keys it needs.
             _cached = torch.load(embeddings_path, map_location="cpu")
             if "agent_ids" not in _cached:
                 print(f"[bert] cache at {embeddings_path} lacks agent_ids — forcing rebuild for agent-level split")

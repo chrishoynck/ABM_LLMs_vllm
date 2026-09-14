@@ -1,28 +1,9 @@
 #!/usr/bin/env bash
-# Produce the per-prompt data for figure 2 (plot_eval_bert_vs_prompt / Fig 5.11),
-# scoring BOTH prompts on the SAME test sets so all three method groups are
-# comparable per distribution:
-#
-#   synthetic (in-distribution) : the deterministic per-seed 1200-block split
-#                                   optimized -> test_raw_scores.csv (already on disk)
-#                                   minimal   -> minimal_synth/
-#   human-opt  (shifted)        : the 300-block set data/finetune/test_posts.csv
-#                                   (the SAME blocks BERT's eval_baseline uses)
-#                                   optimized -> eval_on_human300/
-#                                   minimal   -> minimal_human300/
-#
-# So on the human-opt side BERT (eval_baseline), the optimized prompt and the
-# minimal prompt are all scored on the identical 300 blocks -> a clean paired
-# comparison. (Synthetic stays on the prompts' 1200-block split; BERT keeps its
-# own holdout there, since it trained on ~80% of those blocks.)
-#
-# Everything is written to NON-clobbering subdirs (via --result-subdir), so the
-# optimized prompt's test_raw_scores.csv / training_trajectory.csv are untouched.
-# The minimal prompt text is seed-independent (data/prompts_post_minimal.json ->
-# phq9.system_instruction); we still score it per seed for matching structure.
-#
-# Pipeline (student model only — no teacher / optimizer is loaded). GPU session:
-#   bash scripts/assessment/run_minimal_shift.sh
+# Score the minimal and the optimized PHQ-9 prompt on the same test sets, for figure 2
+# (BERT vs prompt under distribution shift): the per-seed synthetic split and the
+# 300-block human-opt set data/finetune/test_posts.csv (the blocks BERT's eval_baseline
+# uses). Results go to separate subdirs (--result-subdir), so nothing is overwritten.
+# Student model only, no teacher. GPU session: bash scripts/assessment/run_minimal_shift.sh
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
@@ -88,7 +69,7 @@ PYTHONPATH=src "${PYTHON}" -m utils.prompt_optimizer --mode phq9-rerun-test \
     --result-subdir "${OPT_HUMAN_SUBDIR}"
 
 # === 3. Regenerate the comparison figures (now with the Minimal prompt group) =
-# (CPU-only — just reads the per-sample CSVs. Mirrors run_eval_comparison.sh
+# (CPU-only, just reads the per-sample CSVs. Mirrors run_eval_comparison.sh
 #  defaults but uses ${PYTHON} so it works without activating the venv.)
 echo "[3] rebuilding comparison figures"
 PYTHONPATH=src "${PYTHON}" -m utils.visualization eval-comparison \

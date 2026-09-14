@@ -13,7 +13,7 @@ cd ~/thesis/ABM_based_LLMS/
 source .venv_vllm/bin/activate
 
 # Teacher-eval of the qwen27_baseline iter_0 POST-GENERATION prompt (--mode tweets-rerun-test).
-# Not a PHQ-9-assessment job — hence the rename from run_test_phq9.job (2026-08).
+# Not a PHQ-9-assessment job, hence the rename from run_test_phq9.job (2026-08).
 PYTHONPATH=src python -m utils.prompt_optimizer \
   --mode tweets-rerun-test \
   --model Qwen/Qwen3.5-27B \

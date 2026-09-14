@@ -1,3 +1,5 @@
+"""Plotting hub: network drawings, CDS and entrainment plots, PHQ-9 structure, prompt-optimizer figures and the eval-comparison / multimodel CLI."""
+"""Plotting hub: network drawings, CDS and entrainment plots, PHQ-9 structure, prompt-optimizer figures and the eval-comparison / multimodel CLI."""
 import seaborn as sns
 import os
 import argparse
@@ -10,8 +12,7 @@ from . import metrics
 import pandas as pd
 
 def print_network_phq9(network, path="", filename="default.png", save=False, show_fig=False):
-    """
-    Print network at one single iteration
+    """Print network at one single iteration
 
     Args:
         network: The network object to visualize.
@@ -93,8 +94,7 @@ def print_network_phq9(network, path="", filename="default.png", save=False, sho
 
 
 def print_subnetworks_phq9(network, path="", filename="default.png", save=False, show_fig=False):
-    """
-    Print network at one single iteration
+    """Print network at one single iteration
 
     Args:
         network: The network object to visualize.
@@ -190,8 +190,7 @@ def print_subnetworks_phq9(network, path="", filename="default.png", save=False,
 
 
 def plot_degree_weighted_phq9(degree_weighted_phq9, path="", filename="default.png", save=False):
-    '''
-    Plot PHQ-9 scores against degree weighted by connection weights.
+    '''Plot PHQ-9 scores against degree weighted by connection weights.
     Args:
         network: The network object.
     '''
@@ -216,8 +215,7 @@ def plot_degree_weighted_phq9(degree_weighted_phq9, path="", filename="default.p
 
 
 def distorted_info(cds_info, path="", filename="default.png", save=False):
-    '''
-    This function bins fractions of distorted neighbors, and plots the probability corresponding to that to tweet.
+    '''This function bins fractions of distorted neighbors, and plots the probability corresponding to that to tweet.
     Args:
         cds_info(List(Tuple)): List of tuples with cds_frac
     '''
@@ -266,8 +264,7 @@ def distorted_info(cds_info, path="", filename="default.png", save=False):
 def plot_distorted_fracs(frac_distorted_this_step, 
                          path="", filename="default.png",
                          save=False):
-    '''
-    This function plots the fraction of distorted tweets per round.
+    '''This function plots the fraction of distorted tweets per round.
     Args:
         distorted_fracs(List(Float)): List of CDS fractions per round
     '''
@@ -287,8 +284,7 @@ def plot_distorted_fracs(frac_distorted_this_step,
 def plot_running_fracs(running_fracs, 
                         path="", filename="default.png",
                         save=False):
-    '''
-    This function plots the running mean fraction of distorted tweets over rounds.
+    '''This function plots the running mean fraction of distorted tweets over rounds.
     Args:
         running_fracs(List(Float)): List of running mean fractions over rounds
     '''
@@ -340,8 +336,7 @@ def plot_embedding_PCA_runs(mean_traj,
                         reduction="pca",
                         save=False,
                         use_sd_band=False):
-    """
-    Two-panel figure: (a) UMAP/PCA trajectory, (b) assortativity + DW mean PHQ-9.
+    """Two-panel figure: (a) UMAP/PCA trajectory, (b) assortativity + DW mean PHQ-9.
 
     Args:
         assort_data (dict): Pre-computed output from plot_phq9_assortativity, containing
@@ -349,7 +344,7 @@ def plot_embedding_PCA_runs(mean_traj,
             bin_dw_phq9_min, bin_dw_phq9_max, bin_dw_phq9_sd.
             If None, panel (b) is left empty.
         use_sd_band (bool): If True, show mean ± cross-agent SD band instead of
-            the min–max range on panel (b). Default False (min–max).
+            the min-max range on panel (b). Default False (min-max).
     """
     # Increased height slightly to accommodate the labels underneath
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 3.4))
@@ -397,7 +392,7 @@ def plot_embedding_PCA_runs(mean_traj,
 
         ax1.plot(traj[:, 0], traj[:, 1], alpha=0.4, color="gray", linewidth=1)
 
-        # Flag start and end points — offset text toward trajectory center
+        # Flag start and end points, offset text toward trajectory center
         center = traj.mean(axis=0)
         for pt, label, color in [(traj[0], 'Start', 'black'), (traj[-1], 'End', 'black')]:
             dx = center[0] - pt[0]
@@ -486,34 +481,21 @@ def plot_entrainment_grid(cell_trajs, cell_phq9, row_titles, col_titles,
                           path="", filename="", save=False, show_fig=False):
     """Small-multiple grid of per-seed embedding-entrainment trajectories.
 
-    Each cell is ONE run's mean-embedding trajectory traced over sliding time
-    windows in a 2D reduced space — the "entrainment plot" (panel (a) of
-    :func:`plot_embedding_PCA_runs`, no assortativity panel) — with every window
-    a dot coloured by that window's mean PHQ-9 (green→red, ``RdYlGn_r``, the same
-    map as :func:`print_network_phq9`). Runs are NOT averaged: each seed keeps its
-    own trajectory.
-
-    The caller fits the reduction once per row (topology) on that row's pooled
-    seeds, so the seed panels within a row share one coordinate system and are
-    directly comparable; each row also gets its OWN PHQ-9 colour scale and
-    colourbar, so colour is comparable across seeds within a row (read each row's
-    own bar) but not across rows.
+    Each cell is one run's mean-embedding trajectory over sliding windows in 2D, one
+    dot per window coloured by that window's mean PHQ-9 (RdYlGn_r). The caller fits the
+    reduction once per row, so panels in a row share coordinates; each row gets its own
+    PHQ-9 colour scale unless `phq9_vmin` / `phq9_vmax` pin it.
 
     Args:
-        cell_trajs: ``{(row, col): (T, 2) array}`` — reduced trajectory per cell.
-        cell_phq9:  ``{(row, col): (T,) array}`` — per-window mean PHQ-9 per cell.
-            A cell absent from either dict is drawn empty (keeps the grid aligned).
-        row_titles: row labels (topologies); ``len == n_rows``.
-        col_titles: column labels (seeds); ``len == n_cols``.
-        reduction:  reducer name, shown in the suptitle ("PCA"/"UMAP").
-        embedding:  embedding name, shown in the suptitle ("MentalBERT"/"SBERT").
-        phq9_vmin/phq9_vmax: colour limits. Left None (default), each row is
-            scaled to its own finite PHQ-9 min/max (per-row scale). A supplied
-            value pins that bound on every row, forcing a shared scale.
-        path/filename/save/show_fig: save controls (``{path}/{filename}.png``, dpi=300).
+        cell_trajs (dict): {(row, col): (T, 2) array}; missing cells are drawn empty.
+        cell_phq9 (dict): {(row, col): (T,) array} of per-window mean PHQ-9.
+        row_titles, col_titles (list): row (topology) and column (seed) labels.
+        reduction, embedding (str): names shown in the title.
+        phq9_vmin, phq9_vmax (float | None): colour limits; None = per-row scale.
+        path, filename, save, show_fig: save controls ({path}/{filename}.png, dpi 300).
 
     Returns:
-        (fig, axes)
+        tuple: (fig, axes).
     """
     n_rows = len(row_titles)
     n_cols = len(col_titles)
@@ -569,7 +551,7 @@ def plot_entrainment_grid(cell_trajs, cell_phq9, row_titles, col_titles,
                 else:
                     ax.scatter(traj[:, 0], traj[:, 1], s=10, alpha=0.9,
                                edgecolors="black", linewidths=0.2, zorder=2)
-                # Light start (square) / end (star) markers — readable at grid scale.
+                # Light start (square) / end (star) markers, readable at grid scale.
                 ax.scatter(traj[0, 0], traj[0, 1], marker="s", s=22,
                            facecolors="none", edgecolors="black",
                            linewidths=0.8, zorder=3)
@@ -652,7 +634,7 @@ def plot_entrainment_overlay(trajs, phq9s, seeds=None, row_title="",
     """All seed trajectories of ONE setting overlaid in a single shared axes.
 
     Every seed was projected with the same per-setting reducer, so one axes is a
-    single coordinate system (same x/y scale for all seeds) — overlaying shows
+    single coordinate system (same x/y scale for all seeds), overlaying shows
     directly whether the seeds drift together or diverge. Seeds are not
     distinguished (no legend); dots = windows coloured by mean PHQ-9 (green→red),
     start = square, end = star.
@@ -695,15 +677,15 @@ def plot_entrainment_overlay_grid(cell_trajs, cell_phq9, row_titles, col_titles,
                                   reduction="PCA", embedding="MentalBERT",
                                   equal_aspect=True, path="", filename="",
                                   save=False, show_fig=False):
-    """Small grid of per-setting overlays — one cell per setting, own colourbar.
+    """Small grid of per-setting overlays, one cell per setting, own colourbar.
 
     Each cell overlays all seeds of that setting (its own per-setting PCA), with
     its OWN PHQ-9 colour scale + slim colourbar (so cells are self-contained; the
     PCA axes differ cell to cell anyway). No seed legend; compact panels.
 
     Args:
-        cell_trajs: ``{(row, col): [ (T,2) per seed ]}``.
-        cell_phq9:  ``{(row, col): [ (T,)  per seed ]}``.
+        cell_trajs: `{(row, col): [ (T,2) per seed ]}`.
+        cell_phq9:  `{(row, col): [ (T,)  per seed ]}`.
         row_titles / col_titles: setting axis labels (e.g. ["SDA","SDC"],
             ["undirected","directed"]).
 
@@ -760,8 +742,8 @@ def plot_entrainment_shared(groups_per_col, col_titles, reduction="PCA",
     readable; panels fill the axes (no forced equal aspect). No figure title.
 
     Args:
-        groups_per_col: ``{col_index: [group, ...]}`` where each group is
-            ``{"label": str, "marker": str, "trajs": [ (T,2) ], "phq9s": [ (T,) ]}``.
+        groups_per_col: `{col_index: [group, ...]}` where each group is
+            `{"label": str, "marker": str, "trajs": [ (T,2) ], "phq9s": [ (T,) ]}`.
         col_titles: column labels (e.g. ["undirected", "directed"]).
 
     Returns:
@@ -824,8 +806,7 @@ def plot_entrainment_shared(groups_per_col, col_titles, reduction="PCA",
 #============ Network Analysis Visualization =============#
 
 def check_degree_distribution(unique_degrees, frequencies):
-    """
-    Plot the degree distribution on a log-log scale.
+    """Plot the degree distribution on a log-log scale.
     Args:
         unique_degrees (list of int): Unique degrees in the network.
         frequencies (list of int): Frequencies corresponding to each degree.
@@ -842,8 +823,7 @@ def check_degree_distribution(unique_degrees, frequencies):
 #============ Tweet Frequency Visualization =============#
 
 def plot_tweet_frequency(mean_freqs, var_freqs, window_size=5, file_path="", filename="default.png", save=False ):
-    """
-    Plot the mean tweet frequency over time with variance as a shaded region.
+    """Plot the mean tweet frequency over time with variance as a shaded region.
 
     Args:
         mean_freqs (list of float): Mean tweet frequency over time.
@@ -876,8 +856,7 @@ def plot_tweet_frequency(mean_freqs, var_freqs, window_size=5, file_path="", fil
 #============= TESTING LLMS FOR PHQ-9 =============#
 #============= Critical slowing down Visualization =============#
 def plot_agent_cd_heatmaps(network, window, cd_results, metric_name="PHQ-9", path="", filename="default.png", shift=1):
-    """
-    Plots heatmaps for Variance and Autocorrelation across all agents.
+    """Plots heatmaps for Variance and Autocorrelation across all agents.
     Agents are sorted on the Y-axis by their final PHQ-9 score.
     """
     # Prepare sorting criteria (Final PHQ9 score per agent)
@@ -1023,8 +1002,7 @@ def _plot_smoothed(ax, timesteps, raw, smooth_window, color, label,
 
 def plot_semantic_entrainment(network, agent_embs=None, mentalbert=True, path="", filename="",
                               save=False, show_fig=True, smooth_window=1, cache_path=None):
-    """
-    Plots local (neighbor) vs. random cosine similarity over time.
+    """Plots local (neighbor) vs. random cosine similarity over time.
 
     Positive local−random gap = semantic assortativity (entrainment).
     smooth_window > 1 applies a centered rolling average with ±1 SD band.
@@ -1118,8 +1096,7 @@ def plot_semantic_entrainment(network, agent_embs=None, mentalbert=True, path=""
 
 def plot_phq9_semantic_alignment(network, agent_embs=None, mentalbert=True, path="", filename="",
                                  save=False, show_fig=True, smooth_window=1, cache_path=None):
-    """
-    Tests whether PHQ-9 similarity predicts semantic similarity, split by neighbor status.
+    """Tests whether PHQ-9 similarity predicts semantic similarity, split by neighbor status.
     NOTE: this is a more direct test of the relationship between PHQ-9 and semantics than the echo chamber plot.
     mentalBERT already encodes some PHQ-9-related signals,
     so we expect a positive correlation between PHQ-9 similarity and semantic similarity even without entrainment.
@@ -1228,12 +1205,11 @@ def plot_phq9_semantic_alignment(network, agent_embs=None, mentalbert=True, path
 
 def plot_depression_echo_chamber(network, agent_embs=None, mentalbert=True, path="", filename="",
                                  save=False, show_fig=True, smooth_window=1, step=1, cache_path=None):
-    """
-    Three-panel figure testing whether semantic content drives depression echo chambers.
+    """Three-panel figure testing whether semantic content drives depression echo chambers.
 
-    Panel 1 — PHQ-9 assortativity + cross-agent PHQ-9 variance (twin axis).
-    Panel 2 — Depression-axis alignment (Pearson r: projection vs. PHQ-9).
-    Panel 3 — Depression-axis entrainment (local vs. random similarity on depression axis).
+    Panel 1, PHQ-9 assortativity + cross-agent PHQ-9 variance (twin axis).
+    Panel 2, Depression-axis alignment (Pearson r: projection vs. PHQ-9).
+    Panel 3, Depression-axis entrainment (local vs. random similarity on depression axis).
 
     Depression axis fitted with temporal cross-validation (split-half).
     smooth_window > 1 applies a centered rolling average with ±1 SD band.
@@ -1379,8 +1355,7 @@ def plot_depression_echo_chamber(network, agent_embs=None, mentalbert=True, path
 
 def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=True,
                             step=10, bin_size=50):
-    """
-    Standalone plot: PHQ-9 assortativity (left axis) + degree-weighted mean PHQ-9
+    """Standalone plot: PHQ-9 assortativity (left axis) + degree-weighted mean PHQ-9
     with cross-agent SE (right axis), shown as binned points with error bars.
 
     Computed every `step` timesteps (default 10 to match PHQ-9 update cycle).
@@ -1461,7 +1436,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
         bin_assort_mean.append(np.nanmean(a))
         bin_assort_std.append(np.nanstd(a))
 
-        # Degree-weighted PHQ-9: mean with min–max band (can't go negative)
+        # Degree-weighted PHQ-9: mean with min-max band (can't go negative)
         bin_dw_mean.append(np.nanmean(raw_dw_mean[sl]))
         bin_dw_min.append(np.nanmin(raw_dw_mean[sl]))
         bin_dw_max.append(np.nanmax(raw_dw_mean[sl]))
@@ -1491,7 +1466,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
     ax_left.grid(True, alpha=0.3)
     ax_left.set_title(f"PHQ-9 Assortativity & Degree-Weighted Mean{sfx}")
 
-    # Right axis: degree-weighted mean PHQ-9 with min–max band (always ≥ 0)
+    # Right axis: degree-weighted mean PHQ-9 with min-max band (always ≥ 0)
     ax_right = ax_left.twinx()
     ax_right.plot(bin_t, bin_dw_mean, 's--', color='firebrick', linewidth=1.2,
                   markersize=4, label='DW mean PHQ-9')
@@ -1523,8 +1498,7 @@ def plot_phq9_assortativity(network, path="", filename="", save=False, show_fig=
 
 def plot_phq9_neighbor_correlation(network, path="", filename="", save=False, show_fig=True,
                                    time_range=None):
-    """
-    Scatter of each agent's mean PHQ-9 vs. their neighbors' mean PHQ-9.
+    """Scatter of each agent's mean PHQ-9 vs. their neighbors' mean PHQ-9.
 
     A positive correlation means depressed agents are surrounded by depressed neighbors.
 
@@ -1599,11 +1573,12 @@ def plot_phq9_neighbor_correlation(network, path="", filename="", save=False, sh
 # ── Prompt optimizer plots ────────────────────────────────────────────────────
 
 def _phq9_severity_color(phq9: int) -> str:
-    if phq9 >= 20: return "#8B0000"   # severe — dark red
-    if phq9 >= 15: return "#D73027"   # moderately severe — red
-    if phq9 >= 10: return "#FC8D59"   # moderate — orange
-    if phq9 >= 5:  return "#FEE090"   # mild — yellow
-    return "#91CF60"                   # minimal — green
+    """Colour of a PHQ-9 score by severity band (green to dark red)."""
+    if phq9 >= 20: return "#8B0000"   # severe, dark red
+    if phq9 >= 15: return "#D73027"   # moderately severe, red
+    if phq9 >= 10: return "#FC8D59"   # moderate, orange
+    if phq9 >= 5:  return "#FEE090"   # mild, yellow
+    return "#91CF60"                   # minimal, green
 
 
 def plot_optimizer_trajectory(trajectory_csv: str, output_dir: str, title: str, mode: str = "tweets"):
@@ -1719,13 +1694,13 @@ def plot_test_mae_and_bias_by_phq9(per_phq9: dict, output_dir: str, title: str):
     """Side-by-side bars: MAE per PHQ-9 category (left) and signed bias (right).
 
     per_phq9 keys are integer PHQ-9 values; values must contain
-    ``avg_mae``, ``avg_bias``, ``std_bias``, and ``n_samples``.
+    `avg_mae`, `avg_bias`, `std_bias`, and `n_samples`.
 
-    The bias panel uses ``mean(pred − true)`` so positive bars mean the model
+    The bias panel uses `mean(pred − true)` so positive bars mean the model
     over-estimates the true score for that severity bracket, negative bars mean
     under-estimation. Error bars on both panels show the (weighted) std of
-    per-PHQ-9 averages within the category — same convention as
-    ``plot_test_scores_by_phq9``.
+    per-PHQ-9 averages within the category, same convention as
+    `plot_test_scores_by_phq9`.
     """
     categories = [
         ("Minimal\n(0–4)",       range(0,  5),  "#91CF60"),
@@ -1823,7 +1798,7 @@ MULTIMODEL_GENERATORS = [
 def plot_multimodel_band_bias(out_path: str, generators: list | None = None):
     """Per-band MAE and directional bias of the fine-tuned MentalBERT+MLP, per generator.
 
-    Multi-model counterpart of :func:`plot_test_mae_and_bias_by_phq9` in the SI
+    Multi-model counterpart of `plot_test_mae_and_bias_by_phq9` in the SI
     fine-tuning figure's style: (a) MAE per severity band, (b) signed bias per
     band. For each generator the regressor is the one fine-tuned on that
     generator's own posts, evaluated on that generator's own 300 held-out
@@ -2073,7 +2048,7 @@ _EVAL_C_FT = "#8d2c03"      # fine-tuned bar in figure 1         (SA "Neighbour"
 
 # Subdir under each prompt seed dir holding the OPTIMISED prompt scored on the
 # aligned synthetic test (the BERT regression test blocks, test_blocks_seed35.csv),
-# rather than the prompt's own optimisation split — see the alignment note above.
+# rather than the prompt's own optimisation split, see the alignment note above.
 _EVAL_PROMPT_SYNTH_SUBDIR = "eval_on_test_blocks_seed35"
 
 # Optional minimal-prompt bars in figure 2 (added only if scored on disk).
@@ -2123,7 +2098,7 @@ def _eval_aggregate(raw_csvs: list, label: str) -> dict:
 
 def _eval_aggregate_optional(raw_csvs: list, label: str):
     """Like _eval_aggregate but returns None (instead of raising) when no CSVs
-    are present — used for optional bars whose data may not be on disk yet."""
+    are present, used for optional bars whose data may not be on disk yet."""
     if not raw_csvs:
         return None
     return _eval_aggregate(raw_csvs, label)
@@ -2171,7 +2146,7 @@ def collect_eval_comparison(bert_dir: str, bert_ft_dir: str, prompt_dir: str,
             _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
                                    os.path.join(prompt_eval_subdir, "test_raw_scores.csv")), "Prompt(opt) / human-opt"),
     }
-    # Optional minimal-prompt group — added to figure 2 only if scored on disk.
+    # Optional minimal-prompt group, added to figure 2 only if scored on disk.
     minimal_synth = _eval_aggregate_optional(
         _eval_perseed_dir_csvs(prompt_dir, prompt_seeds,
                                os.path.join(_EVAL_MINIMAL_SYNTH_SUBDIR, "test_raw_scores.csv")),
@@ -2199,7 +2174,7 @@ def _eval_annotate(ax, x, height, err, pad, fmt="{:.2f}", fontsize=8):
 
 
 def _eval_set_ylim(ax, heights, errs, top_headroom=0.22, bot_headroom=0.16, floor_zero=False):
-    """Autoscale ignores text labels — expand limits so value/Δ annotations fit.
+    """Autoscale ignores text labels, expand limits so value/Δ annotations fit.
     floor_zero pins the bottom at 0 (for MAE, which is non-negative).
     Returns (ytop, range) for placing gap labels within the new headroom.
     """
@@ -2213,7 +2188,7 @@ def _eval_set_ylim(ax, heights, errs, top_headroom=0.22, bot_headroom=0.16, floo
 
 def _eval_style(ax, ylabel, caption):
     """Bias-zero line, y-grid, and the panel caption placed UNDERNEATH (as the
-    x-label, below the category ticks) — e.g. "(a) Mean absolute error"."""
+    x-label, below the category ticks), e.g. "(a) Mean absolute error"."""
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_ylabel(ylabel, fontsize=9)
     ax.set_xlabel(caption, fontsize=10, labelpad=8)
@@ -2223,7 +2198,7 @@ def _eval_style(ax, ylabel, caption):
 
 
 def plot_eval_finetune(stats: dict, out_path: str, err_mode: str = "sample"):
-    """Figure 1 — BERT regressor: fine-tuning recovers the distribution shift.
+    """Figure 1, BERT regressor: fine-tuning recovers the distribution shift.
     err_mode: "sample" (SD of per-sample errors) or "seed" (between-seed SD)."""
     order = ["bert_nonft_human", "bert_ft_human", "bert_nonft_synth"]
     xlabels = ["Non-finetuned\n(human-opt)",
@@ -2256,7 +2231,7 @@ def plot_eval_finetune(stats: dict, out_path: str, err_mode: str = "sample"):
 
 
 def plot_eval_bert_vs_prompt(stats: dict, out_path: str, err_mode: str = "seed"):
-    """Figure 2 — robustness to distribution shift: BERT vs the post-assessment prompt.
+    """Figure 2, robustness to distribution shift: BERT vs the post-assessment prompt.
     err_mode: "seed" (between-seed SD) or "sample" (SD of per-sample errors)."""
     from matplotlib.patches import Patch
 
@@ -2302,6 +2277,7 @@ def plot_eval_bert_vs_prompt(stats: dict, out_path: str, err_mode: str = "seed")
 
 
 def _print_eval_table(stats: dict):
+    """Print the MAE / bias table behind the estimator-comparison figures."""
     print(f"\n{'bar':<28}{'MAE':>8}{'±smpl':>8}{'±seed':>8}"
           f"{'bias':>9}{'±smpl':>8}{'±seed':>8}{'seeds':>7}{'n/seed':>8}")
     for v in stats.values():

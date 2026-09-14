@@ -1,3 +1,5 @@
+"""Save and load networks and TestLLMs runs as JSON (net.json, meta.json, checkpoints)."""
+"""Save and load networks and TestLLMs runs as JSON (net.json, meta.json, checkpoints)."""
 import json
 import datetime
 from classes.network import RandomNetwork, SocialDistanceAttachment
@@ -8,6 +10,7 @@ import numpy as np
 class NetworkEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle non-serializable objects like sets and numpy types."""
     def default(self, obj):
+        """Turn sets into lists and numpy scalars into Python numbers for JSON."""
         if isinstance(obj, set):
             return list(obj)
         if isinstance(obj, np.integer):
@@ -17,8 +20,7 @@ class NetworkEncoder(json.JSONEncoder):
         return super().default(obj)
 
 def read_in_network_properties(file_path):
-    """
-    Reads a network properties file and returns a dictionary of its properties.
+    """Reads a network properties file and returns a dictionary of its properties.
     Args:
         file_path (str): Path to the saved properties file.
     Returns:
@@ -88,7 +90,7 @@ def _write_meta_file(network, path_manager, args=None):
     # Out-clustering (Fagiolo 2007): among each node's out-neighbours, the
     # fraction of ordered pairs (j, k) closed by an arc j->k. This is the
     # directed "friend-of-a-friend" measure (path i->j->k closed by i->k) and is
-    # the meaningful clustering for a directed influence network — on these SDA
+    # the meaningful clustering for a directed influence network, on these SDA
     # graphs it runs ~half the undirected-projection `clustering`. For an
     # undirected graph in- and out-neighbourhoods coincide, so it reduces to the
     # ordinary clustering above.
@@ -177,28 +179,17 @@ def _write_meta_file(network, path_manager, args=None):
 
 
 def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, args=None):
-    """
-    Extracts and returns the properties of a network for analysis or storage.
-    Supports RandomNetwork, ScaleFreeNetwork, SocialDistanceAttachment.
-    Stores it in a dictionary, values can be accessed with the corresponding keys. 
-    Useful for effectively extracting network properties. 
+    """Collect a network's state into a JSON-ready dict (agents, edges, parameters, CDS series).
 
     Args:
-        network (object): The network object to extract properties from.
-        seed (int): The seed used for network generation.
+        network: the network object (RandomNetwork or SocialDistanceAttachment).
+        seed (int): seed used to build it.
+        dist_per_step, distorted_fracs: per-round CDS series recorded by the run loop.
+        args: run namespace, written into the dict when given.
 
     Returns:
-        dict: A dictionary containing the properties of the network:
-        - Number of Agents
-        - Number of Edges
-        - Seed
-        - Connections
-        - Agents
-        - P value (for RandomNetwork)
-        - Degree (k) (for RandomNetwork)
-        # - Initial Edges (m) (for ScaleFreeNetwork)
-        # - Total Degree (for ScaleFreeNetwork)
-        # - Degree Distribution (for ScaleFreeNetwork)
+        dict: number of agents and edges, seed, connections, per-agent state and the
+        network-type parameters.
     """
 
     agent_info = []
@@ -302,26 +293,17 @@ def read_out_network_properties(network, seed, dist_per_step, distorted_fracs, a
 
 
 def generate_network(args, pipe, file_path=None):
-    """
-    Load a single network from a saved properties file created by get_network_properties.
-
-    This fully reconstructs:
-    - topology (connections)
-    - per-agent state (persona, activation_state, tweet histories, frac_distorted_neigh,
-      neighbor_history)
-    - iterations counter
+    """Rebuild a network from a saved net.json: topology, per-agent state and the round counter.
 
     Args:
-        args: Argument namespace; only used to resolve the on-disk path via
-            ``PathManager`` when ``file_path`` is not given (may be None then).
-        pipe: Unused here (kept for call-site symmetry with the update path).
-        file_path (str | Path, optional): Explicit path to the saved net.json. When
-            provided, ``PathManager`` is bypassed so networks stored under
-            non-standard sub-directories (e.g. ``debiased/``, ``init_0/``) can be
-            loaded directly.
+        args: run namespace; only used to resolve the path through `PathManager` when
+            `file_path` is None.
+        pipe: unused, kept so the call matches the update path.
+        file_path (str | None): explicit net.json path; bypasses `PathManager` so runs
+            in non-standard folders (debiased/, init_0/) load too.
 
     Returns:
-        network: A reconstructed RandomNetwork or ScaleFreeNetwork instance.
+        RandomNetwork | SocialDistanceAttachment: the rebuilt network.
     """
     if file_path is None:
         pm = PathManager(args=args)
@@ -444,6 +426,7 @@ def generate_network(args, pipe, file_path=None):
 
 
 def log_network_state(network, seed, dist_per_step, distorted_fracs):
+    """Write the network's properties to disk and print where they went."""
     logged_path = read_out_network_properties(
         network, 
         seed, 
@@ -460,22 +443,20 @@ def log_network_state(network, seed, dist_per_step, distorted_fracs):
 
 def write_out_tester(tester, model_name: str, temp: float, top_p: float,
                      check_point: int, interaction: bool, mistake_dict: dict):
-    """
-    Serialise the full state of a :class:`TestLLMs` instance to a JSON file
-    so that a crashed run can be resumed exactly where it left off.
+    """Save the full state of a `TestLLMs` run to JSON so a crashed run can resume where it stopped.
 
-    Saved information
-    -----------------
-    - Run meta  : seed, num_agents, iterations, model_name, interaction flag
-    - PHQ-9 sequences: the per-agent permutation order + current index
-    - Per-agent : id, persona, well_being, tweethistory, all_phq9_sumscores,
-                  _tweets_since_phq9_update, activation_state
-    - mistake_dict : accumulated error dictionary so far
-    - RNG state : numpy bit-generator state (so sampling is reproducible)
+    Saves the run meta (seed, num_agents, iterations, model, interaction flag), the
+    per-agent PHQ-9 sequence order and index, per-agent state (persona, well-being,
+    histories, activation), `mistake_dict` and the numpy RNG state.
 
-    Returns
-    -------
-    str  – path the checkpoint was written to
+    Args:
+        tester: the TestLLMs instance.
+        model_name (str), temp (float), top_p (float), check_point (int), interaction (bool):
+            run settings that name the checkpoint folder.
+        mistake_dict (dict): accumulated errors so far.
+
+    Returns:
+        str: path the checkpoint was written to.
     """
     agent_info = []
     for agent in tester.all_agents:
@@ -492,7 +473,7 @@ def write_out_tester(tester, model_name: str, temp: float, top_p: float,
     # mistake_dict keys are ints; JSON only allows str keys
     serialisable_mistakes = {str(k): v for k, v in mistake_dict.items()}
 
-    # phq9_sequences / phq9_indices – keys are agent IDs (ints)
+    # phq9_sequences / phq9_indices - keys are agent IDs (ints)
     phq9_sequences = {str(k): v for k, v in tester.phq9_sequences.items()}
     phq9_indices   = {str(k): v for k, v in tester.phq9_indices.items()}
 
@@ -530,23 +511,21 @@ def write_out_tester(tester, model_name: str, temp: float, top_p: float,
 
 
 def read_in_tester(file_path: str) -> dict:
-    """
-    Load a raw checkpoint dictionary from *file_path*.
-    Raises ``FileNotFoundError`` if the file does not exist.
+    """Load a raw checkpoint dictionary from *file_path*.
+    Raises `FileNotFoundError` if the file does not exist.
     """
     with open(file_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_tester_checkpoint(file_path: str):
-    """
-    Reconstruct a :class:`TestLLMs` instance and its mistake_dict from a
-    checkpoint file written by :func:`write_out_tester`.
+    """Rebuild a `TestLLMs` instance and its mistake_dict from a `write_out_tester` checkpoint.
 
-    Returns
-    -------
-    tester       – fully-restored TestLLMs instance (no LLM loaded yet)
-    mistake_dict – accumulated error dict  {phq9_score: [errors]}
+    Args:
+        file_path (str): checkpoint JSON.
+
+    Returns:
+        tuple: (tester without an LLM loaded, mistake_dict {phq9_score: [errors]}).
     """
     # Lazy import avoids circular imports at module level
     from utils.create_data.test_phq9_llms import TestLLMs

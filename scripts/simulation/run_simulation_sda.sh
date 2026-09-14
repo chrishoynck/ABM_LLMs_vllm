@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full ABM simulation — calibrated SDA, undirected, debiased, HAPPY hub, 5 seeds.
+# Full ABM simulation, calibrated SDA, undirected, debiased, HAPPY hub, 5 seeds.
 # (run_simulation_sdc.sh is the SDC counterpart with the same settings.)
 #
 # Optimal SDC network parameters (sa_network --net sdc, averaged_best.csv, N=200, 5 seeds):
@@ -84,7 +84,7 @@ INIT_0=0               # 1 = start every agent at PHQ-9 0; 0 = sample the real d
 # DIRECTED=0             # 1 = directed SDA graph (asymmetric draw, no symmetrisation); 0 = undirected
 
 
-# # SDA directed k=3 — directed counterpart of the undirected 1_1655_d3_dim5 set.
+# # SDA directed k=3, directed counterpart of the undirected 1_1655_d3_dim5 set.
 # # Same topology params as "SDA 2026-06-14 active", only DIRECTED flipped on.
 # # To run: comment the "high phq-9" block above and uncomment this one.
 # # Note: k=3 here is the OUT-degree, so the projected graph is ~2x denser than

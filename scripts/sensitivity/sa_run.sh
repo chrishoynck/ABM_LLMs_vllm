@@ -104,7 +104,7 @@ done
 # the band's PHQ-9 values (not all pinned to one value).
 #
 # NUM_PHQ9_REPS unseeded replicates per band: agent/neighbour seeds are FIXED so
-# the personas and neighbour inputs are identical across reps — only the LLM
+# the personas and neighbour inputs are identical across reps, only the LLM
 # sampling varies. The within-band rep-to-rep cosine is therefore a PHQ-9-native
 # LLM-noise floor (the heatmap diagonal in sa_analyze.phq9_conditioning_heatmap),
 # no longer borrowed from the agent axis. Existing single-rep band data can be

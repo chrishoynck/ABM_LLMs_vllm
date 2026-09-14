@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""
-Velocity-of-contagion table (time-to-PHQ-9>=10) for undirected + debiased + main config.
+"""Velocity-of-contagion table: the round at which each config first reaches PHQ-9 >= 10.
 
-For each cell (setting x model) we build per-round trajectories of:
-  - degree-weighted mean PHQ-9  (matches metrics.degree_weighted_mean)
-  - plain mean PHQ-9
-  - fraction of agents with PHQ-9 >= 10
-averaged over the 5 seeds, then report the first round the *mean trajectory* crosses
-each threshold (or NR = not reached within the run). Per-seed diagnostics printed too.
-
-Run:  PYTHONPATH=src python src/utils/tools/velocity_table.py
+For each (setting x model) cell it builds per-round degree-weighted mean PHQ-9 (same
+weighting as `metrics.degree_weighted_mean`), plain mean PHQ-9 and the fraction of agents
+>= 10 over the 5 seeds, and reports the first crossing round per seed (mean +/- SD) and
+for the mean trajectory. Writes plots/velocity_table.tex. Run: see src/README.md.
 """
 import json
 import os
@@ -70,10 +65,12 @@ def first_crossing(series, thresh):
 
 
 def fmt(x):
+    """"NR" for a missing crossing, else the round as a string."""
     return "NR" if x is None else str(x)
 
 
 def main():
+    """Build the per-cell crossing table, print it and write the LaTeX table."""
     rows = []
     for set_dir, set_lab, model, cfg, cfg_lab, leaf in CELLS:
         base = os.path.join(ROOT, set_dir, model, "undirected", "debiased", cfg, ROUNDS_DIR, leaf)

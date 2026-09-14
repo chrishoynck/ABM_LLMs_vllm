@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
-# Prompt-axis sensitivity WITH replicates — per-prompt noise floor on the diagonal.
-#
-# The single-draw sa_prompt_run.sh heatmap has a TRIVIAL 1.0 diagonal: each prompt
-# was generated once, so "prompt vs itself" is the same posts (cosine 1.0). That
-# hides the real question — how much does a prompt move the output across DIFFERENT
-# unseeded LLM draws? This driver answers it by generating TOTAL_REPS unseeded
-# draws of EVERY prompt, with everything else fixed:
-#     * same personas        (--agent-seed 42, identical to sa_prompt_run.sh)
-#     * same neighbour posts (--neighbor-seed 42, identical to sa_prompt_run.sh)
-#     * same per-slot PHQ-9   (falls out of agent-seed)
-#     * LLM left UNSEEDED     (--nondeterministic; one fresh draw per rep)
-#
-# Each prompt is a "setting", each draw a "rep" — sa_analyze.py's exact within/cross
-# design. sa_analyze --prompt-reps then builds a heatmap whose DIAGONAL is the
-# within-prompt median cosine (the noise floor) and OFF-DIAGONAL is the
-# cross-prompt median.
-#
-# Layout (consumed by sa_embed + sa_analyze --prompt-reps):
-#     <ROOT>/<label>/rep_<N>/posts.csv      (+ embeddings.npz from sa_embed)
-# rep_1 of each prompt reuses the existing single draw in prompt_sa/<label>.csv.
-#
-# Guarded: any rep whose posts.csv exists is SKIPPED. So you can split this across
-# several job submissions — it resumes where it stopped. Run from the repo root
-# with the venv activated and a GPU session.
+# Prompt-axis sensitivity with replicates: TOTAL_REPS unseeded draws of every prompt,
+# everything else fixed (same agent and neighbour seeds as sa_prompt_run.sh). With
+# reps, the heatmap diagonal is the within-prompt noise floor instead of a trivial 1.0.
+# Layout: <ROOT>/<label>/rep_<N>/posts.csv; rep_1 reuses the single draw from
+# prompt_sa/<label>.csv. Existing reps are skipped. Then run sa_embed and
+# sa_analyze --prompt-reps. Run from the repo root, venv active, GPU session.
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"

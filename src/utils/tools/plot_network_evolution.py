@@ -1,54 +1,11 @@
-"""Regenerate the network-evolution figures for already-built (saved) runs.
+"""Redraw the network-evolution figures for saved runs, without the LLM or the notebook.
 
-A no-LLM, no-notebook driver for ``utils.network_evolution``: it loads saved
-``net.json`` checkpoints (the same files ``experiment.ipynb`` reads via
-``main(..., use_saved_network=0)`` / ``reading_in.generate_network``) and writes,
-for each run, the CDS-evolution graph + the compressed critical-slowing-down
-heatmaps + the 10-panel PHQ-9 network sequence (the same
-``vis.print_subnetworks_phq9`` filmstrip as the notebook) next to the checkpoint
-(in its ``plots/`` sub-directory), plus a CDS validation table to stdout.
-
-Figures are written idempotently: a figure whose PNG already exists is skipped
-(per figure, not per run — a run missing only one figure still gets that one
-drawn), and a run whose figures all exist is not even loaded. Pass
-``--overwrite`` to force a full redraw.
-
-Two ways to select runs:
-
-  * **Explicit parameters** — the same flags ``scripts/simulation/run_simulation_sda.sh`` uses
-    (``net``, ``--alpha/--degree/--dim`` for sda/sdc, ``--rounds``, ``--num_agents``,
-    ``--seeds``). The on-disk path is resolved through ``PathManager`` exactly as in
-    the simulation, so it lands on the standard checkpoints.
-
-        PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_network_evolution \\
-            sdc --alpha 4.9429 --degree 8.2539 --dim 3 \\
-            --rounds 300 --num_agents 100 --seeds 14 15 16 17 18
-
-  * **Scan a directory** — per-seed figures for every ``net.json`` under a root.
-    By default this covers the same universe as ``--grid`` (rounds=300, with the
-    ``debiased`` / ``old_debiased`` / ``old_pop`` / ``different_debias_settings``
-    sub-trees skipped), so every run that gets a combo grid also gets its
-    per-seed snapshot. Pass ``--scan_rounds 0`` and ``--exclude`` (no values) to
-    plot every checkpoint, non-standard sub-folders (``debiased/``, ``init_0/`` …)
-    and partial runs included:
-
-        PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_network_evolution \\
-            --scan data/networks_post/basis
-
-  * **Per-combination grids** (``--grid``) — group the discovered seeds by
-    parameter combination and write one combined 4-row grid per combo (mean
-    PHQ-9 + assortativity lines on top, then SD / lag-1 autocorrelation / PHQ-9
-    dot-grids; one column per seed; shared colourbar per row) into each combo's
-    ``plots/``. Defaults to the fully-finished runs only (rounds=300) and skips
-    the ``debiased`` / ``old_debiased`` / ``old_pop`` /
-    ``different_debias_settings`` sub-trees (the standard runs now live under
-    ``non_debiased/``, which is kept):
-
-        PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_network_evolution \\
-            --grid --scan data/networks_post/basis
-
-Run from the repo root with the project venv (see network-sa-python-env):
-``PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.plot_network_evolution ...``
+Loads net.json checkpoints and writes, per run, the CDS-evolution graph, the
+critical-slowing-down heatmaps and the PHQ-9 network filmstrip into the run's plots/
+folder; --grid, --phase, --phase_ts and --combined add the per-combination grids and
+phase portraits. Figures that already exist are skipped unless --overwrite. Select
+runs either with the simulation flags (net, --alpha/--degree/--dim, --seeds) or with
+--scan <root>. Run: scripts/plotting/run_plot_evolution.sh.
 """
 
 import argparse
@@ -61,21 +18,21 @@ import sys
 import matplotlib
 matplotlib.use("Agg")  # headless / cluster-safe; we only save figures
 
-# Allow running as a plain script as well as ``-m utils.tools...``.
+# Allow running as a plain script as well as `-m utils.tools...`.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import utils.network_evolution as nev
 import utils.tools.reading_in as ri
 from classes.network import _Network
 
-# Plotting only reads saved per-round histories — never the BERT regressor — so
+# Plotting only reads saved per-round histories, never the BERT regressor, so
 # neutralise the ~30 s GPU/CPU model load that generate_network triggers for
 # bert-mode checkpoints.
 _Network._init_bert_components = lambda self, *a, **k: None
 
 
 def _seed_figure_prefixes(opts):
-    """Per-seed figure prefixes ``visualize_run`` writes (for the skip pre-check)."""
+    """Per-seed figure prefixes `visualize_run` writes (for the skip pre-check)."""
     return ["cds_evolution", f"csd_heatmaps_w{opts.csd_window}",
             "network_snapshot_phq9"]
 
@@ -147,14 +104,14 @@ def _explicit_paths(opts):
 
 
 def _iter_filtered_nets(root, exclude, only_rounds):
-    """Yield ``net.json`` paths under `root`, filtered like grid mode.
+    """Yield `net.json` paths under `root`, filtered like grid mode.
 
     Drops paths with any `exclude` token as one of their path *segments* (segment
-    match, not substring, so ``debiased`` does not also knock out
-    ``non_debiased``), keeps only ``seed_*`` checkpoints, and — when `only_rounds`
-    is set — only those whose ``rounds<N>_N`` component matches (so only
-    fully-finished runs are kept). Shared by the per-seed ``--scan`` path and
-    ``--grid`` so both cover the same universe of runs.
+    match, not substring, so `debiased` does not also knock out
+    `non_debiased`), keeps only `seed_*` checkpoints, and, when `only_rounds`
+    is set, only those whose `rounds<N>_N` component matches (so only
+    fully-finished runs are kept). Shared by the per-seed `--scan` path and
+    `--grid` so both cover the same universe of runs.
     """
     exclude = set(exclude)
     for path in glob.glob(os.path.join(root, "**", "net.json"), recursive=True):
@@ -173,8 +130,8 @@ def _iter_filtered_nets(root, exclude, only_rounds):
 def _combos(root, exclude, only_rounds):
     """Map {combo_dir: [seed net.json]} under `root` (grid mode), with filtering.
 
-    A combo dir is the parent of a ``seed_*`` directory; selection matches
-    ``_iter_filtered_nets`` (excluded path segments / round count).
+    A combo dir is the parent of a `seed_*` directory; selection matches
+    `_iter_filtered_nets` (excluded path segments / round count).
     """
     out = {}
     for path in _iter_filtered_nets(root, exclude, only_rounds):
@@ -184,6 +141,7 @@ def _combos(root, exclude, only_rounds):
 
 
 def _slug(combo_dir, root):
+    """Folder path relative to root with separators and dots turned into underscores (for filenames)."""
     return os.path.relpath(combo_dir, root).replace(os.sep, "_").replace(".", "_")
 
 
@@ -236,9 +194,9 @@ def _run_grids(opts):
 # coloured by configuration.
 #
 # Configuration -> human label is keyed by the on-disk combo folder (the
-# ``<alpha>_<degree>_dim<dim>`` directory under each leaf), matching the thesis
+# `<alpha>_<degree>_dim<dim>` directory under each leaf), matching the thesis
 # table. Edit PHASE_LABELS to rename / re-map; any unmatched folder falls back to
-# a parameter-derived label. An ``init_0`` sub-tree (every agent starts at PHQ-9
+# a parameter-derived label. An `init_0` sub-tree (every agent starts at PHQ-9
 # 0) is suffixed automatically. PHASE_LABEL_ORDER only fixes legend / colour
 # order; labels not listed there are appended and still get a colour.
 
@@ -269,7 +227,7 @@ PHASE_LABEL_ORDER = [
 # Combos to keep OUT of the phase portraits (matched as path segments, so they
 # are skipped wherever they appear). The init_0 (all start at PHQ-9 0) sub-tree
 # and sda/.../1_1655_d4_5_dim5 (a bad "low C" run) are excluded by request, as
-# are the SDA high-PHQ-9 probes (2_1655_d4_5_dim3, 1_1655_d4_5_dim3 "low C") —
+# are the SDA high-PHQ-9 probes (2_1655_d4_5_dim3, 1_1655_d4_5_dim3 "low C"),
 # dropped from the figure by request. The SDC high-PHQ-9-assortativity probe
 # (8_0_d8_2539_dim2) is kept (shown as "high PHQ-9$_\rho$").
 PHASE_SKIP_SEGMENTS = ["init_0", "1_1655_d4_5_dim5",
@@ -289,10 +247,10 @@ PHASE_SMOOTH = 5
 
 
 def _phase_label(net, combo_dir, leaf):
-    """Human config label for a combo dir under ``leaf`` (a directed/debias leaf).
+    """Human config label for a combo dir under `leaf` (a directed/debias leaf).
 
     The combo's first path segment relative to the leaf is the config folder; an
-    ``init_0`` segment (all agents start at PHQ-9 0) adds a suffix.
+    `init_0` segment (all agents start at PHQ-9 0) adds a suffix.
     """
     rel = os.path.relpath(combo_dir, leaf).split(os.sep)
     cfg = rel[0]
@@ -322,7 +280,7 @@ PHASE_LABEL_COLORS = {
 def _phase_color_map(labels):
     """Stable {label: colour}: canonical order first, then any extras.
 
-    Known labels use the fixed sa_analyze palette (``PHASE_LABEL_COLORS``); any
+    Known labels use the fixed sa_analyze palette (`PHASE_LABEL_COLORS`); any
     unlisted label falls back to the next palette colour.
     """
     ordered = ([l for l in PHASE_LABEL_ORDER if l in labels]
@@ -345,11 +303,11 @@ PHASE_DEGREE0_COMBO = "2_1655_d0_dim5"
 
 def _load_cell_trajs(net, leaf, exclude, grid_rounds, check_point,
                      only_combos=None):
-    """Per-seed trajectories under a directed/debias ``leaf`` for ``net``.
+    """Per-seed trajectories under a directed/debias `leaf` for `net`.
 
-    Each trajectory is the dict consumed by ``plot_phase_grid`` plus a
-    ``baseline`` flag (True for edge-less degree-0 runs, which are
-    topology-independent). ``only_combos`` (a set of config-folder names)
+    Each trajectory is the dict consumed by `plot_phase_grid` plus a
+    `baseline` flag (True for edge-less degree-0 runs, which are
+    topology-independent). `only_combos` (a set of config-folder names)
     restricts loading to those configs.
     """
     trajs = []
@@ -469,12 +427,12 @@ PHASE_TS_DEBIAS_COLS = [("debiased", "Debiased"), ("non_debiased", "Non-debiased
 def _aggregate_ts_cell(leaf, cfg, check_point):
     """Across-seed mean/SD PHQ-9 + assortativity time series for one cell.
 
-    Loads every ``rounds300_N100`` seed of the calibrated config ``cfg`` under the
-    directed/debias ``leaf`` (the rounds-300 run holds the full 0..300 trajectory),
+    Loads every `rounds300_N100` seed of the calibrated config `cfg` under the
+    directed/debias `leaf` (the rounds-300 run holds the full 0..300 trajectory),
     computes the per-assessment degree-weighted mean PHQ-9, unweighted mean PHQ-9
     and PHQ-9 assortativity for each seed, then reduces across seeds to mean ± SD
-    (``np.nanstd``, matching the phase grid). Returns the aggregate dict consumed
-    by :func:`nev.plot_phq9_assort_timeseries_grid`, or None when no seed loads.
+    (`np.nanstd`, matching the phase grid). Returns the aggregate dict consumed
+    by `nev.plot_phq9_assort_timeseries_grid`, or None when no seed loads.
     """
     seed_jsons = sorted(glob.glob(
         os.path.join(leaf, cfg, "rounds300_N100", "seed_*", "net.json")))
@@ -510,7 +468,7 @@ def _run_phase_ts(opts):
 
     One figure per direction -- a "directed" and a "non directed" plot. Each is a
     2x2 grid: rows are the network types (SDA, SDC), columns are the debiased /
-    non-debiased conditions (see ``PHASE_TS_DEBIAS_COLS``). Each cell is the across-seed
+    non-debiased conditions (see `PHASE_TS_DEBIAS_COLS`). Each cell is the across-seed
     PHQ-9 score + assortativity time series of that network's calibrated ("main")
     config.
     """
@@ -563,8 +521,8 @@ def _run_phase_ts(opts):
 def _combined_seed_paths(leaf, cfg, grid_rounds):
     """Seed net.json paths for one calibrated config under a directed leaf.
 
-    Globs ``<leaf>/<cfg>/**/seed_*/net.json``, drops the ``init_0`` (all start at
-    PHQ-9 0) variant, and — when ``grid_rounds`` is set — keeps only that round
+    Globs `<leaf>/<cfg>/**/seed_*/net.json`, drops the `init_0` (all start at
+    PHQ-9 0) variant, and, when `grid_rounds` is set, keeps only that round
     count. Returns them sorted (seed order).
     """
     base = os.path.join(leaf, cfg)
@@ -643,6 +601,7 @@ def _run_combined(opts):
 
 
 def main():
+    """Parse args, select the runs and draw the requested figures."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
@@ -773,7 +732,7 @@ def main():
         paths = _explicit_paths(opts)
         if not paths:
             # No checkpoints for this parameter set is a normal "nothing to do"
-            # outcome when looping run_simulation_sda.sh configs — exit cleanly so a
+            # outcome when looping run_simulation_sda.sh configs, exit cleanly so a
             # `set -e` shell loop moves on to the next config.
             print("No matching checkpoints found for the given parameters — skipping.")
             return

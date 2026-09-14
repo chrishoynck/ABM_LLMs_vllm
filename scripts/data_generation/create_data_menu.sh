@@ -18,7 +18,7 @@ NUM_AGENTS=7
 # Reads iter_N/prompt.txt, samples NUM_AGENTS persona-PHQ9 pairs from the eval
 # CSV with sample_seed=N, generates check_point (default 10) cold-start posts
 # per agent, writes posts.csv + feedback.md scaffold into iter_N/. LLM sampling
-# is non-deterministic by design — re-running produces fresh posts so you can
+# is non-deterministic by design, re-running produces fresh posts so you can
 # eyeball variability before locking in a prompt change.
 PYTHONPATH=src python -m utils.create_data.generate_posts_opt_h \
     --prompt-file "data/prompt_optimization_h/${RUN_NAME}/iter_${ITER}/prompt.txt" \

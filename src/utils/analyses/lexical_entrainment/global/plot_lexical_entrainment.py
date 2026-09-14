@@ -1,39 +1,11 @@
-"""Per-seed lexical-entrainment trajectories on MentalBERT embeddings.
+"""Per-seed lexical-entrainment trajectories of saved runs, embedded with MentalBERT.
 
-Each saved run (``net.json``) is embedded with MentalBERT (mean-pooled per
-sliding time window); the per-window mean-embedding trajectory is reduced to 2D
-(PCA by default) and drawn as a scatter, every window a dot coloured by its mean
-PHQ-9 (green->red). Runs are NOT averaged: one trajectory per seed. This is the
-"entrainment plot" — panel (a) of ``vis.plot_embedding_PCA_runs`` — with the
-assortativity / degree-weighted-PHQ-9 panel dropped.
-
-The four settings are the calibrated, debiased configs SDA/SDC × undirected/
-directed; columns/seeds default to 14 15 16 17 18.
-
-Output (under ``plots/lexical_entrainment/`` at the repo root):
-
-  * per-setting overlay  — all seeds of one setting in one shared-PCA axes
-    (``<net>_<dir>_<emb>_<red>_overlay.png``), one PCA fit per setting on its
-    pooled seeds, no seed legend.
-  * per-seed grid        — topology (rows) x seed (cols); each panel is ONE seed
-    in its OWN PCA (no pooling across seeds), so panels show each run's best-fit
-    shape but are not comparable across panels
-    (``entrainment_grid_perseed_<emb>_<red>.png``).
-  * SDA+SDC shared map   — one PCA per direction pooling SDA & SDC (calibrated +
-    high degree), so the two network types share axes; group = marker, colour =
-    PHQ-9 (``entrainment_shared_sda_sdc_<emb>_<red>.png``). Disable with
-    ``--no-shared``.
-
-Run from the repo root with the project venv (sentence-transformers / torch)::
-
-    PYTHONPATH=src .venv_vllm/bin/python \\
-        -m utils.analyses.lexical_entrainment.global.plot_lexical_entrainment \\
-        --scan data/networks_post/basis
-
-The first run encodes tweets with MentalBERT (GPU recommended) and caches them
-per-seed under ``plots/lexical_entrainment/cache/<net>_<dir>_<combo>/``; later
-runs reuse the cache. ``--overwrite`` redraws existing figures; ``--reduction
-umap`` and ``--sbert`` are escape hatches (the pipeline stays embedding-agnostic).
+Each saved run is embedded per sliding time window, the window means are reduced to
+2D (PCA by default) and drawn as one trajectory per seed, coloured by mean PHQ-9.
+Three figures under plots/lexical_entrainment/: a per-setting overlay of all seeds,
+a topology x seed grid (each panel its own PCA), and one shared SDA+SDC map per
+direction (--no-shared skips it). The first run encodes posts (GPU recommended) and
+caches them per seed; later runs reuse the cache. Run: scripts/plotting/run_lexical_entrainment.sh.
 """
 
 import argparse
@@ -46,7 +18,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # headless / cluster-safe; we only save figures
 
-# Allow running as a plain script as well as ``-m utils.analyses...``.
+# Allow running as a plain script as well as `-m utils.analyses...`.
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")))
 
@@ -101,7 +73,7 @@ def _encode_means(paths_with_seeds, num_steps, shift, mentalbert, cache_dir):
 
     Returns (seeds, means, phq9s): means[i] is (T, dim), phq9s[i] is (T,). The
     cache_dir keys files by seed only, so it MUST be unique per (net, direction,
-    combo) — different combos share seed numbers but have different tweets.
+    combo), different combos share seed numbers but have different tweets.
     """
     seeds = [s for s, _ in paths_with_seeds]
     nets = [{"network": ri.generate_network(args=None, pipe=None, file_path=p)[0]}
@@ -130,7 +102,7 @@ def _reduce(means, reduction):
 def _reduce_each(means, reduction):
     """Per-run reduction: each matrix is fit on ITSELF (its own PCA), no pooling.
 
-    Used for the per-seed grid — every panel shows one run in its own best-fit 2D
+    Used for the per-seed grid, every panel shows one run in its own best-fit 2D
     space, so the axes are not comparable across panels (that's the point).
     """
     return [_reduce([m], reduction)[0] for m in means]
@@ -183,6 +155,7 @@ def _run_shared(opts, out_dir, emb_name, emb_slug, red_name):
 
 
 def main():
+    """Parse args, embed the selected runs (cached) and draw the entrainment figures."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scan", default="data/networks_post/basis",

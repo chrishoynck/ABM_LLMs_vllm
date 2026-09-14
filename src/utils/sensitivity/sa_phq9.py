@@ -1,46 +1,11 @@
-"""Block-level PHQ-9 sensitivity analysis via the MentalBERT + MLP regressor.
+"""PHQ-9 sensitivity analysis in regressor space: how much does each SA axis move the predicted score?
 
-Rationale
----------
-Raw MentalBERT cosine is anisotropic (frequent-token dominated), so it is a poor
-instrument for *content* sensitivity — that axis is better served by SBERT
-(``sa_embed --sbert`` -> ``embeddings_sbert.npz`` -> ``sa_analyze --emb-name``).
-For the PHQ-9 axis we instead push the embeddings through the supervised
-regressor, whose MLP learns its own metric and is unaffected by the anisotropy
-critique. The signal here is the **raw (non-rounded) predicted PHQ-9 score**.
-
-What it does
-------------
-Reuses the per-post mean-pooled MentalBERT vectors already on disk
-(``embeddings.npz`` written by ``sa_embed``): groups each run's posts by agent
-(= one PHQ-9 "block"), builds the ``(mean ∥ max ∥ std)`` centroid the regressor
-was trained on, and runs the best fine-tuned regressor (seed 35, test MAE 2.76)
-to get one raw predicted PHQ-9 per block. No re-encoding — the centroid is built
-straight from ``embeddings.npz``, filtering NO_POST/NO_TWEET/empty posts via the
-stored ``texts`` exactly as ``eval_bert_on_csv``.
-
-It then runs the same within- vs cross-setting comparison as ``sa_analyze`` but
-on ``|Δ predicted PHQ-9|`` (points) instead of cosine:
-
-    within-setting |Δ| = irreducible LLM stochasticity (3 reps, same seeds)
-    cross-setting  |Δ| = effect of varying the axis, with LLM noise mixed in
-
-Interpretation flips relative to cosine: here within ≈ small, and if cross > within
-the axis moves the *predicted depression severity* more than LLM noise alone.
-
-Outputs (default ``data/sensitivity/plots_phq9/``):
-    <axis>_phq9_pred.csv       - one row per (setting, rep, agent): raw_pred, true_phq9, band
-    <axis>_phq9_delta.csv      - one row per pair: within|cross, band, |Δ pred|
-    <axis>_phq9_summary.csv    - mean ± std |Δ| per (band, within|cross)
-    axes_comparison.png        - cross-axis box + forest on |Δ predicted PHQ-9|
-Plus a ``phq9_pred.csv`` next to each run's ``embeddings.npz``.
-
-Usage::
-
-    PYTHONPATH=src python -m utils.sensitivity.sa_phq9
-    PYTHONPATH=src python -m utils.sensitivity.sa_phq9 --axes neighbor agent joint
-    PYTHONPATH=src python -m utils.sensitivity.sa_phq9 --regressor <path/regressor.pt>
-    PYTHONPATH=src python -m utils.sensitivity.sa_phq9 --agent-pairing slot  # match sa_analyze
+Reuses the per-post MentalBERT vectors from sa_embed, builds each block's
+(mean | max | std) centroid, runs the fine-tuned regressor (seed 35) and gets one raw
+predicted PHQ-9 per block. Then the same within- vs cross-setting comparison as
+sa_analyze, on |delta predicted PHQ-9| instead of cosine: if cross > within, the axis
+moves predicted severity more than LLM noise alone. Outputs under
+data/sensitivity/plots_phq9/. Run: see src/README.md (Hand-run CLIs).
 """
 
 from __future__ import annotations
@@ -168,10 +133,10 @@ def predict_phq9(regressor, root: str, device: torch.device,
                  emb_name: str = "embeddings.npz",
                  write_per_run: bool = True) -> dict:
     """Return {(band, rep): per-block DataFrame} for the PHQ-9 conditioning runs
-    under ``root/phq9/<band>/rep_*/<emb_name>``. Band plays the role of setting,
+    under `root/phq9/<band>/rep_*/<emb_name>`. Band plays the role of setting,
     so phq9_within_cross (paired=True) gives within = same band / different rep
     (LLM-noise floor) and cross = same persona re-conditioned on a different band.
-    Mirrors ``predict_axis`` but for the band/rep layout (with the legacy
+    Mirrors `predict_axis` but for the band/rep layout (with the legacy
     single-dir fallback)."""
     paths = sorted(glob.glob(os.path.join(root, "phq9", "*", "rep_*", emb_name)))
     if not paths:
@@ -195,10 +160,10 @@ def predict_phq9(regressor, root: str, device: torch.device,
 def _assert_slot_phq9_consistent(preds: dict, axis: str) -> None:
     """Fail loudly if slot (agent_id) -> true_phq9 differs across settings.
 
-    Per-slot pairing (``--agent-pairing slot``) on the agent axis is only valid
-    when generation used ``--stratify-phq9`` so that slot i carries the same
+    Per-slot pairing (`--agent-pairing slot`) on the agent axis is only valid
+    when generation used `--stratify-phq9` so that slot i carries the same
     PHQ-9 in every setting (only the persona text differs). Mirrors the same
-    guard in ``sa_analyze.agent_cosines`` so the two analyses stay comparable.
+    guard in `sa_analyze.agent_cosines` so the two analyses stay comparable.
     """
     ref = None
     ref_key = None
@@ -219,11 +184,11 @@ def phq9_within_cross(preds: dict, paired: bool) -> pd.DataFrame:
     """Pairwise |Δ raw_pred|, labelled within/cross and stratified by PHQ-9 band.
 
     paired=True  (neighbour / joint / decoding, or the agent axis under
-        ``--agent-pairing slot``): the agent_id slot is shared across settings,
+        `--agent-pairing slot`): the agent_id slot is shared across settings,
         so cross pairs the SAME slot across settings. On the agent axis this is
         only valid when generation used --stratify-phq9 (slot i keeps its PHQ-9,
         only the persona text differs); it matches sa_analyze.agent_cosines.
-    paired=False (agent axis under the default ``--agent-pairing band``): the
+    paired=False (agent axis under the default `--agent-pairing band`): the
         personas differ per setting, so cross pairs DIFFERENT agents in the same
         PHQ-9 band (mirrors the legacy agent_cosines_centroid).
     The within branch is identical either way: same agent, same setting, diff reps.
@@ -293,6 +258,7 @@ def phq9_within_cross(preds: dict, paired: bool) -> pd.DataFrame:
 # =====================================================================
 
 def main():
+    """Parse args, score every run's blocks with the regressor and write the per-axis tables and figure."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default="data/sensitivity",
@@ -375,7 +341,7 @@ def main():
             print(pivot.round(4))
 
         # For the cross-axis comparison figure every axis must be slot-paired so
-        # the per-agent anchor (agent_a) is well defined — band-matched cross
+        # the per-agent anchor (agent_a) is well defined, band-matched cross
         # pairs join DIFFERENT agents and share no anchor. Reuse `delta` when it
         # is already slot-paired, otherwise recompute it slot-paired.
         if paired:

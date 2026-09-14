@@ -1,34 +1,12 @@
-"""Sensitivity analysis: cosine within-setting vs cross-setting, stratified by PHQ-9.
+"""Sensitivity analysis of generated posts: within-setting vs cross-setting cosine, per PHQ-9 band.
 
-For each axis (neighbour, agent, joint, decoding):
-    - within-setting cosine = baseline of irreducible LLM stochasticity
-      (3 unseeded replicates of the same (agent_seed, neighbor_seed)).
-    - cross-setting cosine  = effect of varying the axis, with LLM noise
-      mixed in.
-If cross < within, the axis moves outputs more than LLM noise alone — the axis
-matters. If cross ≈ within, the axis is undetectable above baseline noise.
-
-Two comparison units, picked per axis:
-
-    NEIGHBOUR axis: same 60 agents across all 4 settings. So for every
-        (agent_id, round) anchor we have 4 × 3 = 12 post embeddings. Compute
-        paired per-anchor cosine, then aggregate.
-
-    AGENT axis: different 60 agents per setting. So no paired comparison.
-        Aggregate each agent's 10 posts into a centroid (mean), then compare
-        within-setting (same agent across reps) vs cross-setting (different
-        agents in same PHQ-9 band).
-
-Stratify both into the 5-band PHQ-9 buckets used elsewhere in the project
-(Minimal 0-4 / Mild 5-9 / Moderate 10-14 / Mod. Severe 15-19 / Severe 20-27).
-
-Outputs to ``data/sensitivity/plots/``:
-    {neighbor,agent}_cosines.csv        - one row per pair
-    {neighbor,agent}_summary.csv        - mean ± std per (band, within|cross)
-
-Usage::
-
-    PYTHONPATH=src python -m utils.sensitivity.sa_analyze
+For each axis (neighbour, agent, joint, decoding), within-setting cosine over 3
+unseeded replicates is the LLM-noise floor and cross-setting cosine is the axis effect
+plus that noise; if cross < within the axis moves the output more than LLM noise
+alone. Neighbour axis: same agents everywhere, so pairs are per (agent, round) anchor;
+agent axis: different agents, so per-agent centroids within one PHQ-9 band. Also the
+PHQ-9 band ladder, the decoding probes and the prompt-robustness figures.
+Outputs: data/sensitivity/plots/. Run: see docs/SCRIPTS.md and src/README.md.
 """
 
 from __future__ import annotations
@@ -57,6 +35,7 @@ BAND_LABELS = [b[2] for b in PHQ9_BANDS]
 
 
 def phq9_to_band(score: int) -> str:
+    """Map a PHQ-9 score to its band label ("?" when out of range)."""
     for lo, hi, label, _ in PHQ9_BANDS:
         if lo <= score <= hi:
             return label
@@ -71,9 +50,9 @@ def cosine_rows(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def mean_pairwise_cos(embs: np.ndarray) -> float:
-    """Mean cosine over all distinct pairs of rows in ``embs`` (a set's internal
+    """Mean cosine over all distinct pairs of rows in `embs` (a set's internal
     similarity). O(n) via the normalised-sum identity
-    ``mean_{i≠j} x_i·x_j = (‖Σ x̂‖² − n) / (n(n−1))`` rather than the n² loop."""
+    `mean_{i≠j} x_i·x_j = (‖Σ x̂‖² − n) / (n(n−1))` rather than the n² loop."""
     if embs.shape[0] < 2:
         return float("nan")
     X = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12)
@@ -97,9 +76,9 @@ def _parse_setting(token: str):
 def load_axis_runs(root: str, axis: str, emb_name: str = "embeddings.npz") -> dict:
     """Return {(setting, rep): {embeddings, agent_ids, rounds, phq9}}.
 
-    ``setting`` is an int for seed-labelled axes, a str for the decoding axis.
-    ``emb_name`` selects the encoder's .npz (``embeddings.npz`` = MentalBERT,
-    ``embeddings_sbert.npz`` = SBERT for the content/topic axis).
+    `setting` is an int for seed-labelled axes, a str for the decoding axis.
+    `emb_name` selects the encoder's .npz (`embeddings.npz` = MentalBERT,
+    `embeddings_sbert.npz` = SBERT for the content/topic axis).
     """
     paths = sorted(glob.glob(os.path.join(root, axis, "setting_*", "rep_*", emb_name)))
     runs = {}
@@ -119,12 +98,12 @@ def load_axis_runs(root: str, axis: str, emb_name: str = "embeddings.npz") -> di
 
 def load_phq9_runs(root: str, emb_name: str = "embeddings.npz") -> dict:
     """Return {(band, rep): {embeddings, agent_ids, rounds, phq9}} for the PHQ-9
-    conditioning runs under ``root/phq9/<band>/rep_*/<emb_name>``.
+    conditioning runs under `root/phq9/<band>/rep_*/<emb_name>`.
 
-    Keyed so it drops straight into ``neighbor_cosines`` with the band playing
+    Keyed so it drops straight into `neighbor_cosines` with the band playing
     the role of "setting": within = same band, different reps (the LLM-noise
     floor); cross = different bands (the conditioning effect). Falls back to the
-    legacy single-dir layout (``phq9/<band>/<emb_name>``, rep 1) when no rep_*
+    legacy single-dir layout (`phq9/<band>/<emb_name>`, rep 1) when no rep_*
     dirs exist.
     """
     paths = sorted(glob.glob(os.path.join(root, "phq9", "*", "rep_*", emb_name)))
@@ -147,7 +126,7 @@ def load_phq9_runs(root: str, emb_name: str = "embeddings.npz") -> dict:
 
 
 # =====================================================================
-# NEIGHBOUR AXIS — paired per-(agent, round) cosine
+# NEIGHBOUR AXIS, paired per-(agent, round) cosine
 # =====================================================================
 
 def neighbor_cosines(runs: dict) -> pd.DataFrame:
@@ -212,11 +191,11 @@ def neighbor_cosines(runs: dict) -> pd.DataFrame:
 
 
 # =====================================================================
-# AGENT AXIS — paired per-(slot, round) cosine
+# AGENT AXIS, paired per-(slot, round) cosine
 #
 # Requires --stratify-phq9 at generation time so that slot i has the same
 # PHQ-9 in every setting. The persona at slot i still differs across
-# settings — that's precisely what the cross-setting cosine isolates,
+# settings, that's precisely what the cross-setting cosine isolates,
 # with neighbour-input and PHQ-9 held constant.
 #
 # Kept below as `agent_cosines_centroid` is the older per-agent-centroid +
@@ -229,7 +208,7 @@ def agent_cosines(runs: dict) -> pd.DataFrame:
     runs to have been generated with --stratify-phq9 so that slot agent_id=i
     carries the same PHQ-9 in every setting (only the persona differs).
 
-    Fails loudly if the PHQ-9 vector differs across settings at slot 0 — that
+    Fails loudly if the PHQ-9 vector differs across settings at slot 0, that
     means stratification wasn't applied at generation time, in which case
     pair-by-slot is meaningless and you should use `agent_cosines_centroid`.
     """
@@ -341,8 +320,8 @@ def phq9_conditioning_matrix(root: str, out_dir: str,
     "how much do outputs change when the same persona/neighbour input is
     re-conditioned on a different PHQ-9 band?".
 
-    ``diag_floor`` (optional ``{band: cosine}``) supplies the diagonal: the
-    LLM-noise floor — the cosine you'd get by repeating the SAME band with
+    `diag_floor` (optional `{band: cosine}`) supplies the diagonal: the
+    LLM-noise floor, the cosine you'd get by repeating the SAME band with
     everything fixed (only the seed changes). The PHQ-9 runs have no repeats, so
     this is borrowed from the agent axis's per-band within-setting cosine (same
     model + baseline decoding). Off-diagonal < diagonal ⇒ re-conditioning moves
@@ -436,13 +415,13 @@ def phq9_conditioning_matrix(root: str, out_dir: str,
 def _per_anchor_drops(df: pd.DataFrame, value_col: str = "cosine",
                       anchor_cols=("agent_id", "round"),
                       drop_sign: float = 1.0) -> pd.Series:
-    """For each anchor (grouped by ``anchor_cols``), drop =
-    ``drop_sign * (mean within − mean cross)`` of ``value_col``. One value per
-    anchor — the distribution this returns is what the box plot visualises.
+    """For each anchor (grouped by `anchor_cols`), drop =
+    `drop_sign * (mean within − mean cross)` of `value_col`. One value per
+    anchor, the distribution this returns is what the box plot visualises.
 
     Defaults give the cosine within−cross drop (axis moves output more than LLM
-    noise ⇒ positive). The MentalBERT+MLP figure passes ``value_col='delta'``
-    with ``drop_sign=-1`` so the box shows cross−within of |Δ predicted PHQ-9|
+    noise ⇒ positive). The MentalBERT+MLP figure passes `value_col='delta'`
+    with `drop_sign=-1` so the box shows cross−within of |Δ predicted PHQ-9|
     (factor pushes predicted severity past noise ⇒ positive)."""
     grouped = df.groupby(list(anchor_cols))
     drops = []
@@ -459,8 +438,8 @@ def _per_anchor_null_drops(df: pd.DataFrame, rng: np.random.Generator,
                            n_per_anchor: int = 20, value_col: str = "cosine",
                            anchor_cols=("agent_id", "round")) -> np.ndarray:
     """For each anchor, compute the magnitude of a 'null drop' = |mean(half1) − mean(half2)|
-    on random half-splits of that anchor's within-setting ``value_col`` values. This is the
-    drop you'd see if the axis under test had NO effect — just LLM stochasticity.
+    on random half-splits of that anchor's within-setting `value_col` values. This is the
+    drop you'd see if the axis under test had NO effect, just LLM stochasticity.
     """
     nulls = []
     for _, sub in df[df.pair_type == "within"].groupby(list(anchor_cols)):
@@ -486,11 +465,11 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     at the null median on both panels. Anything above the line exceeds
     irreducible LLM stochasticity.
 
-    ``value_col`` / ``anchor_cols`` / ``drop_sign`` / ``ylabel`` let the same
+    `value_col` / `anchor_cols` / `drop_sign` / `ylabel` let the same
     figure render either the cosine within−cross drop (defaults) or the
     MentalBERT+MLP |Δ predicted PHQ-9| cross−within drop (sa_phq9 passes
-    ``value_col='delta', ylabel='|Δ predicted PHQ-9|',
-    anchor_cols=('agent_a',), drop_sign=-1``)."""
+    `value_col='delta', ylabel='|Δ predicted PHQ-9|',
+    anchor_cols=('agent_a',), drop_sign=-1`)."""
     rng = np.random.default_rng(seed)
     names = list(axis_dfs.keys())
     # Colour scheme tied to the agent_phq9_combined plot:
@@ -501,8 +480,8 @@ def comparison_combined(axis_dfs: dict, out_path: str,
         "Neighbour": "#8d2c03",
         "Agent":     "#2e7ebc",
         "Joint":     "#d96907",
-        "Decoding":  "#2e8b57",   # sea green — temperature/top_p axis
-        "PHQ-9":     "#6a3d9a",   # purple — depression-severity conditioning axis
+        "Decoding":  "#2e8b57",   # sea green, temperature/top_p axis
+        "PHQ-9":     "#6a3d9a",   # purple, depression-severity conditioning axis
     }
     colours = [_COLOUR_BY_NAME.get(n, "#7f7f7f") for n in names]
 
@@ -520,7 +499,7 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     # per anchor are tightly correlated (same persona, same round), so resampling
     # rows treats correlated observations as independent and shrinks CIs
     # artificially. Resampling anchors gives CIs that reflect how much the mean
-    # would shift if a different 60 agents had been drawn — the actual
+    # would shift if a different 60 agents had been drawn, the actual
     # generalisation question.
     means, los, his = [], [], []
     for name, anchor_drops in zip(names, drops):
@@ -598,12 +577,12 @@ def comparison_combined(axis_dfs: dict, out_path: str,
 
 
 # =====================================================================
-# DECODING axis — per-setting CENTROID-shift comparison.
+# DECODING axis, per-setting CENTROID-shift comparison.
 #
 # The within−cross noise-floor design used for the structural axes is INVALID
 # here: temperature / top_p change the LLM's own rep-to-rep stochasticity, so a
 # higher-temperature setting scatters more and drags cross cosine down even when
-# the content has not shifted — there is no single, shared noise floor. Instead
+# the content has not shifted, there is no single, shared noise floor. Instead
 # we average each setting's reps into a per-anchor centroid (cancelling per-run
 # scatter) and compare baseline-centroid vs variant-centroid. The "no-shift"
 # reference is a noise-matched permutation null (re-split of the SAME pooled
@@ -623,8 +602,8 @@ _DECODING_GROUPS = [
 def _anchor_centroids(runs: dict):
     """Stack each setting's per-rep embeddings for every common anchor.
 
-    Returns ``(settings, reps, per_anchor)`` where ``per_anchor`` maps
-    ``(agent_id, round) -> {setting: ndarray (n_reps, dim)}``, keeping only
+    Returns `(settings, reps, per_anchor)` where `per_anchor` maps
+    `(agent_id, round) -> {setting: ndarray (n_reps, dim)}`, keeping only
     anchors present in every run."""
     settings = sorted({s for (s, _) in runs.keys()})
     reps = sorted({r for (_, r) in runs.keys()})
@@ -666,7 +645,7 @@ def _perm_null_centroid_cos(base: np.ndarray, var: np.ndarray) -> float:
     Pool the baseline + variant reps, then average the centroid cosine over
     every split into baseline-sized vs variant-sized halves EXCEPT the true
     baseline|variant split. Because the pooled reps carry both settings'
-    stochasticity, this floor inherits each setting's own noise level — the
+    stochasticity, this floor inherits each setting's own noise level, the
     whole point of moving to centroids. If a variant only adds scatter (no
     content shift), its real centroid cosine ≈ this null; if it shifts content,
     the real cosine drops below it (pure-vs-pure separates the two contents,
@@ -839,14 +818,14 @@ def comparison_decoding_diversity(runs: dict, out_path: str,
     At each anchor (agent, round) a setting holds the prompt, persona and
     neighbour input fixed and varies only the LLM RNG across its reps, so the
     scatter of those reps is pure decoding stochasticity. Diversity at the
-    anchor is ``1 − mean_pairwise_cosine`` of the setting's rep embeddings
+    anchor is `1 − mean_pairwise_cosine` of the setting's rep embeddings
     (higher ⇒ the same prompt produces more varied posts). One box per decoding
     setting; the dashed line marks the baseline (temp 0.7 / top_p 0.9) mean, so
     you read off directly whether raising a knob widens the output distribution.
 
     Contrast with `comparison_decoding_centroids`, which asks whether the MEAN
-    output MOVES. This asks whether the SPREAD changes — the quantity decoding
-    parameters are actually meant to control — so it needs no shared-noise floor.
+    output MOVES. This asks whether the SPREAD changes, the quantity decoding
+    parameters are actually meant to control, so it needs no shared-noise floor.
     """
     rng = np.random.default_rng(seed)
     settings, reps, per_anchor = _anchor_centroids(runs)
@@ -944,14 +923,14 @@ def comparison_decoding_diversity(runs: dict, out_path: str,
 def _phq9_band_probe(runs: dict, n_splits: int = 5):
     """Agent-grouped CV probe accuracy for the PHQ-9 band, per decoding setting.
 
-    Returns ``{setting: ndarray}`` holding ONE balanced-accuracy value per rep
+    Returns `{setting: ndarray}` holding ONE balanced-accuracy value per rep
     (length = n_reps). Within a rep, a logistic probe is trained under GroupKFold
-    by ``agent_id`` and its out-of-fold predictions are pooled into a single CV
+    by `agent_id` and its out-of-fold predictions are pooled into a single CV
     score, so every post is tested exactly once by a probe that never saw its
-    agent. The rep — an independent non-deterministic generation — is the unit of
+    agent. The rep, an independent non-deterministic generation, is the unit of
     replication: the 5 folds only partition one rep's data (not independent), so
     we collapse them per rep and let the caller take mean/SD ACROSS reps.
-    GroupKFold blocks persona-identity leakage; ``class_weight='balanced'`` +
+    GroupKFold blocks persona-identity leakage; `class_weight='balanced'` +
     balanced-accuracy counter the band imbalance. Chance = 0.20 (5 bands)."""
     import warnings
     from sklearn.linear_model import LogisticRegression
@@ -1001,10 +980,10 @@ def comparison_decoding_phq9_probe(runs: dict, out_path: str, n_splits: int = 5)
     PHQ-9 band from post embeddings (see `_phq9_band_probe`), giving one CV score
     per rep. Bar height = mean balanced accuracy ACROSS the reps; the thin
     whisker = ±1 SD across reps (rep = an independent generation; drop `yerr=`
-    for a plain bar). The y-axis starts at chance (0.20) — balanced accuracy of
+    for a plain bar). The y-axis starts at chance (0.20), balanced accuracy of
     an uninformative classifier is 0.20 by construction, so bar height above the
     floor is the actual severity signal. The dotted line marks the baseline (temp
-    0.7 / top_p 0.9); a setting below it blurs the severity classes — the knobs
+    0.7 / top_p 0.9); a setting below it blurs the severity classes, the knobs
     that raise diversity cost PHQ-9 signal.
     """
     acc = _phq9_band_probe(runs, n_splits=n_splits)
@@ -1056,19 +1035,19 @@ def comparison_decoding_phq9_probe(runs: dict, out_path: str, n_splits: int = 5)
 def _phq9_band_linearity(runs: dict):
     """Per-setting cosine between ADJACENT PHQ-9 class centroids (severity order).
 
-    For each (setting, rep) build one class centroid per PHQ-9 band — the mean of
-    that band's L2-normalised post embeddings, renormalised — then take the
+    For each (setting, rep) build one class centroid per PHQ-9 band, the mean of
+    that band's L2-normalised post embeddings, renormalised, then take the
     cosine between every pair of NEIGHBOURING bands along the severity ladder
     (Minimal→Mild→…→Severe). This walks the ordinal axis one rung at a time: a
     high, flat curve means consecutive severities sit close and evenly spaced (a
     smooth/linear severity encoding), while a dip marks a sharp class boundary
     where the generated content jumps. The per-rep curves are averaged over the
-    reps (the rep — an independent non-deterministic generation — is the unit of
+    reps (the rep, an independent non-deterministic generation, is the unit of
     replication), with the across-rep SD as the spread.
 
-    Returns ``(pair_labels, {setting: (mean_vec, sd_vec)})``; each vector has one
+    Returns `(pair_labels, {setting: (mean_vec, sd_vec)})`; each vector has one
     entry per adjacent band pair (NaN where a band is empty in a rep). Cosine is
-    only meaningful on SBERT embeddings (``emb_name='embeddings_sbert.npz'``);
+    only meaningful on SBERT embeddings (`emb_name='embeddings_sbert.npz'`);
     MentalBERT is anisotropic so its cosines collapse to a constant."""
     settings = sorted({s for (s, _) in runs})
     reps = sorted({r for (_, r) in runs})
@@ -1105,12 +1084,12 @@ def _phq9_band_linearity(runs: dict):
 
 
 def _decoding_diversity_stats(runs: dict, n_bootstrap: int = 1000, seed: int = 0):
-    """Per-setting within-setting diversity stats for the forest panel — pure
+    """Per-setting within-setting diversity stats for the forest panel, pure
     numbers, no plotting. Mirrors `comparison_decoding_diversity`'s computation
     so the combined figure can redraw its forest without rebuilding the box plot.
 
-    Returns ``(order, colours, means, los, his, base_mean, n_anchors)`` or
-    ``None`` when no setting has ≥2 reps per anchor."""
+    Returns `(order, colours, means, los, his, base_mean, n_anchors)` or
+    `None` when no setting has ≥2 reps per anchor."""
     rng = np.random.default_rng(seed)
     settings, reps, per_anchor = _anchor_centroids(runs)
     order, cmap = _order_decoding_settings(settings)
@@ -1162,13 +1141,13 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
     """Two-panel decoding figure: PHQ-9 severity LINEARITY (left) + within-setting
     DIVERSITY forest (right). Both read SBERT embeddings (cosine-appropriate).
 
-    (a) Linearity — for each setting, the cosine between adjacent PHQ-9 class
+    (a) Linearity, for each setting, the cosine between adjacent PHQ-9 class
         centroids walked along the severity ladder (see `_phq9_band_linearity`).
         One line per decoding setting (baseline grey, knobs coloured); a high,
         flat curve = a smooth ordinal severity encoding, a dip = a sharp class
         boundary. Lets you read off how temp / top_p reshape the severity geometry.
-    (b) Diversity — per-setting mean (1 − within-cosine) ± 95 % CI, identical to
-        `comparison_decoding_diversity`'s forest panel — so the figure pairs
+    (b) Diversity, per-setting mean (1 − within-cosine) ± 95 % CI, identical to
+        `comparison_decoding_diversity`'s forest panel, so the figure pairs
         "does decoding blur the severity ladder?" with "does it widen the spread?".
     """
     pair_labels, lin = _phq9_band_linearity(runs)
@@ -1293,32 +1272,23 @@ def phq9_distance_lineplot(matrix_df: pd.DataFrame, out_path: str):
 
 def phq9_adjacent_band_ladder(root: str, emb_name: str = "embeddings_sbert.npz",
                               subdir: str = "phq9") -> pd.DataFrame | None:
-    """The conditioning matrix's SUPER-DIAGONAL: same-persona cosine between each
-    pair of CONSECUTIVE PHQ-9 bands, with the BETWEEN-RUN spread.
+    """Same-persona cosine between consecutive PHQ-9 bands, with the between-rep spread.
 
-    The conditioning runs vary ONLY PHQ-9 (persona, neighbour and decoding held
-    fixed), so the one-off-diagonal cell (band b, band b+1) is exactly "how much a
-    persona's post moves when its PHQ-9 is bumped a single rung". Each band has
-    several reps — independent regenerations that differ only in the LLM seed — and
-    the rep is the unit of replication used throughout this module (cf.
-    `_phq9_band_probe`, `_phq9_band_linearity`). So for each rep we pair that rep of
-    band b with the same rep of band b+1, average the per-anchor cosine over the 600
-    personas to get one cell estimate, and report the MEAN over reps with the SD
-    ACROSS reps (run-to-run generation noise) — NOT the across-persona scatter,
-    which is ~0.13 and reflects how much personas differ, not estimate uncertainty.
+    The PHQ-9 conditioning runs vary only PHQ-9, so the cell (band b, band b+1) is how
+    much a persona's post moves when PHQ-9 goes up one band. For each rep the same rep
+    of band b and b+1 are paired, the per-anchor cosine is averaged over personas, and
+    the mean over reps with the SD across reps is reported (run-to-run noise, not the
+    across-persona scatter). A rise toward the severe end means the top bands merge.
+    SBERT only.
 
-    A RISE toward the severe end means consecutive top bands barely differ: the scale
-    saturates / merges at high severity, i.e. severe content dominates. SBERT-only
-    (MentalBERT is anisotropic; see `_phq9_band_linearity`).
+    Args:
+        root (str): sensitivity root, e.g. data/sensitivity.
+        emb_name (str): embedding file to read (SBERT by default).
+        subdir (str): "phq9" (optimized prompt, 3 reps) or "phq9_minimal_prompt" (1 rep, SD 0).
 
-    ``subdir`` selects which conditioning tree to read: ``"phq9"`` (default, the
-    iter_10 optimised prompt, 3 reps) or ``"phq9_minimal_prompt"`` (the minimal /
-    un-optimised prompt baseline, 1 rep — so its SD is 0 and the line carries no
-    error bars).
-
-    Returns one row per severity step (BAND_LABELS order), or None when <2 bands
-    carry the requested encoder (only rep_1 ships SBERT by default — run
-    ``sa_embed --sbert`` on the extra reps).
+    Returns:
+        pd.DataFrame | None: one row per severity step, or None if fewer than 2 bands
+        have the requested embeddings (run `sa_embed --sbert` on the extra reps).
     """
     paths = sorted(glob.glob(os.path.join(root, subdir, "*", "rep_*", emb_name)))
     if not paths:
@@ -1381,16 +1351,16 @@ def plot_agent_phq9_combined(ladder: pd.DataFrame, phq9_matrix: pd.DataFrame,
                              baseline_color: str = "#6c6c6c"):
     """Side-by-side severity figure from the PHQ-9 conditioning runs:
 
-    (a) the conditioning matrix's super-diagonal — same-persona cosine between
-        consecutive PHQ-9 bands (`phq9_adjacent_band_ladder`) — with error bars
-        (``err``: "std" = run-to-run SD across reps, or "sem"), mean printed at each
+    (a) the conditioning matrix's super-diagonal, same-persona cosine between
+        consecutive PHQ-9 bands (`phq9_adjacent_band_ladder`), with error bars
+        (`err`: "std" = run-to-run SD across reps, or "sem"), mean printed at each
         step. A rise toward the severe end = consecutive high bands become
         near-indistinguishable: the severity classes saturate / merge at the top.
     (b) the PHQ-9 conditioning 5×5 cosine heatmap; panel (a) is its super-diagonal.
 
-    ``baseline`` (optional) is a second adjacent-band ladder — the minimal /
+    `baseline` (optional) is a second adjacent-band ladder, the minimal /
     un-optimised prompt (`phq9_adjacent_band_ladder(..., subdir="phq9_minimal_prompt")`,
-    1 rep so no SD) — drawn as a dashed reference line on panel (a). It is aligned
+    1 rep so no SD), drawn as a dashed reference line on panel (a). It is aligned
     to the main ladder's steps by (from_band, to_band), so the two curves stay
     rung-matched even if a band is missing on one side.
     """
@@ -1492,7 +1462,7 @@ def plot_agent_phq9_combined(ladder: pd.DataFrame, phq9_matrix: pd.DataFrame,
 def _read_instruction(seed_dir: str, prompt_type: str) -> str:
     """Return the best saved instruction for a prompt-optimizer run dir.
 
-    Strips the ``# val score: X | test score: Y`` metadata header that the
+    Strips the `# val score: X | test score: Y` metadata header that the
     tweet optimizer prepends before the first blank line.
     """
     candidates = (
@@ -1711,10 +1681,10 @@ def load_heldout_phq9_scores(model_name: str, seeds: list,
                              metric_col: str = "avg_mae") -> list:
     """Sample-weighted MAE per seed from the held-out BERT-testset re-scoring.
 
-    Reads ``<base_dir>/<model>_seed<seed>/<eval_subdir>/test_scores_phq9.csv`` — the
+    Reads `<base_dir>/<model>_seed<seed>/<eval_subdir>/test_scores_phq9.csv`, the
     optimized PHQ-9 prompts scored on the SAME blocks the MentalBERT regressor was
     tested on (produced by scripts/assessment/run_phq9_on_bert_testset.sh). Use in place of
-    ``load_test_scores`` to annotate the prompt landscape with held-out,
+    `load_test_scores` to annotate the prompt landscape with held-out,
     apples-to-apples scores rather than each run's own in-distribution test split.
     """
     return [
@@ -1732,8 +1702,8 @@ def load_heldout_minimal_score(model_name: str, minimal_seed: int = 23,
                                metric_col: str = "avg_mae") -> float:
     """Sample-weighted MAE of the MINIMAL prompt on the same held-out blocks.
 
-    Counterpart to ``load_heldout_phq9_scores`` for the un-optimized baseline.
-    Requires the minimal re-run that writes to ``<eval_subdir>`` (a distinct
+    Counterpart to `load_heldout_phq9_scores` for the un-optimized baseline.
+    Requires the minimal re-run that writes to `<eval_subdir>` (a distinct
     posts-file stem so it does not overwrite the optimized seed-<minimal_seed> eval).
     """
     path = os.path.join(base_dir, f"{model_name}_seed{minimal_seed}",
@@ -1847,10 +1817,10 @@ def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dic
                                   cell: float = 0.55) -> str:
     """Render PHQ-9 and post-generation cosim heatmaps side by side and save.
 
-    Both panels share ONE colour scale (a single shared ``vmin``), but each panel
-    gets its own docked colourbar drawn via ``fig.colorbar`` so the left and right
+    Both panels share ONE colour scale (a single shared `vmin`), but each panel
+    gets its own docked colourbar drawn via `fig.colorbar` so the left and right
     bars carry the same small black outline (matching
-    ``plot_prompt_output_string_pair``).
+    `plot_prompt_output_string_pair`).
     """
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
@@ -1905,8 +1875,8 @@ def plot_prompt_sensitivity_pair(robustness_phq9: dict, robustness_post_gen: dic
 # =====================================================================
 
 def load_prompt_reps(root: str) -> dict:
-    """``{(label, rep): {embeddings, agent_ids, rounds, phq9}}`` from
-    ``<root>/<label>/rep_<N>/embeddings.npz`` (written by sa_embed)."""
+    """`{(label, rep): {embeddings, agent_ids, rounds, phq9}}` from
+    `<root>/<label>/rep_<N>/embeddings.npz` (written by sa_embed)."""
     runs: dict = {}
     for p in sorted(glob.glob(os.path.join(root, "*", "rep_*", "embeddings.npz"))):
         parts = p.split(os.sep)
@@ -1918,14 +1888,14 @@ def load_prompt_reps(root: str) -> dict:
 
 def output_cosine_matrix(df: pd.DataFrame, labels: list,
                          agg: str = "mean") -> np.ndarray:
-    """N×N generated-output cosine matrix from a prompt-reps ``neighbor_cosines``
+    """N×N generated-output cosine matrix from a prompt-reps `neighbor_cosines`
     frame: diagonal = within-prompt (LLM-noise floor), off-diagonal = cross-prompt.
 
-    ``agg`` is the reducer over the per-(agent, round) pairwise cosines in each
-    cell — "mean" (default) or "median". The standalone prompt-reps heatmap CLI
-    (``prompt_reps_main``) uses the median; the paired figure defaults to the mean
+    `agg` is the reducer over the per-(agent, round) pairwise cosines in each
+    cell, "mean" (default) or "median". The standalone prompt-reps heatmap CLI
+    (`prompt_reps_main`) uses the median; the paired figure defaults to the mean
     so it matches the mean-based convention of the other experiment.ipynb SA
-    figures. ``labels`` fixes the row/column order (and which prompts are included).
+    figures. `labels` fixes the row/column order (and which prompts are included).
     """
     reducer = {"mean": np.mean, "median": np.median}[agg]
     within = {lab: float(reducer(g.cosine.values))
@@ -1945,10 +1915,10 @@ def _draw_output_sim_heatmap(ax, mat: np.ndarray, tick_labels: list, caption: st
                              cbar_ax=None, cmap: str = "Blues",
                              vmin: float = None, vmax: float = None) -> None:
     """Draw a generated-output cosine heatmap (diag = within-prompt noise floor,
-    off-diag = cross-prompt) onto ``ax``, styled like ``_draw_prompt_sim_heatmap``.
+    off-diag = cross-prompt) onto `ax`, styled like `_draw_prompt_sim_heatmap`.
 
     Annotation = the cosine value itself (the quantity of interest here), unlike
-    the prompt-string panel which annotates the test-score gap. ``cbar_ax`` (if
+    the prompt-string panel which annotates the test-score gap. `cbar_ax` (if
     given) receives this panel's own colourbar; the scale is tight on this
     panel's values so it stays readable next to the wider-ranged prompt panel.
     """
@@ -1981,25 +1951,26 @@ def plot_prompt_output_string_pair(
         right_caption: str = "(b) Post-generation prompt",
         output_dir: str = None,
         cell: float = 0.55) -> str:
-    """Companion to ``plot_prompt_sensitivity_pair`` with the LEFT panel switched.
+    """Two-panel prompt-robustness figure: generated-output cosine (left) and prompt-string cosine (right).
 
-    Left  panel: GENERATED-OUTPUT cosine for the post-gen prompts — within-prompt
-                 (diagonal = LLM-noise floor) vs cross-prompt, aggregated with
-                 ``agg`` ("mean" by default) over per-(agent, round) post pairs,
-                 built from the replicate tree under ``reps_root``.
-    Right panel: the existing post-generation PROMPT-STRING cosine heatmap,
-                 unchanged (cosine of prompt embeddings; annotation = |Δ score|).
+    Same prompts in the same order on both panels. Left: within-prompt (diagonal, the
+    LLM-noise floor) vs cross-prompt cosine of generated posts, aggregated with `agg`
+    over per-(agent, round) pairs from the replicate tree under `reps_root`. Right: the
+    prompt-string cosine heatmap of `plot_prompt_sensitivity_pair`, annotated with the
+    score difference. Each panel has its own colour scale.
 
-    Both panels show the SAME prompts in the SAME order, so the two similarity
-    views line up row-for-row. ``reps_labels`` gives each non-baseline
-    ``robustness_post_gen`` row its replicate-tree directory label (e.g.
-    ``textgrad_seed24`` or ``iter_10`` — all optimized prompts are treated alike),
-    in order; "minimal" is appended automatically when a baseline is present.
-    Display tick labels come straight from ``robustness_post_gen["labels"]``.
+    Args:
+        robustness_post_gen (dict): output of `compute_prompt_robustness` for post generation.
+        reps_labels (list): replicate-tree folder per non-baseline row, in order.
+        model_name (str): used in the output filename.
+        reps_root (str): replicate tree root.
+        agg (str): aggregation over post pairs ("mean").
+        left_caption, right_caption (str): panel captions.
+        output_dir (str | None): where to write; default next to the SA outputs.
+        cell (float): heatmap cell size in inches.
 
-    Each panel gets its OWN tight colour scale + colourbar: the output cosines
-    (~0.86–0.92) and prompt-string cosines (~0.6–1.0) live on different ranges,
-    so one shared bar would wash the left panel out.
+    Returns:
+        str: path of the written PNG.
     """
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
@@ -2075,12 +2046,9 @@ def plot_prompt_output_string_pair(
 
 
 # =====================================================================
-# Standalone prompt-reps heatmap (merged from the old sa_prompt_baseline.py):
-# within/cross MEDIAN cosine heatmap + CLI. Each prompt is drawn several times
-# (unseeded) with personas/neighbours/PHQ-9 fixed, so the diagonal is the real
-# within-prompt LLM-noise floor and the off-diagonal is the cross-prompt median.
-# Built by scripts/sensitivity/sa_prompt_baseline_run.sh (+ sa_embed); run via:
-#   PYTHONPATH=src python -m utils.sensitivity.sa_analyze --prompt-reps --root <reps_root>
+# Prompt-reps heatmap: within/cross median cosine per prompt, from several unseeded
+# draws per prompt (scripts/sensitivity/sa_prompt_baseline_run.sh + sa_embed), so the
+# diagonal is the within-prompt noise floor. CLI: sa_analyze --prompt-reps --root <reps_root>.
 # =====================================================================
 
 def plot_prompt_reps_heatmap(mat: np.ndarray, labels: list, out_path: str) -> None:
@@ -2164,6 +2132,7 @@ def prompt_reps_main(argv=None) -> None:
 # =====================================================================
 
 def main():
+    """Parse args and run the requested analyses (axes, band ladder, decoding probes, prompt reps)."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default="data/sensitivity",
@@ -2212,7 +2181,7 @@ def main():
         print(summary)
         summary.to_csv(os.path.join(args.out_dir, f"{axis_dir}_summary.csv"))
 
-        # Δ (cross − within) per band — useful one-glance signal.
+        # Δ (cross − within) per band, useful one-glance signal.
         pivot = (df.groupby(["band", "pair_type"]).cosine.mean()
                  .unstack("pair_type"))
         if {"within", "cross"} <= set(pivot.columns):
@@ -2223,13 +2192,13 @@ def main():
         axis_dfs[axis_label] = df
 
     # Cross-axis comparison: combined box (distribution) + forest (mean ± CI).
-    # Decoding is excluded here — it gets its own per-setting figure below
+    # Decoding is excluded here, it gets its own per-setting figure below
     # (decoding_settings_comparison.png); this plot stays the structural axes.
     cross_axis_dfs = {k: v for k, v in axis_dfs.items() if k != "Decoding"}
 
     # PHQ-9 conditioning as a 4th box: bands play the role of "setting", so
     # neighbor_cosines gives within(=same band, diff rep) vs cross(=diff band).
-    # Needs >=2 reps/band for the active encoder — true for SBERT, skipped for
+    # Needs >=2 reps/band for the active encoder, true for SBERT, skipped for
     # the 1-rep MentalBERT cosine (whose anisotropy makes the metric meaningless
     # anyway; the MentalBERT story is told by sa_phq9's MLP figure instead).
     phq9_runs = load_phq9_runs(args.root, emb_name=args.emb_name)
@@ -2253,8 +2222,8 @@ def main():
     # Decoding axis: per-setting within-setting DIVERSITY (1 − within-cosine of
     # each setting's reps). Directly shows whether raising temperature / top_p
     # widens the output distribution, with temp 0.7 / top_p 0.9 (baseline) as the
-    # reference line. (comparison_decoding_centroids — centroid shift, i.e. does
-    # the MEAN move — is kept in the module as the complementary view.)
+    # reference line. (comparison_decoding_centroids, centroid shift, i.e. does
+    # the MEAN move, is kept in the module as the complementary view.)
     if os.path.isdir(os.path.join(args.root, "decoding")):
         print("\n=== Decoding settings (within-setting diversity) ===")
         dec_runs = load_axis_runs(args.root, "decoding", emb_name=args.emb_name)

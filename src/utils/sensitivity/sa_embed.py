@@ -1,27 +1,10 @@
-"""Encode every SA run's posts.csv with MentalBERT, save one ``embeddings.npz``
-per run inside the same dir as the CSV.
+"""Encode every SA run's posts.csv with MentalBERT (or SBERT) and save embeddings.npz next to it.
 
-Walks ``data/sensitivity/{axis}/setting_*/rep_*/posts.csv`` (or whichever root
-you pass in), idempotent on existing ``embeddings.npz``. Encoder is shared
-across all runs (loaded once); typical wall-clock on a CPU is a few minutes
-for the full 24-run sweep, sub-minute on a GPU.
-
-Each .npz contains:
-    embeddings  : (n_posts, 768)  float32     MentalBERT mean-pooled.
-    agent_ids   : (n_posts,)      int64       From posts.csv `agent_id` column.
-    rounds      : (n_posts,)      int64       From posts.csv `step` column.
-    phq9        : (n_posts,)      int64       Persona's true PHQ-9 score.
-    texts       : (n_posts,)      object      Raw post text (kept for spot-checks).
-A sibling meta.json records encoder, dim, source CSV path.
-
-Usage::
-
-    PYTHONPATH=src python -m utils.sensitivity.sa_embed
-    PYTHONPATH=src python -m utils.sensitivity.sa_embed --sbert     # use MiniLM-L6 instead
-    PYTHONPATH=src python -m utils.sensitivity.sa_embed --force     # re-encode existing
-    # PHQ-9 minimal-prompt baseline (one rep per band), forced onto the GPU:
-    PYTHONPATH=src python -m utils.sensitivity.sa_embed \
-        --root data/sensitivity/phq9_minimal_prompt --device cuda
+Walks `<root>/<axis>/setting_*/rep_*/posts.csv`, skips runs that already have an
+embeddings.npz unless --force, and loads the encoder once. Each .npz holds
+embeddings (n_posts x 768), agent_ids, rounds, phq9 and texts; a meta.json records
+the encoder. Stage 2 of the SA pipeline (generate -> embed -> sa_analyze).
+Run: see docs/SCRIPTS.md (sensitivity).
 """
 
 from __future__ import annotations
@@ -38,7 +21,7 @@ from utils.metrics import create_embedding, generate_sbert_model
 
 
 def find_runs(root: str) -> list[str]:
-    """Return sorted list of posts.csv paths anywhere under ``root``.
+    """Return sorted list of posts.csv paths anywhere under `root`.
 
     Catches both layouts:
       - axes:  <root>/<axis>/setting_*/rep_*/posts.csv
@@ -64,6 +47,7 @@ def encode_run(model, posts_csv: str) -> dict:
 
 
 def main():
+    """Parse args, load the encoder once and embed every posts.csv under --root."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default="data/sensitivity",

@@ -1,42 +1,11 @@
-"""Plot the simulated network configurations against the calibration target ranges.
+"""Plot the simulated SDA network configs against the calibration target ranges (2x2 panels).
 
-One panel per topology metric — clustering coefficient, age assortativity,
-initial PHQ-9 assortativity, and mean degree (observed-only, no target) — laid
-out on a 2×2 grid. Shaded bands show the empirical target ranges (REF_RANGES in
-sa_network); the mean-degree panel has no band because degree is fixed by
-construction, not calibrated. Grey dots are individual network realizations,
-open markers flag fragmented realizations (lcc < 0.9), and the coloured marker
-gives the mean ± SD per configuration. Every panel also carries a deep-brown
-overlay of each config's directed counterpart — the same network built with
-``directed=True`` and measured on the directed graph (clustering from out-degree
-only, Fagiolo 2007; the degree panel uses the out-degree). The directed graph is
-sampled asymmetrically, so all of these differ from the undirected (blue) values.
-
-Data sources
-------------
-    SDA low degree k=4.5 – rebuilt from the calibrated parameter set at degree 4.5
-                           (~30 s, no LLM; deterministic given the construction seeds)
-    SDA low C k=4.5      – same set at degree 4.5 with alpha lowered (2.17→1.17)
-                           to push clustering below the target band
-    SDA low C k=3        – same low-alpha set at degree 3: the strongest joint
-                           density + clustering reduction (often drops C below the
-                           band and/or fragments — open markers flag this)
-    SDA calibrated k=6   – initial graphs of the saved simulation runs at degree 6
-                           (old_debiased/2_1655_d6_dim5/meta.json). Debiasing only
-                           affects the LLM dynamics, so the initial-graph topology
-                           is identical to the non-debiased run at the same seeds.
-    SDA high PHQ-9       – calibrated set rebuilt at degree 4.5 with dim 5→3 and
-                           latent_weight 7.98→1.0 so the PHQ-9 axis dominates the
-                           geometry; pushes PHQ-9 assortativity above its band.
-
-Config labels follow the canonical naming table (e.g. "low C", "calibrated",
-"high PHQ-9$_\\rho$"), not the degree — degree is its own panel now, and it varies
-between configs (read it off panel (d)).
-
-Usage
------
-    PYTHONPATH=src python -m utils.sensitivity.plot_network_targets \\
-        --out data/sensitivity/network_target_ranges.png
+One panel per metric: clustering, age assortativity, initial PHQ-9 assortativity and
+mean degree (no band). Shaded bands are the empirical targets (`sa_network.REF_RANGES`);
+grey dots are single realizations, open markers mean fragmented (lcc < 0.9), the
+coloured marker is mean +/- SD per config, and the brown overlay is each config's
+directed counterpart. Configs: SDA low degree, low C (two degrees), calibrated k=6
+(from saved runs) and high PHQ-9 weight. Run: see src/README.md (Hand-run CLIs).
 """
 
 from __future__ import annotations
@@ -51,20 +20,20 @@ import numpy as np
 
 from utils.sensitivity.sa_network import REF_RANGES, LCC_WARN
 
-_COL_MEAN = "#2e7ebc"   # blue   — mean ± SD
-_COL_BAND = "#d96907"   # orange — target range
-_COL_DIR  = "#8d2c03"   # deep brown — directed counterpart (out-degree clustering)
+_COL_MEAN = "#2e7ebc"   # blue, mean ± SD
+_COL_BAND = "#d96907"   # orange, target range
+_COL_DIR  = "#8d2c03"   # deep brown, directed counterpart (out-degree clustering)
 
 _PANEL_METRICS = {
     "C":           "clustering coeff.",
     "age_assort":  "age assort.",
     "phq9_assort": "initial PHQ-9 assort.",
-    "mean_degree": "mean degree",          # observed-only — no target band
+    "mean_degree": "mean degree",          # observed-only, no target band
 }
 
 # Two degree-4.5 configurations, both rebuilt from the calibrated parameter set:
-#   _LOWK_COMBO       — low density only (calibrated alpha; C stays in range)
-#   _LOWK_COMBO_LOW_C — low density + low clustering: alpha dropped 2.17→1.17 so the
+#   _LOWK_COMBO, low density only (calibrated alpha; C stays in range)
+#   _LOWK_COMBO_LOW_C, low density + low clustering: alpha dropped 2.17→1.17 so the
 #                       flatter distance decay wires more long-range edges, pushing
 #                       C below the target band (other params unchanged).
 # At degree 3 the network typically loses target-range clustering or fragments, so 4.5
@@ -80,7 +49,7 @@ _WELL_BEING  = "data/confidential/phq9.sav"
 # High-PHQ-9-assortativity probe. The PHQ-9 axis carries a fixed unit weight, so it
 # dominates when the latent dims are few and weak: drop dim 5→3 (one latent dim
 # instead of three) and latent_weight 7.98→1.0. This lifts initial PHQ-9
-# assortativity well above its target band — a knob check, not a calibrated config.
+# assortativity well above its target band, a knob check, not a calibrated config.
 _HIGHPHQ_COMBO  = [2.1655, 2, 1.0, 3, 2.3149]   # alpha, n_clusters, latent_w↓, dim↓, age_w
 _HIGHPHQ_DEGREE = 4.5
 
@@ -94,7 +63,7 @@ _META_KEYS = {"C": "clustering", "age_assort": "age_assort",
 
 def _lowk_points(combo: list[float],
                  degree: float = _LOWK_DEGREE) -> dict[str, list[tuple[float, bool]]]:
-    """Rebuild a low-degree configuration from ``combo`` at ``degree`` and measure it.
+    """Rebuild a low-degree configuration from `combo` at `degree` and measure it.
 
     No LLM involved. One realization per seed; each carries its own fragmentation
     flag (lcc < LCC_WARN) so the open-marker overlay reflects that realization only.
@@ -118,11 +87,11 @@ def _lowk_directed_points(combo: list[float],
                           ) -> dict[str, list[tuple[float, bool]]]:
     """Per-metric (value, fragmented) points for the DIRECTED counterpart.
 
-    Same configuration as :func:`_lowk_points` (same combo, degree and seeds),
-    rebuilt with ``directed=True``; every metric is measured on the directed graph
-    (clustering = out-clustering, degree-based metrics use the out-degree — see
-    ``directed_metrics``). The flag is weak-component fragmentation (lcc < LCC_WARN).
-    Used for the saved k=6 config too — those runs are undirected-only, so its
+    Same configuration as `_lowk_points` (same combo, degree and seeds),
+    rebuilt with `directed=True`; every metric is measured on the directed graph
+    (clustering = out-clustering, degree-based metrics use the out-degree, see
+    `directed_metrics`). The flag is weak-component fragmentation (lcc < LCC_WARN).
+    Used for the saved k=6 config too, those runs are undirected-only, so its
     directed counterpart is rebuilt from the calibrated parameters at degree 6.
     """
     import utils.tools.load_personas as lp
@@ -153,6 +122,7 @@ def _k6_points(run: str) -> dict[str, list[tuple[float, bool]]]:
 
 
 def plot_network_targets(out: str) -> None:
+    """Rebuild the SDA configs, measure them and draw the 2x2 target-range figure to `out`."""
     # (label, points). Canonical config names (table); degree is panel (d) and
     # varies between configs. The two low-alpha configs differ by degree: k=3 is
     # "low degree (low C)", k=4.5 is "low C".
@@ -166,7 +136,7 @@ def plot_network_targets(out: str) -> None:
     configs.append(("high\nPHQ-9$_\\rho$",
                     _lowk_points(_HIGHPHQ_COMBO, degree=_HIGHPHQ_DEGREE)))   # k=4.5
 
-    # Directed counterpart of each config, aligned to ``configs`` — measured on the
+    # Directed counterpart of each config, aligned to `configs`, measured on the
     # directed graph (out-degree throughout) and overlaid in every panel. The k=6
     # entry has no saved directed graph, so it is rebuilt from the calibrated combo
     # at degree 6.
@@ -247,6 +217,7 @@ def plot_network_targets(out: str) -> None:
 
 
 def main():
+    """Parse --out and draw the figure."""
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default="data/sensitivity/network_target_ranges.png")

@@ -1,3 +1,5 @@
+"""Run-folder layout: `PathManager` for simulation runs and `TestPathManager` for TestLLMs runs."""
+"""Run-folder layout: `PathManager` for simulation runs and `TestPathManager` for TestLLMs runs."""
 import os
 from pathlib import Path
 from utils.tools.format_config import FC
@@ -20,9 +22,13 @@ def _bias_on_from_path(bias_table_path):
 
 
 class PathManager:
+    """Where a simulation run's data and plots live, derived from the run args or a loaded network.
+
+    Layout: data/networks<suffix>/<state>/<net>/<directed>/<bias>/<params>/rounds<R>_N<N>/seed_<s>/.
+    """
+
     def __init__(self, args=None, network=None):
-        """
-        Initialize with either parsed args or an existing network object.
+        """Initialize with either parsed args or an existing network object.
         """
         self.base_data = Path(f"data/networks{FC.DIR_SUFFIX}")
         
@@ -62,11 +68,13 @@ class PathManager:
         self.phq9_mode = self._get_phq9_mode()
         
     def _get_state(self, enforce_ngrams, happy):
+        """Run label from the flags: enforced_ngrams, happy or basis."""
         if enforce_ngrams: return "enforced_ngrams"
         if happy: return "happy"
         return "basis"
 
     def _get_params_from_args(self, args):
+        """Parameter folder name from the CLI args (m, p, or <alpha>_d<degree>_dim<dim>)."""
         if args.net == "sf": return f"{args.m}"
         if args.net == "r": return f"{str(args.p).replace('.', '_')}"
         if args.net in ["sda", "sdc"]:
@@ -95,6 +103,7 @@ class PathManager:
         return "_".join(parts) if parts else None
     
     def _get_params_from_net(self, network):
+        """Parameter folder name from a network object's attributes."""
         # Logic to extract m/p/alpha from network object
         if hasattr(network, 'm'): return f"{network.m}"
         if hasattr(network, 'p'): return f"{str(network.p).replace('.', '_')}"
@@ -145,6 +154,7 @@ class PathManager:
         return f"net.json"
 
     def get_full_network_path(self):
+        """Full path of the run's net.json."""
         return self.get_run_directory(is_plot=False) / self.get_network_filename()
     
     def get_plot_name(self):
@@ -161,6 +171,7 @@ class TestPathManager:
     """Path manager for LLM test runs (bias/error plots, tweets, results CSV)."""
 
     def __init__(self, model_name, temp, top_p, check_point, seed, interaction=False):
+        """Set up the data and plot folders of one TestLLMs run from its model and decoding settings."""
         self.base_data = Path(f"data/test{FC.DIR_SUFFIX}")
         self.base_plots = Path(f"plots/test{FC.DIR_SUFFIX}")
         self.results_csv = self.base_data / "results.csv"

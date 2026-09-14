@@ -1,61 +1,11 @@
-"""Plot SDC (stub-matched, scale-free) network configs against their target ranges.
+"""Plot the SDC (stub-matched, scale-free) network configs against their target ranges (3x2 panels).
 
-Companion to ``plot_network_targets.py`` (which covers the plain-SDA mode). SDC
-adds stub matching to produce a scale-free degree sequence, so the calibration
-targets are different: the degree *distribution* (power-law gamma band, KS fit,
-realized mean degree) plus clustering and PHQ-9 assortativity. Age assortativity
-is shown alongside as an observed-only metric (no target band).
-
-Panels (3×2 grid)
------------------
-    (a) power-law gamma   target 2.0–3.0
-    (b) KS fit            target < 0.10        (acceptable region shaded 0–0.10)
-    (c) mean degree       target 4.25–4.75     (GOAL_DEGREE ± DEGREE_TOL)
-    (d) clustering coeff. target 0.03–0.20
-    (e) PHQ-9 assort.     target 0.0–0.10      (see _BAND_OVERRIDE below)
-    (f) age assort.       observed only — no band
-
-Every panel also carries a deep-brown overlay of the DIRECTED counterpart of each
-config (the same network built with ``directed=True``), measured on the directed
-graph: clustering is the out-clustering (Fagiolo 2007) and the degree-based panels
-(a)–(c) use the out-degree. The directed graph is sampled asymmetrically, so all of
-these differ from the undirected (blue) values.
-
-A key SDC quirk: the ``degree`` parameter fed to the stub sampler is NOT the
-realized mean degree. Stub matching leaves some stubs unpaired, so the realized
-mean (panel c) lands well below the target degree fed in — e.g. the saved config
-feeds degree=8.25 but realizes ≈4.7. The mean-degree band makes that shortfall
-visible.
-
-Configurations (rebuilt from parameters with _eval_one; no LLM)
----------------------------------------------------------------
-Labels follow the canonical naming table (not "saved"/arrows), mirroring the
-plain-SDA plot.
-
-    calibrated      – the parameter set used for the saved simulation runs
-                      (data/networks_post/basis/sdc/.../non_debiased/4_9429_d8_2539_dim3),
-                      rebuilt so every metric is measured identically to the
-                      variations below; PHQ-9 assortativity lands in the 0–0.10
-                      band.
-    high degree     – same set with the degree parameter raised (8.25→10) to see
-                      how realized degree / clustering / fragmentation respond
-                      (exploratory only — not retargeted).
-    high PHQ-9$_\rho$ – higher alpha, lower dim (3→2, drops the latent slot) and
-                      lower latent_weight so the fixed-weight PHQ-9 axis drives
-                      the geometry, lifting PHQ-9 assortativity (ρ) above its band.
-
-These three are first-pass probes ("see what we end up with") before searching
-for properly calibrated combinations. Five master seeds (14–18), each reseeding
-both the population and the network wiring (matching the saved runs). Read panel (a)
-with care: SDC power-law gamma is unstable per realization — powerlaw.Fit
-occasionally latches onto a short tail and returns a large exponent (gamma ≈ 14–34),
-sometimes on fragmented graphs (lcc < 0.9, open markers) but also on connected ones.
-It is a fit artifact, not a real change in the degree distribution.
-
-Usage
------
-    PYTHONPATH=src python -m utils.sensitivity.plot_network_targets_sdc \\
-        --out data/sensitivity/network_target_ranges_sdc.png
+SDC companion of `plot_network_targets`: panels are power-law gamma (target 2-3), KS
+fit (< 0.10), mean degree (4.25-4.75), clustering (0.03-0.20), PHQ-9 assortativity
+(0-0.10) and age assortativity (no band), with the directed counterpart overlaid.
+Two things to know: the `degree` fed to the stub sampler is not the realized mean
+degree (unpaired stubs lower it), and powerlaw.Fit sometimes returns a huge gamma on
+a short tail, which is a fit artifact. Run: see src/README.md (Hand-run CLIs).
 """
 
 from __future__ import annotations
@@ -68,25 +18,25 @@ import numpy as np
 
 import utils.sensitivity.sa_network as san
 
-_COL_MEAN = "#2e7ebc"   # blue   — mean ± SD
-_COL_BAND = "#d96907"   # orange — target range
-_COL_DIR  = "#8d2c03"   # deep brown — directed counterpart (out-degree clustering)
+_COL_MEAN = "#2e7ebc"   # blue, mean ± SD
+_COL_BAND = "#d96907"   # orange, target range
+_COL_DIR  = "#8d2c03"   # deep brown, directed counterpart (out-degree clustering)
 
 # Panel order → 3 columns × 2 rows. Goal metrics carry a target band; age_assort
-# is shown alongside (observed only, no band — see _GOAL below).
+# is shown alongside (observed only, no band, see _GOAL below).
 _PANEL_METRICS = {
     "gamma":       "power-law $\\gamma$",
     "ks":          "KS fit",
     "mean_degree": "mean degree",
     "C":           "clustering coeff.",
     "phq9_assort": "initial PHQ-9 assort.",
-    "age_assort":  "age assort.",            # observed-only — no target band
+    "age_assort":  "age assort.",            # observed-only, no target band
 }
 _GOAL = {"gamma", "ks", "mean_degree", "C", "phq9_assort"}   # metrics that get a band
 
-# Per-figure band overrides — these do NOT touch the SA loss globals in sa_network.
-# The Sobol search used a too-wide 0–0.40 PHQ-9 band (which let the optimiser drift
-# to high homophily); 0–0.10 is the reference these configs should be shown against.
+# Per-figure band overrides, these do NOT touch the SA loss globals in sa_network.
+# The Sobol search used a too-wide 0-0.40 PHQ-9 band (which let the optimiser drift
+# to high homophily); 0-0.10 is the reference these configs should be shown against.
 _BAND_OVERRIDE = {"phq9_assort": (0.0, 0.10)}
 
 # SDC parameter order for _eval_one(net="sdc"):
@@ -108,8 +58,8 @@ def _sdc_points(combo: list[float]) -> dict[str, list[tuple[float, bool]]]:
     """Rebuild one SDC configuration across all seeds and measure it.
 
     No LLM involved. One realization per seed; each carries its own fragmentation
-    flag (lcc < LCC_WARN). The degree fed in lives in ``combo`` (index 2); the
-    ``degree`` argument to _eval_one is ignored in SDC mode.
+    flag (lcc < LCC_WARN). The degree fed in lives in `combo` (index 2); the
+    `degree` argument to _eval_one is ignored in SDC mode.
     """
     import utils.tools.load_personas as lp
 
@@ -130,10 +80,10 @@ def _sdc_points(combo: list[float]) -> dict[str, list[tuple[float, bool]]]:
 def _sdc_directed_points(combo: list[float]) -> dict[str, list[tuple[float, bool]]]:
     """Per-metric (value, fragmented) points for the DIRECTED counterpart.
 
-    Same SDC configuration as :func:`_sdc_points` (reseeding both population and
-    wiring per seed), rebuilt with ``directed=True``; every metric is measured on
+    Same SDC configuration as `_sdc_points` (reseeding both population and
+    wiring per seed), rebuilt with `directed=True`; every metric is measured on
     the directed graph (clustering = out-clustering, degree-based metrics use the
-    out-degree — see ``san.directed_metrics``). The flag is weak-component
+    out-degree, see `san.directed_metrics`). The flag is weak-component
     fragmentation (lcc < LCC_WARN).
     """
     import utils.tools.load_personas as lp
@@ -151,6 +101,7 @@ def _sdc_directed_points(combo: list[float]) -> dict[str, list[tuple[float, bool
 
 
 def plot_network_targets_sdc(out: str) -> None:
+    """Rebuild the SDC configs, measure them and draw the 3x2 target-range figure to `out`."""
     san.set_mode("sdc")   # bind san.REF_RANGES to the SDC reference bands
 
     # (label, points). Canonical config names (table): the saved set is the
@@ -161,7 +112,7 @@ def plot_network_targets_sdc(out: str) -> None:
         ("high\ndegree",      _sdc_points(_SDC_HIGH_DEG)),
         ("high\nPHQ-9$_\\rho$", _sdc_points(_SDC_HIGH_PHQ9)),
     ]
-    # Directed counterpart of each config, aligned to ``configs`` — measured on the
+    # Directed counterpart of each config, aligned to `configs`, measured on the
     # directed graph (out-degree throughout) and overlaid in every panel.
     directed = [_sdc_directed_points(combo)
                 for combo in (_SDC_SAVED, _SDC_HIGH_DEG, _SDC_HIGH_PHQ9)]
@@ -242,6 +193,7 @@ def plot_network_targets_sdc(out: str) -> None:
 
 
 def main():
+    """Parse --out and draw the figure."""
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default="data/sensitivity/network_target_ranges_sdc.png")

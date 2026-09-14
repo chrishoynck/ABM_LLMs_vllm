@@ -1,5 +1,10 @@
 
-from transformers import AutoTokenizer, set_seed  #, pipeline, BitsAndBytesConfig
+"""Main simulation entry point: build the vLLM pipe and the network, run the rounds, save checkpoints and plots.
+
+`generate_parser` defines the CLI used by scripts/simulation/*.sh; `build_network`,
+`run_simulation` and `main` are also imported by experiment.ipynb.
+"""
+from transformers import AutoTokenizer, set_seed
 import gc
 import os, torch
 import sys, argparse, time
@@ -78,6 +83,7 @@ tokenizer = get_tokenizer(MODEL_ID)
 
 
 def how_many_gpus():
+    """Print and return the number of CUDA devices."""
     number_of_gpus = torch.cuda.device_count()
     print(f"Number of GPUs: {number_of_gpus}")
     return number_of_gpus
@@ -569,7 +575,7 @@ def _free_bert_from_network(network):
     """Delete BERT encoder/regressor from a finished network to free GPU memory.
 
     Transformer modules contain reference cycles, so dropping the last reference
-    does NOT free them synchronously via refcounting — the cyclic collector has
+    does NOT free them synchronously via refcounting, the cyclic collector has
     to run first. Without the explicit gc.collect(), torch.cuda.empty_cache()
     runs while the old model is still resident on the GPU, so its memory is never
     reclaimed and each seed stacks a fresh encoder+regressor on top of the
@@ -583,7 +589,16 @@ def _free_bert_from_network(network):
 
 
 def main(args, pipe, states):
+    """Run (or load) the simulation for every seed in `args.seeds` and every state; then draw the aggregate plots.
 
+    Args:
+        args: parsed CLI namespace (see `generate_parser`).
+        pipe: the vLLM engine, or None when only loading saved networks.
+        states (list[str]): run labels to simulate, e.g. ["basis"].
+
+    Returns:
+        dict: per-run results, keyed like the aggregate plots expect.
+    """
     all_networks_results = {}
     prev_seed_networks = []  # track networks from the previous seed to free BERT
 

@@ -1,27 +1,10 @@
 #!/usr/bin/env bash
-# Per-seed lexical-entrainment trajectories on MentalBERT embeddings — no LLM, no
-# notebook. For each of the four calibrated, debiased topologies (SDA/SDC x
-# directed/undirected) it embeds every seed's tweets with MentalBERT, traces the
-# per-window mean-embedding trajectory in a 2D PCA (fit once per setting on its
-# pooled seeds), and draws one dot per window coloured by mean PHQ-9 (green->red).
-# Runs are NOT averaged.
-#
-# Writes, under plots/lexical_entrainment/:
-#   * per-setting overlay (all seeds, one shared-PCA axes)   -> <net>_<dir>_..._overlay.png
-#   * per-seed grid (topology x seed, each panel own PCA)    -> entrainment_grid_perseed_*.png
-#   * SDA+SDC shared map per direction (calibrated+high-deg) -> entrainment_shared_sda_sdc_*.png
-#
-# Tweet embeddings are cached per-seed under plots/lexical_entrainment/cache/, so
-# the first run encodes (GPU recommended) and later runs reuse the cache.
-# Figures already on disk are skipped; set OVERWRITE=1 to redraw.
-#
-# See src/utils/analyses/lexical_entrainment/global/plot_lexical_entrainment.py and
-# the plot_entrainment_* functions in src/utils/visualization.py.
-#
-#   bash scripts/plotting/run_lexical_entrainment.sh                 # default: PCA, MentalBERT
-#   OVERWRITE=1 bash scripts/plotting/run_lexical_entrainment.sh     # redraw everything
-#   REDUCTION=umap bash scripts/plotting/run_lexical_entrainment.sh  # UMAP instead of PCA
-#   EMBEDDING=sbert bash scripts/plotting/run_lexical_entrainment.sh # plain SBERT instead
+# Per-seed lexical-entrainment trajectories (MentalBERT, PCA) for the four calibrated
+# debiased topologies, no LLM. Writes the per-setting overlay, the per-seed grid and
+# the SDA+SDC shared map under plots/lexical_entrainment/. Embeddings are cached per
+# seed; figures on disk are skipped (OVERWRITE=1 redraws). Options: REDUCTION=umap,
+# EMBEDDING=sbert. Driver: src/utils/analyses/lexical_entrainment/global/plot_lexical_entrainment.py.
+#   bash scripts/plotting/run_lexical_entrainment.sh
 
 set -euo pipefail
 

@@ -1,14 +1,11 @@
 """Appendix diagnostics on the seed-35 BERT test set: S-BERT band cosines + confusion matrices.
 
-Two subcommands over the same 1125-block test set (`bert_regression/test_blocks_seed35.csv`):
-  sbert-cosine  5x5 PHQ-9-band cosine matrix of plain S-BERT block embeddings
-                (the "PHQ-9 conditioning" panel); the first run encodes ~15 min on
-                CPU, then the embeddings are cached
-  confusion     row-normalised 5-band confusion matrices for the best optimized
-                prompt (seed 23) and the BERT+MLP regressor (seed 35), plus the
-                cosine matrix as panel (c), and per-class P/R/F1 to CSV
-`all` runs both in that order (confusion reads the cosine CSV).
-Run: see src/README.md (Hand-run CLIs). Outputs: data/test_post/method_comparison/.
+Subcommands over the same 1125-block test set (`bert_regression/test_blocks_seed35.csv`):
+`sbert-cosine` writes the 5x5 PHQ-9-band cosine matrix of plain S-BERT block embeddings
+(the first run encodes ~15 min on CPU, then it is cached); `confusion` draws row-normalised
+5-band confusion matrices for the best optimized prompt (seed 23) and the BERT+MLP
+regressor (seed 35), with the cosine matrix as panel (c), and writes per-class P/R/F1;
+`all` runs both in that order. Outputs: data/test_post/method_comparison/. Run: see src/README.md.
 """
 from __future__ import annotations
 

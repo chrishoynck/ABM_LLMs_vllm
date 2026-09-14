@@ -1,18 +1,10 @@
-"""Evaluate a trained MentalBERT+MLP PHQ-9 regressor on a tweets_with_phq9 CSV.
+"""Score a saved MentalBERT+MLP PHQ-9 regressor on a tweets_with_phq9 CSV.
 
-Loads the regressor saved by `prompt_optimizer.train_BERT_model` (a pickled
-neural_net_BERT module) and a sentence encoder, encodes each agent's posts
-into the (mean ∥ max ∥ std) centroid the regressor was trained on, runs the
-MLP, and reports MAE + signed bias overall and per ground-truth PHQ-9 score.
-
-Mirrors `network._phq9_questionnaire_bert` but operates on a static CSV so
-it can be pointed at any model's generated dataset.
-
-Usage:
-    python -m utils.eval_bert_on_csv \\
-        --regressor data/test_post/bert_regression/Qwen3.5-27B_seed42/regressor.pt \\
-        --csv data/grok_posts/posts_eval_grok_aligned.csv \\
-        --out data/grok_posts/posts_eval_grok_aligned_bert.csv
+Loads the regressor written by `prompt_optimizer.train_BERT_model`, encodes each
+agent's posts into the (mean | max | std) centroid it was trained on, and writes
+per-block predictions plus MAE and signed bias per true PHQ-9 score. Same scoring as
+`network._phq9_questionnaire_bert`, but on a static CSV. Used by
+`prompt_optimizer.eval_bert_regressors_on_csv` and `checks/check_surface_cues.py`.
 """
 
 import argparse
@@ -130,6 +122,7 @@ def evaluate(regressor_path: str, csv_path: str, out_path: str,
 
 
 def main() -> None:
+    """Parse args and run `evaluate`."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--regressor", required=True,
                         help="Path to a regressor.pt saved by train_BERT_model.")

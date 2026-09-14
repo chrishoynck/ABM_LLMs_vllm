@@ -1,34 +1,10 @@
 #!/usr/bin/env bash
-# Decoding-parameter sensitivity GENERATION driver (temperature + top_p axis).
-#
-# Counterpart of sa_run.sh's NEIGHBOUR axis: structurally identical (same 60
-# agents across every setting), but the swept axis is the LLM's decoding params
-# (temperature, top_p) instead of a neighbour seed. Everything else is held
-# fixed so a paired per-(agent, round) cosine in sa_analyze.py isolates the
-# decoding effect:
-#     * same personas        (--agent-seed 42, FIXED across all settings)
-#     * same neighbour posts  (--neighbor-seed 42, FIXED across all settings)
-#     * same per-slot PHQ-9   (falls out of the fixed agent-seed)
-#     * LLM left UNSEEDED      (--nondeterministic; 3 fresh draws per setting)
-#
-# Each (temp, top_p) pair is a "setting"; each unseeded draw a "rep" — exactly
-# sa_analyze.py's within/cross design (within-setting = LLM-noise floor at that
-# decoding point; cross-setting = how much the decoding change moves outputs).
-#
-# Settings: the baseline (the operating point the simulation actually uses) plus
-# six perturbations — temp +/-, top_p +/-, and both +/-:
-#     baseline (0.7, 0.9)
-#     temp_hi  (1.0, 0.9)   temp_lo  (0.4, 0.9)
-#     topp_hi  (0.7, 1.0)   topp_lo  (0.7, 0.8)
-#     both_hi  (1.0, 1.0)   both_lo  (0.4, 0.8)
-# = 7 settings x 3 reps = 21 generations.
-#
-# Output layout (consumed by sa_embed + sa_analyze, auto-discovered):
-#     data/sensitivity/decoding/setting_<label>/rep_<N>/posts.csv
-#
-# Guarded: any rep whose posts.csv already exists is SKIPPED (no overwrite), so
-# this resumes across job submissions. Run from the repo root with the venv
-# activated and a GPU session.
+# Decoding-axis sensitivity generation: 7 (temperature, top_p) settings x 3 unseeded
+# reps, with personas, neighbour posts and PHQ-9 held fixed (same seeds as the
+# neighbour axis in sa_run.sh). Settings: baseline (0.7, 0.9) plus temp and top_p
+# up and down, alone and together. Output: data/sensitivity/decoding/setting_<label>/
+# rep_<N>/posts.csv; existing reps are skipped, so it resumes.
+# Run from the repo root, venv active, GPU session.
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"

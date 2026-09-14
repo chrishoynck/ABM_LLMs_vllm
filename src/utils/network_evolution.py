@@ -35,7 +35,7 @@ def load_cds_patterns(ngrams_path=NGRAMS_PATH):
 
 
 def _is_cds(text, patterns):
-    """True if ``text`` is a real tweet containing at least one CDS n-gram."""
+    """True if `text` is a real tweet containing at least one CDS n-gram."""
     if not text or text == FC.NO_CONTENT:
         return False
     return any(pat.search(text) for pat in patterns.values())
@@ -57,7 +57,7 @@ def cds_fraction_per_round(network, patterns):
         frac_cds  : (# active tweets containing CDS) / (# active tweets) that round
         n_active  : number of agents who actually tweeted that round
         n_cds     : number of those active tweets flagged as CDS
-    Rounds with no active tweets get ``frac_cds = nan``.
+    Rounds with no active tweets get `frac_cds = nan`.
     """
     T = _min_T(network)
     n_active = np.zeros(T)
@@ -85,8 +85,8 @@ def infer_phq9_interval(network, default=10):
     """Best-effort guess of the PHQ-9 update cadence from the score histories.
 
     Looks at the spacing between successive score *changes* across all agents and
-    returns the most common gap. Falls back to ``default`` when scores never move
-    (e.g. a 0-round or fully-flat run). Prefer passing ``args.check_point`` when
+    returns the most common gap. Falls back to `default` when scores never move
+    (e.g. a 0-round or fully-flat run). Prefer passing `args.check_point` when
     you have it.
     """
     gaps = Counter()
@@ -114,18 +114,20 @@ def _rolling_mean(arr, window):
 # Palette shared with the SA / validation figures (blue accent, firebrick PHQ-9).
 COL_CDS = "#1f77b4"
 COL_PHQ9 = "#b22222"
-# Deep brown from the sa_analyze palette — the PHQ-9 line colour for the combined
+# Deep brown from the sa_analyze palette, the PHQ-9 line colour for the combined
 # (CSD-free) grid, where the firebrick of the per-combo grids reads as red.
 COL_PHQ9_BROWN = "#8d2c03"
 
 
 def _style_axis(ax):
+    """Light dotted grid, no top or right spine."""
     ax.grid(alpha=0.3, linestyle=":")
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 
 
 def _save(fig, save, path, filename, prefix, show, do_tight=True):
+    """Tight-layout, save as <path>/<prefix>_<filename>.png when asked, show when asked, then close."""
     if do_tight:
         fig.tight_layout()
     if save and path is not None and filename is not None:
@@ -139,7 +141,7 @@ def _save(fig, save, path, filename, prefix, show, do_tight=True):
 
 
 def figure_path(path, filename, prefix):
-    """The PNG ``_save`` would write for (path, filename, prefix), or None."""
+    """The PNG `_save` would write for (path, filename, prefix), or None."""
     if path is None or filename is None:
         return None
     return os.path.join(str(path), f"{prefix}_{filename}.png")
@@ -150,7 +152,7 @@ def _skip_existing(path, filename, prefix, overwrite, save):
 
     Checked per figure (not per run), so a run missing only one figure still
     gets that one drawn. Honoured only when actually saving and not
-    overwriting, so interactive ``save=False`` / ``show=True`` callers always
+    overwriting, so interactive `save=False` / `show=True` callers always
     (re)draw.
     """
     if save and not overwrite:
@@ -162,7 +164,7 @@ def _skip_existing(path, filename, prefix, overwrite, save):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Figure 1 — CDS evolution ("the evolvement graph")
+#  Figure 1, CDS evolution ("the evolvement graph")
 # ──────────────────────────────────────────────────────────────────────────────
 
 def plot_cds_evolution(network, patterns=None, ngrams_path=NGRAMS_PATH,
@@ -174,13 +176,13 @@ def plot_cds_evolution(network, patterns=None, ngrams_path=NGRAMS_PATH,
     Left axis  : fraction of *active* tweets containing a CDS n-gram, per round
                  (faint dots) plus a smoothed line (rolling mean).
     Right axis : population mean PHQ-9, sampled at each update (every
-                 ``phq9_interval`` rounds), the cadence at which it can move.
+                 `phq9_interval` rounds), the cadence at which it can move.
 
     Args:
-        patterns:      pre-loaded {category: regex}; loaded from ``ngrams_path`` if None.
-        phq9_interval: PHQ-9 update cadence in rounds (pass ``args.check_point``).
+        patterns:      pre-loaded {category: regex}; loaded from `ngrams_path` if None.
+        phq9_interval: PHQ-9 update cadence in rounds (pass `args.check_point`).
         smooth_window: rolling-mean window in rounds for the CDS line. Defaults to
-                       ``phq9_interval`` so the smoothing matches the update block.
+                       `phq9_interval` so the smoothing matches the update block.
     """
     if _skip_existing(path, filename, "cds_evolution", overwrite, save):
         return None
@@ -231,7 +233,7 @@ def plot_cds_evolution(network, patterns=None, ngrams_path=NGRAMS_PATH,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Figure 2 — critical-slowing-down dot grid (one dot per PHQ-9 update)
+#  Figure 2, critical-slowing-down dot grid (one dot per PHQ-9 update)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _sorted_agents_by_final_phq9(network):
@@ -246,11 +248,11 @@ def _sorted_agents_by_final_phq9(network):
 def phq9_update_series(agent, interval, iterations):
     """PHQ-9 value at every assessment, with its round.
 
-    ``all_phq9_sumscores`` stores the score that prompted each round's tweet, so
-    sampling ``[::interval]`` yields the assessed value at rounds 0, interval,
+    `all_phq9_sumscores` stores the score that prompted each round's tweet, so
+    sampling `[::interval]` yields the assessed value at rounds 0, interval,
     2*interval, … But the *final* assessment (the one run after the last round,
-    e.g. round 300 of a 300-round run) updates ``well_being`` with no following
-    round to record it in the array — so we append it explicitly. Without this the
+    e.g. round 300 of a 300-round run) updates `well_being` with no following
+    round to record it in the array, so we append it explicitly. Without this the
     last update (and the score the agents actually finished at) is never plotted.
 
     Returns:
@@ -270,7 +272,7 @@ def _csd_matrices(network, interval, window):
     """Per-agent PHQ-9 / rolling-SD / lag-1-AC matrices for the CSD figures.
 
     Rows are agents sorted low->high by final PHQ-9; columns are PHQ-9 assessments
-    (rounds 0, interval, …, plus the final one). SD = sqrt(rolling variance) — sqrt
+    (rounds 0, interval, …, plus the final one). SD = sqrt(rolling variance), sqrt
     is roughly linear in score points so it doesn't squash the low-variability
     agents the way variance (quadratic) does.
 
@@ -297,9 +299,9 @@ def phq9_mean_and_assortativity(network, interval):
 
     Both are plain per-assessment series (no binning / no aggregation over
     rounds). Mean is the unweighted population mean (not degree-weighted).
-    Assortativity is ``nx.numeric_assortativity_coefficient`` on the static graph
+    Assortativity is `nx.numeric_assortativity_coefficient` on the static graph
     with each node's PHQ-9 at that assessment (same calculation as
-    ``visualization.plot_phq9_assortativity``).
+    `visualization.plot_phq9_assortativity`).
 
     Returns:
         cols_round (np.ndarray), mean_phq9 (np.ndarray), assort (np.ndarray).
@@ -328,32 +330,23 @@ def phq9_mean_and_assortativity(network, interval):
 
 def phq9_dw_and_assortativity(network, interval, assort_when_constant=1.0,
                               edgeless_assort=0.0):
-    """Degree-weighted mean PHQ-9 and PHQ-9 assortativity at each assessment.
+    """Degree-weighted mean PHQ-9 and PHQ-9 assortativity at each assessment round.
 
-    The phase-portrait counterpart of ``phq9_mean_and_assortativity``: instead of
-    the unweighted population mean it returns the *degree-weighted* mean PHQ-9 —
-    the x-axis of ``experiment.ipynb``'s ``plot_phase_dw_phq9_homophily`` — using
-    the exact weighting of ``metrics.degree_weighted_mean`` (agent weight = its
-    connection count, normalised by ``len(network.connections)``), but evaluated
-    only at the PHQ-9 assessments (rounds 0, interval, …) rather than every round.
+    Phase-portrait input: x is the degree-weighted mean (same weighting as
+    `metrics.degree_weighted_mean`), y is `nx.numeric_assortativity_coefficient` on the
+    PHQ-9 node attribute, both taken every `interval` rounds. When all agents share one
+    PHQ-9 (round 0 of an init_phq9_zero run) assortativity is undefined and is set to
+    `assort_when_constant`. An edge-less graph returns the unweighted mean and
+    `edgeless_assort`, so a degree-0 run can serve as a flat reference line.
 
-    Assortativity is ``nx.numeric_assortativity_coefficient`` on the per-assessment
-    PHQ-9 node attribute (directed graphs are projected to undirected, as in
-    ``phq9_mean_and_assortativity``). When every agent shares the same PHQ-9 at an
-    assessment the coefficient is undefined (0/0 -> nan); these all-equal
-    assessments — notably round 0 of an ``init_phq9_zero`` run, where everyone
-    starts at PHQ-9 0 with no spread to be assortative about — are set to
-    ``assort_when_constant`` (default 1.0: treat a perfectly uniform population as
-    perfectly homophilous, so the trajectory starts at the top of the axis).
-
-    An edge-less graph (e.g. a degree-0 run) has no degree weights and no defined
-    assortativity, yet its isolated-agent PHQ-9 dynamics are topology-independent
-    (the same for every alpha / dim / direction). It is returned as a flat
-    baseline: x = the *unweighted* mean PHQ-9, y = ``edgeless_assort`` (default
-    0.0), so a single degree-0 line can be shown as a reference in every cell.
+    Args:
+        network: loaded run.
+        interval (int): assessment cadence in rounds.
+        assort_when_constant (float): value used when every agent has the same PHQ-9.
+        edgeless_assort (float): assortativity reported for a graph without edges.
 
     Returns:
-        cols_round (np.ndarray), dw_phq9 (np.ndarray), assort (np.ndarray).
+        tuple[np.ndarray, np.ndarray, np.ndarray]: assessment rounds, dw PHQ-9, assortativity.
     """
     graph, _ = metrics.build_network_graph(network)
     undirected = graph.to_undirected() if network.directed else graph
@@ -390,7 +383,7 @@ def phq9_dw_and_assortativity(network, interval, assort_when_constant=1.0,
             with np.errstate(invalid="ignore", divide="ignore"):
                 r = nx.numeric_assortativity_coefficient(undirected, "phq9")
             # An undefined coefficient here (e.g. an edge-less degree-0 graph)
-            # stays NaN so it simply doesn't plot — only the uniform-population
+            # stays NaN so it simply doesn't plot, only the uniform-population
             # case above is treated as perfectly assortative.
             assort[c] = np.nan if (r is None or np.isnan(r)) else r
         except Exception:
@@ -401,12 +394,12 @@ def phq9_dw_and_assortativity(network, interval, assort_when_constant=1.0,
 def plot_csd_heatmaps(network, phq9_interval=10, window=8,
                       path="", filename="default", save=False, show=True,
                       marker_size=None, overwrite=False):
-    """Critical-slowing-down grid — one square per agent per PHQ-9 update.
+    """Critical-slowing-down grid, one square per agent per PHQ-9 update.
 
-    PHQ-9 is subsampled every ``phq9_interval`` rounds (``all_phq9_sumscores[::interval]``)
+    PHQ-9 is subsampled every `phq9_interval` rounds (`all_phq9_sumscores[::interval]`)
     so each sample is a genuine score change; rolling variance and lag-1
-    autocorrelation are then computed over ``window`` *updates* (reusing
-    ``metrics.all_agent_phq9_cd``). Nothing is ever computed across the flat
+    autocorrelation are then computed over `window` *updates* (reusing
+    `metrics.all_agent_phq9_cd`). Nothing is ever computed across the flat
     no-update stretches between assessments.
 
     The updates are drawn adjacently (x = update index, no dead space between
@@ -415,9 +408,9 @@ def plot_csd_heatmaps(network, phq9_interval=10, window=8,
     window not yet full) are simply absent.
 
     Args:
-        phq9_interval: PHQ-9 update cadence in rounds (pass ``args.check_point``).
+        phq9_interval: PHQ-9 update cadence in rounds (pass `args.check_point`).
         window:        rolling window length, in updates (not rounds).
-        marker_size:   square size in points^2; ``None`` auto-fills the column
+        marker_size:   square size in points^2; `None` auto-fills the column
                        width so the squares sit next to one another.
     """
     if _skip_existing(path, filename, f"csd_heatmaps_w{window}", overwrite, save):
@@ -462,7 +455,7 @@ def plot_csd_heatmaps(network, phq9_interval=10, window=8,
         ax.tick_params(axis="x", labelsize=7)
 
     # Size the squares to the full column pitch *after* layout so neighbouring
-    # columns touch — no whitespace between columns.
+    # columns touch, no whitespace between columns.
     fig.tight_layout()
     fig.canvas.draw()
     for ax, sc in handles:
@@ -485,7 +478,7 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
 
     Rows (top to bottom):
         0  mean PHQ-9 (left axis) + PHQ-9 assortativity (right axis), per
-           assessment — two simple lines, no aggregation over rounds.
+           assessment, two simple lines, no aggregation over rounds.
         1  rolling SD              (one square per agent per assessment)
         2  lag-1 autocorrelation   (")
         3  PHQ-9 score             (")
@@ -512,7 +505,7 @@ def plot_param_combo_grid(networks, phq9_interval=10, window=8,
     cols_round = per_seed[0]["cols_round"]
     n_cols = len(cols_round)
     cols = np.arange(n_cols)
-    # every 100 rounds — the seed columns are too narrow for a label every 50.
+    # every 100 rounds, the seed columns are too narrow for a label every 50.
     ticks = [c for c in cols if int(cols_round[c]) % 100 == 0] or list(cols[::10])
     tick_labels = [str(int(cols_round[c])) for c in ticks]
 
@@ -634,33 +627,21 @@ def plot_phq9_combined_grid(sections, cols_round, *,
                             phq9_vmax=27, path="", filename="default",
                             save=False, show=True, overwrite=False,
                             prefix="phq9_combined_grid"):
-    """Combined PHQ-9 figure: per section a line row + a PHQ-9 heatmap row.
+    """Stacked figure: per section one line row plus one PHQ-9 heatmap row, one column per seed.
 
-    This is :func:`plot_param_combo_grid` with the critical-slowing-down rows
-    (rolling SD, lag-1 autocorrelation) removed and two such per-combo grids
-    stacked into one figure — e.g. SDC on top, SDA below. For each section it
-    draws, one column per seed:
-
-        * a line panel — unweighted mean PHQ-9 (``phq9_color``, left axis) and
-          PHQ-9 assortativity (``assort_color``, twin right axis, dashed zero
-          line); and
-        * a PHQ-9 dot-grid heatmap (one square per agent per assessment, agents
-          sorted low->high by final PHQ-9, ``RdYlGn_r`` on [0, phq9_vmax]).
-
-    The mean-PHQ-9 line uses ``phq9_color`` (default the palette's deep brown)
-    rather than the firebrick of the per-combo grids. Each section sets its own
-    line y-limits (SDC and SDA live on very different PHQ-9 / assortativity
-    scales) but its heatmap row shares the [0, phq9_vmax] colour scale.
+    `plot_param_combo_grid` without the critical-slowing-down rows, with several
+    sections (e.g. SDC on top, SDA below) in one figure. The line panel shows mean
+    PHQ-9 (`phq9_color`) and PHQ-9 assortativity (`assort_color`, twin axis); the
+    heatmap is one square per agent per assessment, agents sorted by final PHQ-9,
+    RdYlGn_r on [0, phq9_vmax]. Each section sets its own line y-limits.
 
     Args:
-        sections: ordered list of ``(label, per_seed)``. ``label`` is the side
-            caption (e.g. ``"SDC"``); ``per_seed`` is a list of per-seed dicts
-            ``{"mean": 1-D, "assort": 1-D, "phq9": (n_agents x n_cols)}`` — the
-            ``mean_phq9`` / ``assort`` of :func:`phq9_mean_and_assortativity` and
-            the ``phq9_m`` of :func:`_csd_matrices` (rows already sorted).
-        cols_round: shared 1-D round axis (len == n_cols), e.g. [0, 10, …, 300].
+        sections: ordered list of (label, per_seed); per_seed is a list of dicts with
+            "mean" (1-D), "assort" (1-D) and "phq9" (n_agents x n_cols, rows sorted).
+        cols_round: shared 1-D round axis, e.g. [0, 10, ..., 300].
 
-    Returns the section labels drawn, or None when skipped because the PNG exists.
+    Returns:
+        list[str] | None: section labels drawn, or None when the PNG exists and overwrite is off.
     """
     if _skip_existing(path, filename, prefix, overwrite, save):
         return None
@@ -772,7 +753,7 @@ def plot_phq9_combined_grid(sections, cols_round, *,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Phase portrait — degree-weighted PHQ-9 vs PHQ-9 assortativity, gridded
+#  Phase portrait, degree-weighted PHQ-9 vs PHQ-9 assortativity, gridded
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _first_finite(x, y):
@@ -789,26 +770,19 @@ def plot_phase_grid(cells, color_map, *, row_titles, col_titles,
                     ylabel=r"PHQ-9$_\rho$", smooth=None, row_ylims=None,
                     path="", filename="default", save=False, show=True,
                     overwrite=False, prefix="phase_dw_phq9_assort"):
-    """One gridded phase-portrait figure: dw PHQ-9 (x) vs PHQ-9 assortativity (y).
-
-    Each subplot is one (row, col) cell of the grid and holds one *trajectory per
-    seed*, coloured by configuration (so a config shows as several same-coloured
-    lines). The grid layout is generic:
-
-        rows  -> ``row_titles``  (e.g. ["Directed", "Undirected"])
-        cols  -> ``col_titles``  (e.g. ["Non-debiased", "Debiased"])
+    """Gridded phase portraits: degree-weighted PHQ-9 (x) vs PHQ-9 assortativity (y), one trajectory per seed.
 
     Args:
-        cells:     ``{(row, col): [trajectory, ...]}`` where each trajectory is a
-                   dict ``{"label": str, "dw": 1-D array, "assort": 1-D array}``
-                   (the output of :func:`phq9_dw_and_assortativity`, plus a config
-                   label). Missing cells are drawn empty.
-        color_map: ``{label: colour}`` shared across every subplot so a config has
-                   one colour throughout, and one legend entry.
-        row_titles/col_titles: cell labels; their lengths set the grid shape.
+        cells: {(row, col): [trajectory, ...]}; each trajectory is a dict with "label",
+            "dw" (1-D) and "assort" (1-D), as returned by `phq9_dw_and_assortativity`.
+            Missing cells are drawn empty.
+        color_map: {label: colour}, shared by every subplot and the legend.
+        row_titles, col_titles: cell labels; their lengths set the grid shape.
+        smooth: optional rolling window applied to both series.
+        row_ylims: optional per-row y-limits.
 
-    Returns the list of labels that actually appeared (legend order), or None when
-    skipped because the PNG already exists.
+    Returns:
+        list[str] | None: labels that appeared (legend order), or None when skipped.
     """
     if _skip_existing(path, filename, prefix, overwrite, save):
         return None
@@ -875,12 +849,12 @@ def plot_phase_grid(cells, color_map, *, row_titles, col_titles,
 
 
 def _downsample_ts_agg(d, step):
-    """Sub-sample one TS aggregate to a point every ``step`` assessments.
+    """Sub-sample one TS aggregate to a point every `step` assessments.
 
-    The means and the round axis are taken every ``step``-th sample (the kept
-    datapoint), while the ±SD spreads are *averaged* over each block of ``step``
+    The means and the round axis are taken every `step`-th sample (the kept
+    datapoint), while the ±SD spreads are *averaged* over each block of `step`
     so the plotted spread reflects the whole window, not a single point.
-    Returns ``d`` unchanged when ``step`` is None / <= 1.
+    Returns `d` unchanged when `step` is None / <= 1.
     """
     if not d or step is None or step <= 1:
         return d
@@ -900,32 +874,22 @@ def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
                                      prefix="ts_phq9_assort_grid",
                                      dw_color="#d96907", mean_color="#8d2c03",
                                      assort_color="#2e7ebc", xmax=300, step=5):
-    """Time-series grid of PHQ-9 score + assortativity, one cell per (row, col).
+    """Time-series grid: across-seed mean PHQ-9 (degree-weighted and plain) and assortativity per cell.
 
-    The temporal counterpart of :func:`plot_phase_grid`: instead of a phase
-    portrait, each cell plots, against the round number, the across-seed mean of
-
-      * degree-weighted mean PHQ-9 (``dw_color``, left axis),
-      * unweighted mean PHQ-9 (``mean_color``, left axis), and
-      * PHQ-9 assortativity (``assort_color``, twin right axis),
-
-    each with a ±SD-across-seeds spread (a shaded band for the two PHQ-9 series,
-    error bars for assortativity). Both y-axes are shared *per row* (each row is
-    one network type) and scaled to that row's data extent so the panels fill.
+    Temporal counterpart of `plot_phase_grid`. Each cell plots the across-seed mean of
+    the three series against the round, with a +/- SD band (PHQ-9) or error bars
+    (assortativity); y-axes are shared per row.
 
     Args:
-        cells: ``{(row, col): agg}`` where ``agg`` is the across-seed aggregate
-            ``{"t", "dw_mean", "dw_sd", "mean_mean", "mean_sd",
-               "assort_mean", "assort_sd"}`` (all 1-D, same length as ``t``).
-            Missing cells are drawn empty.
-        row_titles/col_titles: cell labels; their lengths set the grid shape.
-        xmax: right x-limit (rounds), default 300.
-        step: keep one datapoint every ``step`` assessments (means sub-sampled,
-            ±SD averaged over each block; see :func:`_downsample_ts_agg`).
-            Default 5; pass 1 / None to plot every point.
+        cells: {(row, col): agg} with agg = {"t", "dw_mean", "dw_sd", "mean_mean",
+            "mean_sd", "assort_mean", "assort_sd"}, all 1-D of equal length.
+        row_titles, col_titles: cell labels; their lengths set the grid shape.
+        xmax (int): right x-limit in rounds.
+        step (int): keep one point every `step` assessments (see `_downsample_ts_agg`);
+            1 or None plots every point.
 
-    Returns the (row, col) cells that were drawn, or None when skipped because the
-    PNG already exists.
+    Returns:
+        list | None: (row, col) cells drawn, or None when skipped.
     """
     if _skip_existing(path, filename, prefix, overwrite, save):
         return None
@@ -1094,20 +1058,20 @@ def visualize_run(network, path, filename, *, phq9_interval=None, csd_window=8,
                   snapshots=True):
     """Produce the per-run figures (and the CDS validation table) for one run.
 
-    Drop-in replacement for the network-evolution block in ``experiment.ipynb``::
+    Drop-in replacement for the network-evolution block in `experiment.ipynb`::
 
         nev.visualize_run(network, plot_path, plot_filename,
                           phq9_interval=args.check_point, save=args.save)
 
-    Writes three figures into ``path``: the CDS-evolution graph
-    (``cds_evolution_*``), the critical-slowing-down dot grid
-    (``csd_heatmaps_w*``) and — when ``snapshots`` — the 10-panel PHQ-9 network
-    sequence (``network_snapshot_phq9_*``), identical to ``experiment.ipynb``'s
-    ``vis.print_subnetworks_phq9``.
+    Writes three figures into `path`: the CDS-evolution graph
+    (`cds_evolution_*`), the critical-slowing-down dot grid
+    (`csd_heatmaps_w*`) and, when `snapshots`, the 10-panel PHQ-9 network
+    sequence (`network_snapshot_phq9_*`), identical to `experiment.ipynb`'s
+    `vis.print_subnetworks_phq9`.
 
-    ``phq9_interval`` defaults to a best-effort guess from the data; pass
-    ``args.check_point`` when you have it for an exact cadence. With
-    ``overwrite=False`` (the default) any figure whose PNG already exists is
+    `phq9_interval` defaults to a best-effort guess from the data; pass
+    `args.check_point` when you have it for an exact cadence. With
+    `overwrite=False` (the default) any figure whose PNG already exists is
     skipped individually, so re-running only fills in what's missing.
     """
     if phq9_interval is None:

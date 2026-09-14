@@ -1,3 +1,4 @@
+"""The `Agent` class: persona, PHQ-9 state, prompt building and LLM-output parsing for one agent."""
 import numpy as np
 try:
     from ..utils import metrics
@@ -9,24 +10,19 @@ import re
 import json
 
 class Agent:
-    """
-    A agent in the network, with a unique ID and a response threshold.
-    The response threshold is a random number between 0 and 1, which is used to determine whether the agent will respond to a piece of news.
-    The agent can be in one of two states: activated or not activated.
-    The agent can also be a sampler, which means that it will always respond to a piece of news, regardless of the response threshold.
+    """One agent: a persona, a PHQ-9 state and the post history the LLM prompts are built from.
+
+    Holds the per-round bookkeeping (activation, posts, neighbour context, PHQ-9 series),
+    builds the post-generation and PHQ-9-questionnaire prompts, and parses the LLM output.
     """
     def __init__(self, ID, rng=None, persona=None, well_being=None):
-        """
-        Initialize the agent.
+        """Create an agent with its persona and starting well-being.
 
         Args:
-            ID (int): The unique ID of the agent.
-            rng (np.random.Generator, optional): The random number generator to use. Defaults to None.
-        
-        Attributes:
-            response_threshold (float): The response threshold of the agent.
-            activation_state (bool): Whether the agent is activated or not.
-            agent_connections (set): The set of agents that the agent is connected to.
+            ID (int): unique agent id.
+            rng (np.random.Generator | None): the agent's own random generator.
+            persona (str | dict | None): persona text, or a Nemotron-style persona dict.
+            well_being (dict | None): starting PHQ-9 sum score and age.
         """
         self.ID = ID
         self.agent_connections = set()
@@ -59,7 +55,7 @@ class Agent:
         # all_phq9_sumscores) holding this agent's own committed tweet + PHQ-9 and
         # the full tweets/IDs/PHQ-9 of every activated neighbour seen that round.
         # CDS stats (fraction of neighbours with CDS, own distortion probability)
-        # are derived post-hoc from this via metrics.neighbor_cds_records — the
+        # are derived post-hoc from this via metrics.neighbor_cds_records, the
         # live frac_distorted_neigh / network.cds_info path is left untouched.
         self.neighbor_history = []
         self._pending_neighbor_context = None
@@ -127,8 +123,8 @@ class Agent:
            Everything before (and including) the first </think> is reasoning.
         3. Unclosed <think> blocks (model started but never closed)
         4. Plain-text "Thinking Process:" blocks
-        5. Gemma 4 channel-style thought blocks (``<|channel>thought ... <channel|>``,
-           closed or unclosed) and a leaked ``<turn|>`` end-of-turn token. With
+        5. Gemma 4 channel-style thought blocks (`<|channel>thought ... <channel|>`,
+           closed or unclosed) and a leaked `<turn|>` end-of-turn token. With
            thinking disabled the Gemma 4 chat template already emits an empty
            thought block inside the prompt, so this is defensive only.
         """
@@ -195,8 +191,7 @@ class Agent:
     @staticmethod
     def well_being_prompt(well_being : dict):
 
-        """
-        Build a concise well-being prompt based on PHQ-9 and related fields.
+        """Build a concise well-being prompt based on PHQ-9 and related fields.
 
         Expects `well_being` to be the output of `parse_phq9`.
         """
@@ -228,8 +223,7 @@ class Agent:
         )
     
     def phq9_questionnaire_prompt(self, tokenizer, tweets: list[str]):
-        """
-        build the persona-aware phq9_questionnaire_prompt (only live variant;
+        """build the persona-aware phq9_questionnaire_prompt (only live variant;
         the non-persona system_user / user_template_user paths were removed)
         """
         system = self._PROMPTS["phq9"]["system_persona"]
@@ -245,7 +239,19 @@ class Agent:
 
 
     def build_tweet_prompt(self, tokenizer, round_idx, neighbor_pairs, max_chars=240, force_active=False, tweet_block_phq9=False):
+        """Build the chat prompt for this agent's next post from persona, own history and neighbour posts.
 
+        Args:
+            tokenizer: chat-template tokenizer.
+            round_idx (int): current round.
+            neighbor_pairs (list): (neighbour id, post) pairs the agent sees this round.
+            max_chars (int): post length budget written into the prompt.
+            force_active (bool): must be True; the non-forced path was removed.
+            tweet_block_phq9 (bool): include the PHQ-9 block in the prompt.
+
+        Returns:
+            str: the rendered chat prompt.
+        """
         prompt_cfg = self._PROMPTS["tweet_gen"]
         if not force_active:
             raise ValueError(
@@ -274,7 +280,7 @@ class Agent:
                 previous_tweet_block=previous_tweet_block,
             )
         else:
-            # Main simulation path — SA-aligned format.
+            # Main simulation path, SA-aligned format.
             recent_own = [t for t in self.tweethistory[-3:] if t and t != FC.NO_CONTENT]
             if recent_own:
                 own_section = "### PREVIOUS POSTS ###\n" + "\n".join(
@@ -306,8 +312,7 @@ class Agent:
         return messages
     
     def step_llm_tweet(self, tokenizer, rng, round_idx, max_chars=240, force_active=False, tweet_block_phq9=False):
-        """
-        Use the LLM to decide whether to tweet or not.
+        """Use the LLM to decide whether to tweet or not.
 
         Args:
             round_idx (int): The current round index.
@@ -321,7 +326,7 @@ class Agent:
 
         # gather neighbor tweets (+ full per-neighbour context for CDS parsing
         # and neighbour-PHQ-9 research). The context spans *all* activated
-        # neighbours — the same denominator as frac_distorted_neigh — so the CDS
+        # neighbours, the same denominator as frac_distorted_neigh, so the CDS
         # stats can be re-derived exactly from neighbor_history afterwards.
         neighbor_context = []
         for n in activated_neighbors:
@@ -359,8 +364,7 @@ class Agent:
         return prompt
     
     def send_tweet(self, max_chars, raw_tweet):
-        '''
-        Process the raw tweet output from the LLM and update the agent's next tweet and activation  state.
+        '''Process the raw tweet output from the LLM and update the agent's next tweet and activation  state.
         Args:
             max_chars (int): The maximum number of characters for the tweet.
             raw_tweet (str): The raw tweet output from the LLM.
@@ -384,14 +388,13 @@ class Agent:
         print(f"Agent {self.ID}, POST/TWEET: {self._next_last_tweet}, phq-9: {self.well_being.get('phq9_sumscore') if self.well_being else 'None'}")
     # Finalize the activation state for this step
     def commit(self, n_grams, update_score=False, round_idx=None) -> bool:
-        """
-        Commit the next activation state and last tweet.
+        """Commit the next activation state and last tweet.
         S.T all updates happen simultaneously after all agents have decided.
 
-        Also appends one entry to ``self.neighbor_history`` (index-aligned with
-        ``tweethistory`` / ``all_phq9_sumscores``) capturing this round's own
+        Also appends one entry to `self.neighbor_history` (index-aligned with
+        `tweethistory` / `all_phq9_sumscores`) capturing this round's own
         tweet/PHQ-9/distortion plus the full neighbour context stashed by
-        ``step_llm_tweet``. ``round_idx`` (the network iteration) is stored when
+        `step_llm_tweet`. `round_idx` (the network iteration) is stored when
         provided, else the 0-based position is used.
         """
         tweetje = self._next_last_tweet
@@ -419,7 +422,7 @@ class Agent:
         # record the full per-round neighbour context (raw data; CDS stats are
         # parsed post-hoc via metrics.neighbor_cds_records). Neighbours were
         # gathered in step_llm_tweet (previous-round neighbour state); own
-        # tweet/activation/distortion are this round's — the same temporal join
+        # tweet/activation/distortion are this round's, the same temporal join
         # the live cds_info uses.
         neighbors = (self._pending_neighbor_context
                      if self._pending_neighbor_context is not None else [])
@@ -436,8 +439,7 @@ class Agent:
         return distorted
     
     def update_well_being(self, sumscore: int, new_phq9=False):
-        """
-        Update the well-being information of the agent.
+        """Update the well-being information of the agent.
 
         Args:
             sumscore (int): The new PHQ-9 sumscore.
@@ -451,13 +453,12 @@ class Agent:
             self._tweets_since_phq9_update = 0
 
     def parse_tweet_decision(self, text: str):
-        """
-        Parse the LLM output to determine if the agent decided to post/tweet.
+        """Parse the LLM output to determine if the agent decided to post/tweet.
         Recognises both TWEET:/NO_TWEET and POST:/NO_POST based on ABM_FORMAT.
 
         Strategy:
           1. Strip thinking, extract tweet from the clean answer.
-          2. If the answer is a ``<content>`` placeholder (model ran out of
+          2. If the answer is a `<content>` placeholder (model ran out of
              tokens before writing the real tweet), fall back to searching the
              *full* output (including the thinking block) for the last POST:
              with real content.
@@ -526,7 +527,7 @@ class Agent:
     @staticmethod
     def _find_last_real_tweet(text: str, prefix_kw: str):
         """Walk backwards through every POST:/TWEET: in *text* and return
-        the last one whose content is not a ``<content>`` placeholder."""
+        the last one whose content is not a `<content>` placeholder."""
         low = text.lower()
         search_end = len(low)
         while True:
@@ -557,8 +558,7 @@ class Agent:
         return candidate
         
     def respond(self) -> list:
-        """
-        Determine which connected agents are activated (sent out tweet).
+        """Determine which connected agents are activated (sent out tweet).
         
         Returns:
             set: The set of agents that should be activated
@@ -572,8 +572,7 @@ class Agent:
         return sorted(actually_activated, key=lambda a: a.ID)
 
     def add_edge(self, agent):
-        """
-        Add an edge to the agent.
+        """Add an edge to the agent.
 
         Args:
             agent (agent): The agent to add as an edge.
@@ -581,8 +580,7 @@ class Agent:
         self.agent_connections.add(agent)
 
     def remove_edge(self, agent):
-        """
-        Remove an edge from the agent.
+        """Remove an edge from the agent.
 
         Args:
             agent (agent): The Agent to remove as an edge.
@@ -590,14 +588,13 @@ class Agent:
         self.agent_connections.discard(agent)
     
     def __hash__(self):
-        """
-        Hash the agent by its ID.
+        """Hash the agent by its ID.
         Needed for the set data structure.
 
-        ID alone (not persona) so the hash stays consistent with ``__eq__``,
+        ID alone (not persona) so the hash stays consistent with `__eq__`,
         which compares by ID only, and so agents remain hashable when the
         persona is an unhashable structured value (e.g. the dict personas saved
-        by the ``happy`` runs rather than a plain string).
+        by the `happy` runs rather than a plain string).
 
         Returns:
             int: The hash of the agent.
@@ -605,7 +602,6 @@ class Agent:
         return hash(self.ID)
 
     def __eq__(self, other):
-        """
-        Check if the agent is equal to another agent.
+        """Check if the agent is equal to another agent.
         """
         return isinstance(other, Agent) and self.ID == other.ID 

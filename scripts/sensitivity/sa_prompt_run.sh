@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prompt-axis sensitivity GENERATION driver (counterpart of sa_run.sh).
 #
-# Generates posts for a set of post-generation instruction prompts —
-#   minimal (un-optimised), iter_10 (human-in-the-loop), and the TextGrad seeds —
+# Generates posts for a set of post-generation instruction prompts,
+#   minimal (un-optimised), iter_10 (human-in-the-loop), and the TextGrad seeds,
 # with EVERYTHING but the prompt held fixed:
 #     * same personas       (same --agent-seed across every prompt)
 #     * same neighbour posts (same --neighbor-seed across every prompt)
