@@ -1,32 +1,12 @@
-"""Pretty, correct network-evolution figures for a single simulation run.
+"""Network-evolution figures for one saved simulation run (CDS, PHQ-9, phase plots).
 
-A focused replacement for the network-evolution plots that are scattered through
-``visualization.py``. Everything here is driven off the *saved per-round data* of
-one loaded run (``network.all_agents`` -> ``tweethistory`` / ``all_phq9_sumscores``),
-so the figures can be regenerated from any checkpoint without re-running the LLM.
-
-Two things were wrong with the old plots and are fixed here:
-
-1.  **CDS prevalence was effectively always zero.** ``basis`` runs simulate with
-    an empty n-gram set (``cds_dynamic`` off -> ``n_grams=[]`` in
-    ``llama_activate.update_network``), so every *stored* distortion flag
-    (``running_fracs`` / ``fracs_dist_step`` / ``agent.distorted_tweets``) is
-    ``False``. We instead **recompute CDS from the raw tweet text** with the
-    *validated* detector from ``tools/validate_cds.py`` (compiled, word-boundary,
-    category-aware n-gram regexes -- the same logic ``validate_cds`` uses to show
-    CDS rises with PHQ-9).
-
-2.  **PHQ-9 only changes every ``check_point`` (default 10) rounds**, yet
-    ``all_phq9_sumscores`` stores one (constant) value per round. Critical-slowing-
-    down over a 6-round window therefore sat inside a flat block (variance 0,
-    autocorrelation undefined). We subsample at the update cadence so one heatmap
-    column == one real PHQ-9 update, and the rolling window spans genuine changes.
-
-Paths / filenames come from ``PathManager`` exactly as in ``experiment.ipynb``::
-
-    import utils.network_evolution as nev
-    nev.visualize_run(network, plot_path, plot_filename,
-                      phq9_interval=args.check_point, save=args.save)
+Works only from the saved per-round data of a loaded run, so figures can be
+redrawn from any checkpoint without the LLM. Two things to know: CDS is
+recomputed from the raw post text with the category-aware detector in
+`utils.tools.cds`, because the stored distortion flags are all False; and
+PHQ-9 series are subsampled at the assessment cadence (`check_point`), because
+the stored per-round values only change every `check_point` rounds.
+Entry point: `visualize_run`; CLI wrapper: `utils.tools.plot_network_evolution`.
 """
 
 import os
@@ -39,30 +19,18 @@ from matplotlib.lines import Line2D
 import networkx as nx
 
 from . import metrics
+from .tools.cds import compile_category_patterns, load_ngrams_by_category
 from .tools.format_config import FC
 
 NGRAMS_PATH = "data/distorted_language_ngrams.tsv"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  CDS detection  (reuses the validated detector from tools/validate_cds.py)
+#  CDS detection  (category-aware detector from utils.tools.cds)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_cds_patterns(ngrams_path=NGRAMS_PATH):
-    """Return {category: compiled regex} using the validated ``validate_cds`` logic.
-
-    ``validate_cds`` forces the headless ``Agg`` matplotlib backend at import time;
-    we snapshot and restore the caller's backend (e.g. the notebook's inline
-    backend) so importing it here doesn't silently kill inline figures.
-    """
-    import matplotlib
-    backend = matplotlib.get_backend()
-    from .tools.validate_cds import load_ngrams_by_category, compile_category_patterns
-    if matplotlib.get_backend() != backend:
-        try:
-            matplotlib.use(backend)
-        except Exception:
-            pass
+    """Return {category: compiled regex} for the CDS n-gram TSV."""
     return compile_category_patterns(load_ngrams_by_category(ngrams_path))
 
 
@@ -1058,16 +1026,19 @@ def plot_phq9_assort_timeseries_grid(cells, *, row_titles, col_titles,
 
 def cds_validation_summary(network, patterns=None, ngrams_path=NGRAMS_PATH,
                            verbose=True):
-    """Validate the recomputed CDS signal against PHQ-9, per (agent, round) event.
+    """Check that the recomputed CDS signal rises with PHQ-9 inside this run.
 
-    Mirrors ``tools/validate_cds.py`` but over the *simulation* rather than the
-    training corpus: every active tweet is one event tagged with the agent's PHQ-9
-    that round and whether the tweet contains CDS. Reports % CDS per PHQ-9 severity
-    band and the point-biserial correlation, so you can confirm the in-run signal
-    behaves like the validated training-data signal (CDS more likely at higher PHQ-9).
+    Same question as `checks/check_cds_tracks_phq9.py`, but over the simulation:
+    every active post is one event tagged with the agent's PHQ-9 that round.
 
-    Returns a dict with ``per_band`` (list of (band, n, pct)), ``r_pointbiserial``
-    and overall ``pct_cds``.
+    Args:
+        network: loaded simulation run.
+        patterns (dict | None): compiled CDS regexes; loaded from `ngrams_path` if None.
+        ngrams_path (str): CDS n-gram TSV.
+        verbose (bool): print the per-band table.
+
+    Returns:
+        dict: `per_band` (list of (band, n, pct)), `r_pointbiserial`, `pct_cds`.
     """
     if patterns is None:
         patterns = load_cds_patterns(ngrams_path)

@@ -1,31 +1,15 @@
-"""Validate that cognitive-distortion schemas (CDS) get more probable as PHQ-9 rises.
+"""Check that cognitive-distortion (CDS) n-grams get more common as PHQ-9 rises.
 
-Loads the fine-tuning post datasets (train_posts.csv, test_posts.csv, the extra
-split, and the balanced bias-calibration set calibration_posts.csv), flags each
-post for distorted-language n-grams with the same
-detector logic the simulation uses (word-boundary, case-insensitive matching of
-the n-grams in ``data/distorted_language_ngrams.tsv``), and reports the average
-percentage of CDS posts per PHQ-9 score -- overall and broken down by the 12
-cognitive-distortion *categories* in the TSV. If CDS are a real depression
-signal, that percentage should trend upward with PHQ-9.
-
-It also writes a figure (``--fig``) with two panels:
-    (left)  overall % CDS posts vs PHQ-9 score, and
-    (right) a category x PHQ-9-severity-band heatmap.
-
-Usage:
-    PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.validate_cds
-    PYTHONPATH=src .venv_vllm/bin/python -m utils.tools.validate_cds \\
-        --data-dir data/finetune --ngrams data/distorted_language_ngrams.tsv \\
-        --fig plots/cds_validation.png --out data/finetune/cds_by_phq9.csv
+Loads the fine-tuning post CSVs, flags each post with the category-aware CDS
+detector (`utils.tools.cds`, the same one `network_evolution` uses) and reports
+the share of CDS posts per PHQ-9 score, overall and per category. If CDS are a
+real depression signal that share should go up with PHQ-9. Writes a two-panel
+figure (overall trend + category x severity-band heatmap) that the paper uses.
+Run: see checks/README.md.
 """
 
 import argparse
-import csv
-import json
 import os
-import re
-import sys
 
 import matplotlib
 matplotlib.use("Agg")  # headless / cluster-safe
@@ -33,9 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Allow running as a plain script (python src/utils/tools/validate_cds.py),
-# not just as a module, by putting the src/ dir on the path.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
 DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "test_posts_extra.csv",
                  "calibration_posts.csv")
@@ -51,64 +33,8 @@ SEVERITY_BANDS = [
 BAND_ORDER = [b[2] for b in SEVERITY_BANDS]
 
 
-def load_ngrams_by_category(filepath: str, skip_header=True) -> dict:
-    """Load distorted-language n-grams grouped by their CDS category.
-
-    Same TSV format / parsing as ``metrics.load_ngrams_tsv`` (base marker in
-    column 1, optional JSON list of variants in column 2) but keyed by the
-    category in column 0, so we can attribute each detection to a distortion
-    type instead of collapsing them into one set.
-
-    Returns:
-        dict[str, set[str]]: category -> set of lowercased n-grams.
-    """
-    by_cat: dict[str, set] = {}
-    with open(filepath, "r", encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter="\t")
-        if skip_header:
-            next(reader, None)
-        for row in reader:
-            if len(row) < 2:
-                continue
-            category = row[0].strip() or "uncategorized"
-            bucket = by_cat.setdefault(category, set())
-            base = row[1].strip().lower()
-            if base:
-                bucket.add(base)
-            if len(row) > 2 and row[2].strip():
-                variants_str = row[2].strip()
-                try:
-                    variants = json.loads(variants_str)
-                    if isinstance(variants, list):
-                        for v in variants:
-                            clean = v.strip().lower()
-                            if clean:
-                                bucket.add(clean)
-                except json.JSONDecodeError:
-                    clean = variants_str.lower()
-                    if clean:
-                        bucket.add(clean)
-    return by_cat
-
-
-def compile_category_patterns(by_cat: dict) -> dict:
-    """Compile one word-boundary alternation regex per category.
-
-    Mirrors ``metrics.contains_ngram`` (``\\b<ngram>\\b``, case-insensitive) but
-    matches all of a category's n-grams in a single pass instead of one regex
-    per n-gram -- two orders of magnitude faster over tens of thousands of posts.
-    """
-    patterns = {}
-    for cat, ngrams in by_cat.items():
-        if not ngrams:
-            continue
-        alt = "|".join(re.escape(ng) for ng in sorted(ngrams, key=len, reverse=True))
-        patterns[cat] = re.compile(r"\b(?:" + alt + r")\b", re.IGNORECASE)
-    return patterns
-
-
 def load_posts(data_dir: str, files=DEFAULT_FILES) -> pd.DataFrame:
-    """Concatenate the available fine-tuning post CSVs into one frame."""
+    """Concatenate the fine-tuning post CSVs that exist in `data_dir` into one frame."""
     frames = []
     for name in files:
         path = os.path.join(data_dir, name)
@@ -125,6 +51,7 @@ def load_posts(data_dir: str, files=DEFAULT_FILES) -> pd.DataFrame:
 
 
 def _severity(phq9: int) -> str:
+    """Map a PHQ-9 sum score to its severity band label."""
     for lo, hi, label in SEVERITY_BANDS:
         if lo <= phq9 <= hi:
             return label
@@ -143,17 +70,15 @@ FIG_BAND_LABELS = ["Minimal", "Mild", "Moderate", "Mod. Severe", "Severe"]
 
 def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
                 r_agg: float, fig_path: str):
-    """Two-panel figure: overall trend (left) + category heatmap (right).
+    """Write the two-panel figure: overall trend (left) + category heatmap (right).
 
-    Colour scheme and proportions follow the SA cosine figure in
-    sensitivity/sa_analyze.py: blue/orange accents, an Oranges heatmap, and a
-    wide (~2:1) two-panel layout.
+    Colours and proportions match the SA cosine figure in `sensitivity/sa_analyze.py`.
 
     Args:
-        per_score: columns phq9, pct_cds (overall, any category).
-        cat_band:  index=category, columns=severity bands, values=% CDS.
-        r_agg:     per-score Pearson r (% CDS vs PHQ-9), shown on the left panel.
-        fig_path:  output path (.png/.pdf).
+        per_score (pd.DataFrame): columns phq9, pct_cds (overall, any category).
+        cat_band (pd.DataFrame): index=category, columns=severity bands, values=% CDS.
+        r_agg (float): per-score Pearson r (% CDS vs PHQ-9), shown on the left panel.
+        fig_path (str): output path (.png).
     """
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(7.5, 3.5),
                                    gridspec_kw={"width_ratios": [1, 1.1]})
@@ -204,6 +129,7 @@ def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
 
 
 def main():
+    """Score the posts, print the per-score and per-category tables, write the figure."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", default="data/finetune",
