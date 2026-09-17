@@ -162,5 +162,35 @@ sbatch jobs/run_prompt_optimizer_phq9.job
 | `--batch-size` | Profiles sampled per step. |
 | `--val-sample-size` / `--test-sample-size` | Held-out set sizes for the periodic val / final test scoring. |
 | `--model` | Student/teacher HF model id (defaults to Qwen 27B). |
+| `--train-posts-file` | (`phq9`) CSV(s) to draw train/val from instead of the base set. |
+| `--test-posts-file` | (`phq9`) CSV used as the whole test set; nothing is then held out of the training file. |
+| `--prompts-file` | (`phq9`) JSON with the *starting* `phq9.system_instruction`. Default `data/prompts_optimal.json`, whose instruction is by now itself a TextGrad output, so pass `data/prompts_post_minimal.json` to start from the minimal prompt. |
+| `--out-root` | (`phq9`, `phq9-rerun-test`) parent of the `<model>_seed<seed>/` run folders (default `data/test_post/optimized_phq9`). |
+
+### PHQ-9 on the human-optimized corpus — [jobs/run_prompt_optimizer_phq9_human.job](../jobs/run_prompt_optimizer_phq9_human.job)
+
+The base-set runs above transfer badly to posts written with the human-optimized
+generation prompt (MAE 7.2, bias −6.6 on the shared 300 blocks, worse than the
+minimal prompt). This job re-optimizes the assessment prompt on that corpus, with
+the same loop and hyperparameters and the same data the fine-tuned regressor uses:
+train/val from `data/finetune/train_posts.csv` (2,700 / 300, fixed val subset of
+40), test on `data/finetune/test_posts.csv` (the shared 300 blocks), starting from
+the minimal prompt. One SLURM array task per seed (23 24 25 32 33), 5.5-6 h each on
+one H100 (25-50 min per step; the 5 h default limit plus one `RESUME=1` resubmit
+covers it); outputs under `data/test_post/optimized_phq9_human/`, each run folder
+with a `run_meta.txt` naming its inputs. Result 2026-09-15 on the shared 300 blocks:
+MAE 4.85 ± 0.23, bias −0.51 (five seeds; two of them never beat the minimal prompt
+on validation and so end at it), versus 7.23 / −6.59 for the base-set prompts and
+4.60 / −0.12 for the minimal prompt. Smoke-test the setup first (~10 min):
+
+```bash
+sbatch checks/check_phq9_optimizer_smoke.job
+sbatch --dependency=afterok:<smoke jobid> jobs/run_prompt_optimizer_phq9_human.job
+```
+
+`python -m utils.visualization multimodel` picks the runs up as the
+"LLM prompt (TextGrad, human corpus)" row for Qwen; to add the other generators,
+score the new prompts on their 300-block sets with
+`--mode phq9-rerun-test --out-root data/test_post/optimized_phq9_human --posts-file ... --result-subdir eval_on_<tag>300`.
 
 That's it — pick a mode, pick seeds, submit the job.

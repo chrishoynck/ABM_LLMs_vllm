@@ -24,7 +24,7 @@ PERS=data/finetune/personas_test_300.csv
 
 srun nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
 
-for m in gemma4-31b; do
+for m in mistral-small-24b; do
     echo "################ $m ################"
     HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache HF_HUB_OFFLINE=1 PYTHONPATH=src \
     srun .venv_vllm_g4/bin/python -m utils.create_data.generate_test_data \

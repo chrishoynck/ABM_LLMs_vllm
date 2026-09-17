@@ -23,6 +23,7 @@ import utils.tools.load_personas as lp
 from utils.tools.format_config import FC
 from utils.create_data.test_phq9_llms import (
     derive_tweet_format_block,
+    is_mistral_tokenizer,
     load_instruction_file,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "gather_neighbor_pool",
     "parse_iter_from_prompt_path",
     "derive_tweet_format_block",
+    "is_mistral_tokenizer",
     "load_instruction_file",
 ]
 
@@ -60,11 +62,13 @@ MODEL_ALIASES = {
     "llama70": "meta-llama/Llama-3.3-70B-Instruct",
     "hermes70": "NousResearch/Hermes-3-Llama-3.1-70B",
     "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
-    # Multi-model student arms (PNAS extension, 2026-09). Gemma runs in
-    # .venv_vllm_g4 (vLLM >= 0.19; see requirements_vllm_g4.txt). Kimi-Linear needs
-    # vLLM 0.15.1 (KDA state corruption in >= 0.16) and its arm was dropped on
-    # 2026-09-11: see data/README.md section 4a for the observed behaviour.
+    # Multi-model student arms (PNAS extension, 2026-09). Gemma and Mistral run
+    # in .venv_vllm_g4 (vLLM >= 0.19; see requirements_vllm_g4.txt); Mistral's
+    # tekken.json tokenizer goes through mistral-common, a vLLM dependency.
+    # Kimi-Linear needs vLLM 0.15.1 (KDA state corruption in >= 0.16) and its arm
+    # was dropped on 2026-09-11: see data/README.md section 4a for the behaviour.
     "gemma4-31b": "google/gemma-4-31B-it",
+    "mistral-small-24b": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
     "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 
@@ -105,6 +109,9 @@ def sanitize_model_name(model_id: str) -> str:
 # the same *relative* rule to each vendor's recommended instruct defaults
 # (T x 1.0; top_p = 1 - (1 - p_vendor) / 2):
 #   google/gemma-4-31B-it        vendor 1.0 / 0.95 (generation_config.json) -> 1.0 / 0.975
+#   mistralai/Mistral-Small-3.2-24B-Instruct-2506
+#                                vendor 0.15 / 1.0 (generation_config.json sets
+#                                the temperature; top_p is unset there, so 1.0) -> 0.15 / 1.0
 #   Kimi-Linear-48B-A3B-Instruct vendor 0.6 / 0.95 (Kimi-K2 instruct guidance;
 #                                the Kimi-Linear card gives none)          -> 0.6 / 0.975
 #                                (arm dropped 2026-09-11; row kept for provenance)
@@ -114,6 +121,7 @@ def sanitize_model_name(model_id: str) -> str:
 STUDENT_DECODING = {
     "Qwen/Qwen3.5-27B": (0.7, 0.9),
     "google/gemma-4-31B-it": (1.0, 0.975),
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": (0.15, 1.0),
     "moonshotai/Kimi-Linear-48B-A3B-Instruct": (0.6, 0.975),
 }
 _FALLBACK_DECODING = (0.7, 0.9)
@@ -141,7 +149,9 @@ def get_tokenizer(model_id: str):
 
     `trust_remote_code=True` is needed for checkpoints that ship a custom
     tokenizer class (auto_map in tokenizer_config.json, e.g. Kimi-Linear); it is
-    a no-op for Qwen / Gemma, which ship standard tokenizers.
+    a no-op for Qwen / Gemma, which ship standard tokenizers. Mistral-Small-3.2
+    has no tokenizer.json: transformers 5.x returns a MistralCommonBackend built
+    from tekken.json (pad / eos / bos are set, so nothing else changes here).
     """
     cache_dir = os.environ.get("TRANSFORMERS_CACHE", None)
     tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, use_fast=True,
@@ -184,6 +194,17 @@ def get_llm(model_id: str, seed: int | None = SEED, max_model_len: int = 8192) -
         kwargs["limit_mm_per_prompt"] = {"image": 0, "audio": 0}
         kwargs["enable_prefix_caching"] = True
         gemma4_mm_fallback = {"image": 0}
+    elif "mistral-small" in low:
+        # Mistral 3 checkpoint (text decoder + Pixtral vision encoder): text only.
+        # Load it in Mistral's own format (params.json, consolidated.safetensors,
+        # tekken.json via mistral_common), the setup the model card recommends.
+        # Set explicitly: "auto" picks this only when consolidated.safetensors
+        # happens to be in the cache, and falls back to the HF shards otherwise.
+        kwargs["limit_mm_per_prompt"] = {"image": 0}
+        kwargs["enable_prefix_caching"] = True
+        kwargs["tokenizer_mode"] = "mistral"
+        kwargs["config_format"] = "mistral"
+        kwargs["load_format"] = "mistral"
     if os.environ.get("ABM_DISABLE_PREFIX_CACHING") == "1":
         # Escape hatch (TP=2 + prefix-caching deadlock seen in the TextGrad path
         # on vLLM 0.17.1; see prompt_optimizer._build_engines call sites).

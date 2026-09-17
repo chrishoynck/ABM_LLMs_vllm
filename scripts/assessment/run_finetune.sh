@@ -9,6 +9,8 @@
 #
 #   GEN_TAG=gemma4 GEN_MODEL=gemma4-31b PYTHON_GEN=.venv_vllm_g4/bin/python \
 #       bash scripts/assessment/run_finetune.sh
+#   GEN_TAG=mistral GEN_MODEL=mistral-small-24b PYTHON_GEN=.venv_vllm_g4/bin/python \
+#       bash scripts/assessment/run_finetune.sh
 #
 # Run from the repo root in a GPU session (see jobs/run_finetune_*.job). All
 # output is tee'd to logs/finetune[_<tag>]_<timestamp>.log.

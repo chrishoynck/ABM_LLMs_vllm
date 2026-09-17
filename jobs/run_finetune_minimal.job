@@ -1,0 +1,47 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=ft_minimal
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=05:00:00
+#SBATCH --array=0-1
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A_%a.out
+
+# Minimal-prompt arm of the fine-tune corpus: the same 3,000 training personas
+# (data/personas_finetune_phq9.csv) and 300 shared test personas
+# (data/finetune/personas_test_300.csv) as the human-optimized arm, written under
+# the iter_0 (minimal) prompt instead of iter_10; then the Qwen-trained
+# MentalBERT+MLP regressors are fine-tuned on those posts and scored on the
+# minimal 300-block set. Everything else stays as in the human-optimized arm
+# (engine seed 1234, sampling seed 42, Qwen-teacher neighbours seed 42, 10 posts
+# per block, per-model decoding from loaders.STUDENT_DECODING). Tagged layout, so
+# the human-optimized files are untouched:
+#   data/finetune/<tag>/{train,test}_posts_<tag>.csv (+ .meta.json)
+#   data/test_post/bert_regression_finetuned_<tag>/{<model>_seed3[4-8]/, eval_finetuned/}
+#   data/test_post/bert_regression/eval_baseline_<tag>/       teacher-set regressors
+#   data/test_post/bert_regression_finetuned/eval_<tag>300/   human-opt fine-tuned regressors
+# Task 0 = Qwen3.5-27B (tag qwen_minimal, .venv_vllm), task 1 = Gemma-4-31B-it
+# (tag gemma4_minimal, .venv_vllm_g4). Generation is chunked and resumable, so a
+# timeout only needs a resubmit. The human-opt Gemma arm took 2h08 on 2x A100.
+# Afterwards: PYTHONPATH=src .venv_vllm/bin/python -m utils.visualization multimodel
+# picks the new arm up (visualization.MULTIMODEL_MINIMAL_ARMS).
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+
+if [[ "${SLURM_ARRAY_TASK_ID}" == "0" ]]; then
+    export GEN_TAG=qwen_minimal GEN_MODEL=qwen27 PYTHON_GEN=.venv_vllm/bin/python
+else
+    export GEN_TAG=gemma4_minimal GEN_MODEL=gemma4-31b PYTHON_GEN=.venv_vllm_g4/bin/python
+    export HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache   # non-Qwen weights + MentalBERT
+    export HF_HUB_OFFLINE=1
+fi
+export PYTHON_BERT=.venv_vllm/bin/python
+export PROMPT=data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt
+
+srun nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+srun "${PYTHON_GEN}" -uc "import torch, vllm; print('GPU available?', torch.cuda.is_available(), '| vllm', vllm.__version__)"
+srun bash scripts/assessment/run_finetune.sh

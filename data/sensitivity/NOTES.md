@@ -15,7 +15,8 @@ Each run dir: posts.csv + embeddings.npz (MentalBERT) + embeddings_sbert.npz (sa
 - `network_sdc/` — SDC variant (manual invocation, `sa_network.py --net sdc`).
 
 ## Plot dirs (naming quirk: they live under data/, not plots/)
-- `plots/` — MentalBERT-cosine arm → CS thesis `fig:cosine_drop` (SA_anchors.png).
+- `plots/` — REMOVED 2026-09-15 (MentalBERT-cosine arm, last written 2026-05-31; no tex referenced it,
+  CS thesis `SA_anchors.png` lives in the thesis repo). `sa_analyze.py` without `--emb-name` would recreate it.
 - `plots_sbert/` — SBERT arm (current) → GABM appendix + PNAS paper figures.
 - `plots_phq9/` — `sa_phq9.py` (|Δ predicted PHQ-9|) → GABM appendix only.
 

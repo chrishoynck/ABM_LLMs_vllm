@@ -7,7 +7,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from vllm import SamplingParams
+from vllm import SamplingParams, TokensPrompt
 
 from classes.agent import Agent
 from utils.tools.format_config import FC
@@ -55,6 +55,16 @@ def derive_tweet_format_block(prompts: dict, max_chars: int = 240) -> str:
     return ""
 
 
+def is_mistral_tokenizer(tokenizer) -> bool:
+    """True for transformers' MistralCommonBackend (tekken.json via mistral_common).
+
+    Its chat template only round-trips as token ids: rendering to text and
+    re-encoding loses the [INST] control tokens, and it rejects the
+    enable_thinking kwarg, so callers send ids to vLLM instead of text.
+    """
+    return "MistralCommon" in type(tokenizer).__name__
+
+
 class TestLLMs:
     """Network-free post generator: each agent writes `check_point` posts for its (persona, PHQ-9) pair.
 
@@ -71,6 +81,7 @@ class TestLLMs:
                  neighbor_pool: list = None, num_neighbors: int = 5,
                  neighbor_seed: int = None,
                  nondeterministic_sampling: bool = False,
+                 per_agent_seed: bool = False,
                  gen_temp: float = 0.7, gen_top_p: float = 0.9):
         """Set up the agents from personas and PHQ-9 assignments, plus the neighbour pool and decoding settings.
 
@@ -87,6 +98,8 @@ class TestLLMs:
             phq9_assignments (list | None): PHQ-9 per agent, aligned with `personas`.
             neighbor_pool (list | None), num_neighbors (int), neighbor_seed (int | None): neighbour context.
             nondeterministic_sampling (bool): unseeded sampling per request.
+            per_agent_seed (bool): seeded sampling with a distinct seed per (agent, round)
+                instead of one seed shared by every request in a round.
             gen_temp (float), gen_top_p (float): decoding settings.
         """
         self.rng = np.random.default_rng(seed)
@@ -158,6 +171,12 @@ class TestLLMs:
         # samples fresh each invocation. Neighbour-pool RNGs above stay
         # seeded so the per-(agent, round) neighbour set remains reproducible.
         self.nondeterministic_sampling = bool(nondeterministic_sampling)
+        # Seeded tweet generation normally gives every request in a round the SAME
+        # seed (self.seed + round), so agents with similar prompts walk the same
+        # random stream and repeat each other. With per_agent_seed each request
+        # gets seed = SeedSequence([self.seed, agent.ID, round]): reproducible
+        # across runs, independent across agents (checks/check_seeding.job).
+        self.per_agent_seed = bool(per_agent_seed)
         # Tweet-generation sampling. Defaults to the optimizer student values
         # (0.7 / 0.9) so every existing caller is byte-identical; the decoding
         # sensitivity sweep overrides these per setting (via generate_test_data
@@ -257,6 +276,7 @@ class TestLLMs:
         """
         prompts = []
         force_active = not self.interaction
+        mistral = is_mistral_tokenizer(tokenizer)
         for agent in self.all_agents:
             if self.tweet_instruction is not None:
                 messages = self._build_aligned_tweet_messages(agent)
@@ -265,22 +285,37 @@ class TestLLMs:
                     tokenizer, self.rng, round_idx=self.iterations,
                     force_active=force_active, tweet_block_phq9=True,
                 )
-            templated = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
-                enable_thinking=self.thinking,
-            )
+            if mistral:
+                # MistralCommonBackend: rejects enable_thinking, and its rendered
+                # text does not re-encode to the control tokens, so send ids.
+                ids = tokenizer.apply_chat_template(
+                    messages, tokenize=True, add_generation_prompt=True,
+                    return_dict=False,
+                )
+                templated = TokensPrompt(prompt_token_ids=ids)
+                shown = tokenizer.decode(ids, skip_special_tokens=False)
+            else:
+                templated = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=self.thinking,
+                )
+                shown = templated
             if len(prompts) == 0 and (self.iterations == 1
                                       or os.environ.get("ABM_DEBUG_PROMPTS") == "1"):
+                what = "decoded token ids vLLM receives" if mistral else "exact string vLLM receives"
                 print("=" * 70)
-                print(f"[FULL PROMPT] agent {agent.ID}, round {self.iterations} (exact string vLLM receives)")
+                print(f"[FULL PROMPT] agent {agent.ID}, round {self.iterations} ({what})")
                 print("=" * 70)
-                print(templated)
+                print(shown)
                 print("=" * 70)
             prompts.append(templated)
         return prompts, self.all_agents
 
-    def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False):
-        """Run vLLM generation. Sampling matches the optimizer student when aligned."""
+    def _generate_outputs(self, llm, prompts, temp=1.0, top_p=1.0, phq9=False, agent_ids=None):
+        """Run vLLM generation. Sampling matches the optimizer student when aligned.
+
+        `agent_ids` (one per prompt) is only used by the tweet branch under
+        `per_agent_seed`, where it yields one SamplingParams per request."""
         if not prompts:
             return []
         sp_seed = None if self.nondeterministic_sampling else (self.seed + self.iterations)
@@ -292,10 +327,17 @@ class TestLLMs:
             # Optimizer student (tweet) sampling: defaults to _batch_student_generate
             # (temp 0.7, top_p 0.9); overridable via gen_temp/gen_top_p for the
             # decoding-parameter sensitivity sweep.
-            params = SamplingParams(
-                temperature=self.gen_temp, top_p=self.gen_top_p, max_tokens=512,
-                seed=sp_seed,
-            )
+            if self.per_agent_seed and not self.nondeterministic_sampling and agent_ids is not None:
+                params = [SamplingParams(
+                    temperature=self.gen_temp, top_p=self.gen_top_p, max_tokens=512,
+                    seed=int(np.random.SeedSequence([self.seed, int(aid), self.iterations])
+                             .generate_state(1)[0]),
+                ) for aid in agent_ids]
+            else:
+                params = SamplingParams(
+                    temperature=self.gen_temp, top_p=self.gen_top_p, max_tokens=512,
+                    seed=sp_seed,
+                )
         else:
             params = SamplingParams(
                 temperature=0.7, top_p=0.8,
@@ -307,14 +349,23 @@ class TestLLMs:
     def _phq9_questionnaire(self, tokenizer, pipe, mistakes, check_point, temp, top_p):
         """Run the PHQ-9 questionnaire for every agent and record per-score MAE."""
         prompts = []
+        mistral = is_mistral_tokenizer(tokenizer)
         for agent in self.all_agents:
             prompt = agent.phq9_questionnaire_prompt(
                 tokenizer, agent.tweethistory[-(check_point):],
             )
-            templated = tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True,
-                enable_thinking=True,
-            )
+            if mistral:
+                # Same token-id path as _prepare_prompts (no enable_thinking kwarg).
+                ids = tokenizer.apply_chat_template(
+                    prompt, tokenize=True, add_generation_prompt=True,
+                    return_dict=False,
+                )
+                templated = TokensPrompt(prompt_token_ids=ids)
+            else:
+                templated = tokenizer.apply_chat_template(
+                    prompt, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=True,
+                )
             prompts.append(templated)
 
         out = self._generate_outputs(pipe, prompts, temp=temp, top_p=top_p, phq9=True)
@@ -324,7 +375,7 @@ class TestLLMs:
             if agent.ID < 10:
                 print(f"answer agent {agent.ID}: ", questionnaire_answers, "\n\n")
             sum_score = agent.parse_phq9_answers(questionnaire_answers)
-            true_score, next_score = self._old_new_phq9(agent, new_phq9=True)
+            true_score, next_score = self._old_new_phq9(agent)
             mistakes[true_score].append(sum_score - true_score)
             agent.update_well_being(next_score, new_phq9=True)
         return mistakes
@@ -356,7 +407,7 @@ class TestLLMs:
         prompts, agents_w_prompt = self._prepare_prompts(tokenizer)
         t1 = time.perf_counter()
 
-        out = self._generate_outputs(pipe, prompts)
+        out = self._generate_outputs(pipe, prompts, agent_ids=[a.ID for a in agents_w_prompt])
         t2 = time.perf_counter()
 
         self._apply_outputs_and_update_state(agents_w_prompt, out, n_grams)

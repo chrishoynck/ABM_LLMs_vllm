@@ -1,35 +1,51 @@
 #!/usr/bin/env bash
-# PHQ-9 conditioning generation for the MINIMAL (un-optimised) prompt.
+# PHQ-9 conditioning generation, one dataset per PHQ-9 band.
 #
-# Variant of the "PHQ-9 conditioning" block in sa_run.sh: one dataset per PHQ-9
-# band, but generated with the minimal prompt (iter_0/prompt.txt) instead of the
-# human-optimised iter_10 prompt. Everything but the prompt is held fixed:
+# By default the MINIMAL (un-optimised) prompt variant of the "PHQ-9 conditioning"
+# block in sa_run.sh: generated with the minimal prompt (iter_0/prompt.txt) instead
+# of the human-optimised iter_10 prompt. Everything but the prompt is held fixed:
 #     * same personas        (--agent-seed 42, identical to sa_run.sh)
-#     * same neighbour posts  (--neighbor-seed 42, identical to sa_run.sh)
+#     * same neighbour posts  (--neighbor-seed 42, identical to sa_run.sh; the Qwen
+#                              teacher corpus, DEFAULT_NEIGHBOR_ROOTS, for every model)
 #     * varying PHQ-9 band     (--phq9-band-range lo hi, one band per setting)
 #     * LLM left UNSEEDED      (--nondeterministic)
 #
 # Writes to a DEDICATED subdir so it never clobbers the iter_10 band data under
 # data/sensitivity/phq9/:
-#     <SA_ROOT>/phq9_minimal_prompt/<band>/rep_1/posts.csv
+#     <SA_ROOT>/<OUT_SUBDIR>/<band>/rep_<N>/posts.csv
 #
-# One rep per band. Guarded: any band whose posts.csv exists is SKIPPED.
+# Every setting is an env var (defaults = the original Qwen minimal-prompt run):
+#   SA_MODEL       generator alias / HF id (loaders.MODEL_ALIASES; decoding comes
+#                  from loaders.STUDENT_DECODING per model)
+#   SA_PROMPT      instruction file
+#   NUM_PHQ9_REPS  unseeded replicates per band (sa_run.sh uses 3 for iter_10)
+#   SA_ROOT        sensitivity root; another generator gets its own root, e.g.
+#                  data/sensitivity/gemma4, so sa_embed / sa_analyze --root work unchanged
+#   OUT_SUBDIR     phq9_minimal_prompt or phq9
+#   PYTHON         interpreter with the generator's vLLM (.venv_vllm_g4 for Gemma / Mistral)
+# e.g. the Gemma-4 human-optimised run (jobs/sa_phq9_gemma4.job):
+#   SA_MODEL=gemma4-31b SA_PROMPT=data/sensitivity/inputs/prompt_iter_10.txt NUM_PHQ9_REPS=3 \
+#   SA_ROOT=data/sensitivity/gemma4 OUT_SUBDIR=phq9 PYTHON=.venv_vllm_g4/bin/python \
+#     bash scripts/sensitivity/sa_phq9_minimal_run.sh
+#
+# Guarded: any band/rep whose posts.csv exists is SKIPPED.
 # Invoke from the repo root with the venv activated and a GPU session.
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
-# === Config (edit before running) =========================================
-PROMPT="data/sensitivity/inputs/prompt_iter_0.txt"   # MINIMAL prompt (copy of qwen27_baseline/iter_0/prompt.txt)
+# === Config (env overrides; defaults reproduce the Qwen minimal-prompt run) ===
+PROMPT="${SA_PROMPT:-data/sensitivity/inputs/prompt_iter_0.txt}"   # MINIMAL prompt (copy of qwen27_baseline/iter_0/prompt.txt)
 PERSONA_FILE="data/sensitivity/inputs/personas_eval_1000_phq9.csv"
-MODEL="Qwen/Qwen3.5-27B"
+MODEL="${SA_MODEL:-Qwen/Qwen3.5-27B}"
+PYTHON="${PYTHON:-python}"
 NUM_AGENTS=60                          # per run; 60 × 10 posts = 600 per run (matches sa_run.sh)
 CHECK_POINT=10                         # posts per agent
 FIXED_AGENT_SEED=42                    # MUST match sa_run.sh so personas line up
 FIXED_NEIGHBOR_SEED=42                 # MUST match sa_run.sh so neighbours line up
-NUM_PHQ9_REPS=1                        # one unseeded draw per band
-SA_ROOT="data/sensitivity"
-OUT_SUBDIR="phq9_minimal_prompt"       # dedicated dir; does NOT touch phq9/ (iter_10)
+NUM_PHQ9_REPS="${NUM_PHQ9_REPS:-1}"    # one unseeded draw per band
+SA_ROOT="${SA_ROOT:-data/sensitivity}"
+OUT_SUBDIR="${OUT_SUBDIR:-phq9_minimal_prompt}"   # dedicated dir; does NOT touch phq9/ (iter_10)
 
 # === PHQ-9 bands ===========================================================
 PHQ9_BAND_LABELS=("minimal" "mild" "moderate" "modsevere" "severe")
@@ -38,12 +54,13 @@ PHQ9_BAND_HIS=(4  9  14 19 27)
 
 # === Run ===================================================================
 if [[ ! -f "${PROMPT}" ]]; then
-    echo "[fatal] minimal prompt not found: ${PROMPT}" >&2
+    echo "[fatal] prompt not found: ${PROMPT}" >&2
     exit 1
 fi
 
 echo "================================================================"
-echo "PHQ-9 conditioning (MINIMAL prompt): ${#PHQ9_BAND_LABELS[@]} band settings × ${NUM_PHQ9_REPS} rep"
+echo "PHQ-9 conditioning: ${#PHQ9_BAND_LABELS[@]} band settings × ${NUM_PHQ9_REPS} rep(s)"
+echo "  model=${MODEL} python=${PYTHON}"
 echo "  prompt=${PROMPT}"
 echo "  agent_seed=${FIXED_AGENT_SEED} neighbor_seed=${FIXED_NEIGHBOR_SEED} (fixed) | LLM unseeded"
 echo "  output -> ${SA_ROOT}/${OUT_SUBDIR}/<band>/rep_<N>/posts.csv"
@@ -63,7 +80,7 @@ for i in "${!PHQ9_BAND_LABELS[@]}"; do
         mkdir -p "${out_dir}"
         echo "[run] phq9 band=${label} rep=${rep}/${NUM_PHQ9_REPS} range=[${lo},${hi}]  (agent_seed=${FIXED_AGENT_SEED}, neighbor_seed=${FIXED_NEIGHBOR_SEED})"
 
-        PYTHONPATH=src python -m utils.create_data.generate_test_data \
+        PYTHONPATH=src "${PYTHON}" -m utils.create_data.generate_test_data \
             --instruction-file "${PROMPT}" \
             --persona-phq9-file "${PERSONA_FILE}" \
             --model "${MODEL}" \
@@ -79,4 +96,4 @@ done
 
 echo
 echo "[done] ${#PHQ9_BAND_LABELS[@]} band datasets under ${SA_ROOT}/${OUT_SUBDIR}/"
-echo "       next: PYTHONPATH=src python -m utils.sensitivity.sa_embed --root ${SA_ROOT}/${OUT_SUBDIR}"
+echo "       next: PYTHONPATH=src python -m utils.sensitivity.sa_embed --sbert --root ${SA_ROOT}/${OUT_SUBDIR}"

@@ -1,0 +1,43 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=sa_phq9_gemma4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=05:00:00
+#SBATCH --array=0-1
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A_%a.out
+
+# Gemma-4-31B-it PHQ-9-axis sensitivity analysis, the same design as the Qwen
+# runs (sa_run.sh PHQ-9 block / sa_phq9_minimal_run.sh): 60 fixed personas
+# (agent seed 42), fixed Qwen-teacher neighbour posts (neighbour seed 42), one
+# dataset per PHQ-9 band, LLM unseeded; decoding 1.0 / 0.975 from
+# loaders.STUDENT_DECODING. Only the generator changes. Output under its own
+# root, data/sensitivity/gemma4/, so sa_embed / sa_analyze --root work as for Qwen:
+#   task 0: human-optimised prompt (iter_10), 3 reps  -> gemma4/phq9/<band>/rep_{1,2,3}/
+#   task 1: minimal prompt (iter_0),           1 rep   -> gemma4/phq9_minimal_prompt/<band>/rep_1/
+# Both are guarded (existing posts.csv are skipped), so a resubmit resumes.
+# Afterwards, S-BERT embed + analyse (needs both tasks):
+#   sbatch --dependency=afterok:<jobid> jobs/sa_phq9_gemma4_analyze.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+
+# Non-Qwen weights live in project space (home quota is too small).
+export HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+srun nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+srun .venv_vllm_g4/bin/python -uc "import torch, vllm; print('GPU available?', torch.cuda.is_available(), '| vllm', vllm.__version__, '| torch', torch.__version__)"
+
+if [[ "${SLURM_ARRAY_TASK_ID}" == "0" ]]; then
+    SA_PROMPT=data/sensitivity/inputs/prompt_iter_10.txt NUM_PHQ9_REPS=3 OUT_SUBDIR=phq9
+else
+    SA_PROMPT=data/sensitivity/inputs/prompt_iter_0.txt  NUM_PHQ9_REPS=1 OUT_SUBDIR=phq9_minimal_prompt
+fi
+
+SA_MODEL=gemma4-31b SA_ROOT=data/sensitivity/gemma4 PYTHON=.venv_vllm_g4/bin/python \
+SA_PROMPT="${SA_PROMPT}" NUM_PHQ9_REPS="${NUM_PHQ9_REPS}" OUT_SUBDIR="${OUT_SUBDIR}" \
+  srun bash scripts/sensitivity/sa_phq9_minimal_run.sh

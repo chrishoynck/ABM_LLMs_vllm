@@ -4,12 +4,13 @@
 #
 # This is the cross-generator counterpart of run_minimal_shift.sh steps 2/2b:
 # the same Qwen assessor, the same five prompt seeds, but the posts were written
-# by another student generator (e.g. Gemma 4) via run_finetune.sh with
+# by another student generator (e.g. Gemma 4, Mistral Small 3.2) via run_finetune.sh with
 # GEN_TAG=<tag>. Together with the MentalBERT+MLP evals this gives the
 # generator x estimator table (`utils.visualization multimodel`, run as the last step).
 #
 # Usage (GPU session, repo root; the Qwen venv, NOT .venv_vllm_g4):
 #   bash scripts/assessment/run_llm_assessor_on_heldout.sh gemma4
+#   bash scripts/assessment/run_llm_assessor_on_heldout.sh mistral
 #   POSTS=path/to/other.csv bash scripts/assessment/run_llm_assessor_on_heldout.sh <tag>
 #
 # Outputs (existing minimal_human300/ and eval_on_human300/ are untouched):
@@ -19,7 +20,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
-TAG="${1:?usage: run_llm_assessor_on_heldout.sh <tag>   (e.g. gemma4)}"
+TAG="${1:?usage: run_llm_assessor_on_heldout.sh <tag>   (e.g. gemma4, mistral)}"
 PYTHON="${PYTHON:-.venv_vllm/bin/python}"          # interpreter with vLLM 0.17.1 + Qwen
 MODEL="Qwen/Qwen3.5-27B"                             # the assessor (fixed across generators)
 PROMPT_SEEDS="${PROMPT_SEEDS:-23 24 25 32 33}"       # same seeds the optimized group uses

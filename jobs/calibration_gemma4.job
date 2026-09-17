@@ -1,0 +1,40 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=calib_gemma4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=02:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Gemma-4-31B-it counterpart of the Qwen bias-calibration corpus
+# (data/finetune/calibration_posts.csv, 1,400 blocks = 50 per PHQ-9 level),
+# so the two generators can be compared on a paired, balanced set (CDS check).
+#
+# Alignment: personas_calibration_1400.csv holds the Qwen calibration
+# (persona, phq9) pairs in agent_id order; --first-n keeps that order, so
+# agent ids are 0..1399 as in the Qwen run. Neighbour posts are drawn per
+# (neighbor_seed=42, agent_id, round) from the Qwen teacher pool (defaults),
+# which is what the Qwen calibration run used, so every (agent, round) reads
+# the same neighbour context. Decoding: Gemma's student defaults (1.0 / 0.975)
+# via loaders.STUDENT_DECODING. Chunked + resumable: resubmit if it times out.
+#
+# ~3,300 blocks took ~2h on this setup (run_finetune_gemma4.job), so 1,400
+# blocks is ~1h.
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+
+export HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+srun nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+
+PYTHONPATH=src srun .venv_vllm_g4/bin/python -m utils.create_data.generate_test_data \
+    --instruction-file data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt \
+    --persona-phq9-file data/finetune/personas_calibration_1400.csv \
+    --model gemma4-31b --num_agents 1400 --check_point 10 --first-n \
+    --chunk-size 100 \
+    --output-csv data/finetune/gemma4/calibration_posts_gemma4.csv

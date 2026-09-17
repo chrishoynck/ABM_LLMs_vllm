@@ -1,0 +1,44 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=phq9_opt_human
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=05:00:00
+#SBATCH --array=23,24,25,32,33
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A_%a.out
+
+# TextGrad PHQ-9 assessment prompt optimized on the HUMAN-OPTIMIZED corpus (the
+# same data the deployed MentalBERT+MLP regressor was fine-tuned and tested on):
+#   start prompt : the minimal instruction (data/prompts_post_minimal.json)
+#   train / val  : data/finetune/train_posts.csv  (3,000 blocks -> 2,700 / 300 split;
+#                  fixed val subset of 40, batches of 7, 8 steps, as in the base-set runs)
+#   test         : data/finetune/test_posts.csv   (the shared 300 held-out blocks)
+#   output       : data/test_post/optimized_phq9_human/Qwen3.5-27B_seed<seed>/
+# One array task per seed (same five seeds as the base-set runs). Measured 2026-09-15:
+# ~25 min per step on one H100 (the teacher thinks long on these posts), so ~3.5-4 h
+# per seed. A task that hits the wall clock has state.json after every step; resume
+# only the unfinished seeds with
+#   RESUME=1 sbatch --array=<seeds> jobs/run_prompt_optimizer_phq9_human.job
+# (the flag skips the step-0 baseline and appends to training_trajectory.csv).
+# Smoke test first: sbatch checks/check_phq9_optimizer_smoke.job
+
+module purge
+module load 2025
+module load CUDA/12.8.0
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+export PYTHONUNBUFFERED=1
+# No srun: a second step on gpu_h100 is refused ("Invalid generic resource (gres)
+# specification"); the batch step already holds the GPU (same as run_prompt_optimizer_phq9.job).
+
+SEED="${SLURM_ARRAY_TASK_ID}"
+python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
+
+PYTHONPATH=src python -m utils.prompt_optimizer --mode phq9 \
+    --seeds "${SEED}" --num-steps 8 --batch-size 7 --val-sample-size 40 \
+    --train-posts-file data/finetune/train_posts.csv \
+    --test-posts-file data/finetune/test_posts.csv --test-sample-size 300 \
+    --prompts-file data/prompts_post_minimal.json \
+    --out-root data/test_post/optimized_phq9_human ${RESUME:+--resume}

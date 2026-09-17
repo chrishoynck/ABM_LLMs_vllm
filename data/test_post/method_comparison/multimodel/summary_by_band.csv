@@ -39,6 +39,11 @@ Qwen3.5-27B,LLM prompt (TextGrad),Mild,250,5.688,-4.328
 Qwen3.5-27B,LLM prompt (TextGrad),Moderate,300,7.07,-6.316666666666666
 Qwen3.5-27B,LLM prompt (TextGrad),Mod. severe,285,7.5017543859649125,-6.96140350877193
 Qwen3.5-27B,LLM prompt (TextGrad),Severe,405,11.34074074074074,-11.138271604938272
+Qwen3.5-27B,"LLM prompt (TextGrad, human corpus)",Minimal,260,2.4384615384615387,-0.6846153846153846
+Qwen3.5-27B,"LLM prompt (TextGrad, human corpus)",Mild,250,6.24,0.4
+Qwen3.5-27B,"LLM prompt (TextGrad, human corpus)",Moderate,300,6.19,1.0233333333333334
+Qwen3.5-27B,"LLM prompt (TextGrad, human corpus)",Mod. severe,285,4.989473684210527,1.3824561403508773
+Qwen3.5-27B,"LLM prompt (TextGrad, human corpus)",Severe,405,4.45925925925926,-3.437037037037037
 Qwen3.5-27B,LLM prompt (minimal),Minimal,52,2.6153846153846154,-0.038461538461538464
 Qwen3.5-27B,LLM prompt (minimal),Mild,50,6.28,1.48
 Qwen3.5-27B,LLM prompt (minimal),Moderate,60,5.6,1.4

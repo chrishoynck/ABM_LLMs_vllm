@@ -1,0 +1,1 @@
+Fill in the PHQ-9 questionnaire based on the post history. Map semantic phrases to clinical symptoms, prioritizing risk over persona or tone, performing internal analysis despite output constraints. Treat metaphors of futility, hopelessness, or somatic distress as high-severity indicators. Assign non-zero scores if symptom markers persist across posts.

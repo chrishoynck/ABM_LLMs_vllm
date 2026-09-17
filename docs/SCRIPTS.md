@@ -19,15 +19,17 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 | `sa_run.sh` | neighbour/agent/joint + PHQ-9 axes | — (GPU needed) | `data/sensitivity/inputs/` | `data/sensitivity/<axis>/` |
 | `sa_decoding_run.sh` | temp/top_p axis | — (GPU needed) | same | `data/sensitivity/decoding/` |
 | `sa_phq9_minimal_run.sh` | PHQ-9 bands, minimal prompt | `sa_phq9_minimal_run.job` (2×A100, 2h) | same | `data/sensitivity/phq9_minimal_prompt/` |
+| same, env overrides `SA_MODEL SA_PROMPT NUM_PHQ9_REPS SA_ROOT OUT_SUBDIR PYTHON` | PHQ-9 bands for another generator (only the PHQ-9 axis, no stochastic axes) | `sa_phq9_gemma4.job` (array 0-1: iter_10 × 3 reps, iter_0 × 1 rep; 2×A100, 5h each), then `sa_phq9_gemma4_analyze.job` (`--dependency=afterok`; S-BERT embed + `sa_analyze --root data/sensitivity/gemma4`) | same | `data/sensitivity/gemma4/{phq9,phq9_minimal_prompt}/`, `.../gemma4/plots_sbert/` |
 | `sa_prompt_run.sh` | prompt axis, single draw | — (GPU needed) | `qwen27_baseline/inputs/` | `.../prompt_sa/` |
 | `sa_prompt_baseline_run.sh` | prompt axis w/ replicates | `sa_prompt_baseline_run.job` (2×A100, 3.5h; job adds embed + analyze steps) | same | `.../prompt_sa_reps/` |
 
 ## assessment
 | script | purpose | job | inputs | outputs |
 |---|---|---|---|---|
-| `run_finetune.sh` | generate posts + finetune BERT regressor + eval; env-var config, `GEN_TAG=<tag> GEN_MODEL=<alias>` for other generators (Qwen layout when unset) | `run_finetune_gemma4.job` (2×A100, 6h) | `data/finetune/` posts, `personas_test_300.csv` | `data/test_post/bert_regression_finetuned[_<tag>]/`, `bert_regression/eval_baseline[_<tag>]/` |
-| `run_llm_assessor_on_heldout.sh <tag>` | Qwen assessor (minimal + TextGrad prompts) on another generator's 300-block set, then the multimodel summary | `run_llm_assessor_gemma4.job` (2×A100, 2h; submit with `--dependency=afterok`) | `data/finetune/<tag>/test_posts_<tag>.csv` | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` |
+| `run_finetune.sh` | generate posts + finetune BERT regressor + eval; env-var config, `GEN_TAG=<tag> GEN_MODEL=<alias>` for other generators (Qwen layout when unset) | `run_finetune_{gemma4,mistral}.job` (2×A100, 6h) | `data/finetune/` posts, `personas_test_300.csv` | `data/test_post/bert_regression_finetuned[_<tag>]/`, `bert_regression/eval_baseline[_<tag>]/` |
+| `run_llm_assessor_on_heldout.sh <tag>` | Qwen assessor (minimal + TextGrad prompts) on another generator's 300-block set, then the multimodel summary | `run_llm_assessor_{gemma4,mistral}.job` (2×A100, 2h; submit with `--dependency=afterok`) | `data/finetune/<tag>/test_posts_<tag>.csv` | `optimized_phq9/*/{minimal,eval_on}_<tag>300/` |
 | `python -m utils.visualization multimodel` (CPU) | generator x estimator MAE/bias table + figures | — | the eval CSVs above | `method_comparison/multimodel/` |
+| `python -m utils.prompt_optimizer --mode grade-posts --posts-file <csv> --out-csv <csv>` | Qwen teacher grades every block of an existing posts CSV (0–10, the post-optimizer's rating prompt) | `grade_posts_multimodel.job` (2×A100, 2h; grades both paired 300-block sets, then the multimodel summary) | `data/finetune/test_posts.csv`, `data/finetune/gemma4/test_posts_gemma4.csv` | `data/test_post/teacher_grades/grades_{qwen,gemma4}300.csv` |
 | `run_bias_calibration.sh` | 28-level PHQ-9 bias table | `run_bias_calibration.job` (2×A100, 6h) | unseen persona pool | `phq9_bias_table.csv` (note: sims load the notebook-exported `_fullfit` variant) |
 | `run_phq9_on_bert_testset.sh` | prompts scored on BERT holdout | — (GPU needed) | embeddings cache (`data/test/Qwen/`) | `optimized_phq9/*/eval_on_*` |
 | `run_minimal_shift.sh` | minimal vs optimized prompt under shift | — (GPU needed) | `data/finetune/test_posts.csv` | `minimal_*/` subdirs + fig2 |
@@ -46,7 +48,10 @@ SLURM output goes to `<repo-root>/slurm_output_<jobid>.out` (gitignored).
 `run_plots.job` (replot saved SDA nets, 1×A100 1h) · `run_teacher_eval_iter0.job`
 (teacher-eval of the iter_0 post-gen prompt — ex `run_test_phq9.job`) ·
 `run_bert_optimizer.job` (train regressor, MIG 1h) · `run_prompt_optimizer.job` (H100 5h) ·
-`run_prompt_optimizer_phq9.job` (H100 1h). The prompt-optimizer jobs are documented
+`run_prompt_optimizer_phq9.job` (H100 1h) · `run_prompt_optimizer_phq9_human.job` (array of 5 seeds,
+H100 5h each, ~6 h needed so expect one `RESUME=1` resubmit: TextGrad assessment prompt on the human-optimized corpus, minimal start prompt,
+tested on the shared 300 blocks → `data/test_post/optimized_phq9_human/`; smoke test
+`checks/check_phq9_optimizer_smoke.job`). The prompt-optimizer jobs are documented
 in depth in `prompt_optimizer.md`.
 
 ## checks
@@ -57,8 +62,8 @@ Small "how good is X" scripts with their own jobs, outside `src/`; see [../check
 | `checks/check_multimodel_smoke.job` | 3-block generation per model, then `check_multimodel_smoke.py` asserts on the CSVs | 2×A100, 45 min |
 
 ## notes
-- Multi-model arm (2026-09): Gemma-4-31B-it runs in `.venv_vllm_g4`
-  (`requirements_vllm_g4.txt`, vLLM 0.19.1 + transformers 5.5.4); its weights live in
+- Multi-model arm (2026-09): Gemma-4-31B-it and Mistral-Small-3.2-24B run in `.venv_vllm_g4`
+  (`requirements_vllm_g4.txt`, vLLM 0.19.1 + transformers 5.5.4); their weights live in
   `/gpfs/work5/0/prjs1820/hf_cache` (`HF_HUB_CACHE`, set in the jobs). Aliases + per-model
   decoding in `src/utils/create_data/loaders.py` (`MODEL_ALIASES`, `STUDENT_DECODING`).
   `checks/check_multimodel_smoke.job` = 3-block smoke test per model, checked by `checks/check_multimodel_smoke.py`. A Kimi-Linear-48B-A3B arm was run

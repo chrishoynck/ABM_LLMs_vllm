@@ -18,6 +18,7 @@ from collections import defaultdict
 from itertools import combinations, product
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -412,58 +413,62 @@ def phq9_conditioning_matrix(root: str, out_dir: str,
 # Three-axis comparison: per-anchor cosine drop (within − cross) per axis
 # =====================================================================
 
+def _per_anchor_means(df: pd.DataFrame, value_col: str = "cosine",
+                      anchor_cols=("agent_id", "round")) -> pd.DataFrame:
+    """Per anchor: mean within-setting and mean cross-setting `value_col`.
+
+    Within = same setting, different unseeded replicate (the LLM-noise floor);
+    cross = different settings of the varied axis. Anchors lacking either
+    pair type are dropped.
+
+    Returns:
+        DataFrame indexed by anchor with columns ``within`` and ``cross``.
+    """
+    m = (df.groupby(list(anchor_cols) + ["pair_type"])[value_col].mean()
+           .unstack("pair_type"))
+    return m.dropna(subset=["within", "cross"])
+
+
 def _per_anchor_drops(df: pd.DataFrame, value_col: str = "cosine",
                       anchor_cols=("agent_id", "round"),
                       drop_sign: float = 1.0) -> pd.Series:
-    """For each anchor (grouped by `anchor_cols`), drop =
-    `drop_sign * (mean within − mean cross)` of `value_col`. One value per
-    anchor, the distribution this returns is what the box plot visualises.
+    """Per anchor: ``drop_sign * (mean within − mean cross)`` of `value_col`.
 
-    Defaults give the cosine within−cross drop (axis moves output more than LLM
-    noise ⇒ positive). The MentalBERT+MLP figure passes `value_col='delta'`
-    with `drop_sign=-1` so the box shows cross−within of |Δ predicted PHQ-9|
-    (factor pushes predicted severity past noise ⇒ positive)."""
-    grouped = df.groupby(list(anchor_cols))
-    drops = []
-    for _, sub in grouped:
-        within = sub.loc[sub.pair_type == "within", value_col]
-        cross  = sub.loc[sub.pair_type == "cross",  value_col]
-        if len(within) == 0 or len(cross) == 0:
-            continue
-        drops.append(float(drop_sign * (within.mean() - cross.mean())))
-    return pd.Series(drops)
-
-
-def _per_anchor_null_drops(df: pd.DataFrame, rng: np.random.Generator,
-                           n_per_anchor: int = 20, value_col: str = "cosine",
-                           anchor_cols=("agent_id", "round")) -> np.ndarray:
-    """For each anchor, compute the magnitude of a 'null drop' = |mean(half1) − mean(half2)|
-    on random half-splits of that anchor's within-setting `value_col` values. This is the
-    drop you'd see if the axis under test had NO effect, just LLM stochasticity.
+    Defaults give the cosine within−cross drop (axis moves output more than
+    LLM noise ⇒ positive). The MentalBERT+MLP figure passes
+    ``value_col='delta'`` with ``drop_sign=-1`` so the drop is cross−within of
+    |Δ predicted PHQ-9| (factor pushes predicted severity past noise ⇒
+    positive).
     """
-    nulls = []
-    for _, sub in df[df.pair_type == "within"].groupby(list(anchor_cols)):
-        vals = sub[value_col].values
-        if len(vals) < 4:
-            continue
-        half = len(vals) // 2
-        diffs = []
-        for _ in range(n_per_anchor):
-            perm = rng.permutation(vals)
-            diffs.append(abs(perm[:half].mean() - perm[half:2 * half].mean()))
-        nulls.append(float(np.mean(diffs)))
-    return np.asarray(nulls)
+    m = _per_anchor_means(df, value_col=value_col, anchor_cols=anchor_cols)
+    return pd.Series(drop_sign * (m["within"] - m["cross"]).values)
+
+
+# Colour scheme tied to the agent_phq9_combined plot:
+#   Neighbour → dark brown (top of Oranges, matches heatmap diagonals)
+#   Agent     → blue        (within-setting bar)
+#   Joint     → bright orange (cross-setting bar)
+_AXIS_COLOURS = {
+    "Neighbour": "#8d2c03",
+    "Agent":     "#2e7ebc",
+    "Joint":     "#d96907",
+    "Decoding":  "#2e8b57",   # sea green, temperature/top_p axis
+    "PHQ-9":     "#6a3d9a",   # purple, depression-severity conditioning axis
+}
 
 
 def comparison_combined(axis_dfs: dict, out_path: str,
                         n_bootstrap: int = 1000, seed: int = 0, *,
                         value_col: str = "cosine", ylabel: str = "Cosine drop",
                         anchor_cols=("agent_id", "round"), drop_sign: float = 1.0):
-    """Side-by-side: box plot (left, full per-anchor distribution) + forest
-    plot (right, mean within−cross with 95 % bootstrap CI). Adds an LLM-noise
-    NULL reference: an extra box of per-anchor null drops, and a horizontal line
-    at the null median on both panels. Anything above the line exceeds
-    irreducible LLM stochasticity.
+    """Side-by-side: box plot (left, full per-anchor distribution of the drop)
+    + forest plot (right, mean drop with 95 % cluster-bootstrap CI).
+
+    Drop per anchor = ``drop_sign * (mean within − mean cross)``; within =
+    same setting, different unseeded replicate (the LLM-noise floor), so 0 is
+    where an axis with no effect lands and is drawn as a dashed line on both
+    panels. No separate noise reference: the floor is inside the drop, and
+    the CI against 0 is the test.
 
     `value_col` / `anchor_cols` / `drop_sign` / `ylabel` let the same
     figure render either the cosine within−cross drop (defaults) or the
@@ -472,28 +477,11 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     anchor_cols=('agent_a',), drop_sign=-1`)."""
     rng = np.random.default_rng(seed)
     names = list(axis_dfs.keys())
-    # Colour scheme tied to the agent_phq9_combined plot:
-    #   Neighbour → dark brown (top of Oranges, matches heatmap diagonals)
-    #   Agent     → blue        (within-setting bar)
-    #   Joint     → bright orange (cross-setting bar)
-    _COLOUR_BY_NAME = {
-        "Neighbour": "#8d2c03",
-        "Agent":     "#2e7ebc",
-        "Joint":     "#d96907",
-        "Decoding":  "#2e8b57",   # sea green, temperature/top_p axis
-        "PHQ-9":     "#6a3d9a",   # purple, depression-severity conditioning axis
-    }
-    colours = [_COLOUR_BY_NAME.get(n, "#7f7f7f") for n in names]
+    colours = [_AXIS_COLOURS.get(n, "#7f7f7f") for n in names]
 
-    drops = [_per_anchor_drops(axis_dfs[n], value_col=value_col,
-                               anchor_cols=anchor_cols, drop_sign=drop_sign).values
-             for n in names]
-
-    # Null = LLM-noise drops, computed from each axis's within-set then pooled.
-    null_per_axis = [_per_anchor_null_drops(axis_dfs[n], rng, value_col=value_col,
-                                            anchor_cols=anchor_cols) for n in names]
-    null_pooled = np.concatenate(null_per_axis) if null_per_axis else np.asarray([])
-    null_median = float(np.median(null_pooled)) if len(null_pooled) else np.nan
+    per_anchor = [_per_anchor_means(axis_dfs[n], value_col=value_col,
+                                    anchor_cols=anchor_cols) for n in names]
+    drops = [(drop_sign * (m["within"] - m["cross"])).values for m in per_anchor]
 
     # CLUSTER bootstrap on anchors (NOT individual pair rows). The 12-66 pair rows
     # per anchor are tightly correlated (same persona, same round), so resampling
@@ -502,26 +490,21 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     # would shift if a different 60 agents had been drawn, the actual
     # generalisation question.
     means, los, his = [], [], []
-    for name, anchor_drops in zip(names, drops):
-        observed = float(anchor_drops.mean())
+    for anchor_drops in drops:
         boots = [
             float(rng.choice(anchor_drops, size=len(anchor_drops), replace=True).mean())
             for _ in range(n_bootstrap)
         ]
         lo, hi = np.percentile(boots, [2.5, 97.5])
-        means.append(observed); los.append(float(lo)); his.append(float(hi))
+        means.append(float(anchor_drops.mean())); los.append(float(lo)); his.append(float(hi))
 
     fig, (ax_box, ax_forest) = plt.subplots(
         1, 2, figsize=(7.0, 3.3),
-        gridspec_kw={"width_ratios": [1.5, 1.0]},
+        gridspec_kw={"width_ratios": [1.2, 1.0]},
     )
 
-    # --- Box plot (left) ---
-    # factor boxes (one per axis) + 1 LLM-noise null box.
-    box_data = drops + [null_pooled]
-    box_labels = names + ["LLM noise"]
-    box_colours = colours + ["#bdc3c7"]
-    bp = ax_box.boxplot(box_data, tick_labels=box_labels, patch_artist=True,
+    # --- Box plot (left): per-anchor drops, one box per axis ---
+    bp = ax_box.boxplot(drops, tick_labels=names, patch_artist=True,
                         widths=0.55, showmeans=True,
                         meanprops=dict(marker="D", markerfacecolor="black",
                                        markeredgecolor="black", markersize=5),
@@ -529,18 +512,14 @@ def comparison_combined(axis_dfs: dict, out_path: str,
                         flierprops=dict(marker="o", markersize=3, alpha=0.4,
                                         markeredgecolor="none",
                                         markerfacecolor="grey"))
-    for patch, c in zip(bp["boxes"], box_colours):
+    for patch, c in zip(bp["boxes"], colours):
         patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor("black")
-    ax_box.axhline(0, color="black", linewidth=0.6, linestyle="-", alpha=0.5)
-    if not np.isnan(null_median):
-        ax_box.axhline(null_median, color="#555555", linewidth=1.0,
-                       linestyle="--", alpha=0.8,
-                       label="LLM-noise")
-        ax_box.legend(loc="upper left", fontsize=9, framealpha=0.9)
+    ax_box.axhline(0, color="#555555", linewidth=1.0, linestyle="--", alpha=0.8)
     ax_box.set_ylabel(ylabel)
     ax_box.grid(axis="y", linestyle=":", alpha=0.5)
+    ax_box.set_axisbelow(True)
 
-    # --- Forest plot (right) ---
+    # --- Right: drop, mean ± 95 % CI, against 0 ---
     y = np.arange(len(names))[::-1]
     err_low  = [m - lo for m, lo in zip(means, los)]
     err_high = [hi - m for m, hi in zip(means, his)]
@@ -552,10 +531,7 @@ def comparison_combined(axis_dfs: dict, out_path: str,
                        markeredgecolor="black", markeredgewidth=0.8, zorder=3)
     ax_forest.set_yticks(y); ax_forest.set_yticklabels(names)
     ax_forest.set_xlabel(ylabel)
-    ax_forest.axvline(0, color="black", linewidth=0.6, linestyle="-", alpha=0.5)
-    if not np.isnan(null_median):
-        ax_forest.axvline(null_median, color="#555555", linewidth=1.0,
-                          linestyle="--", alpha=0.8)
+    ax_forest.axvline(0, color="#555555", linewidth=1.0, linestyle="--", alpha=0.8)
     ax_forest.grid(axis="x", linestyle=":", alpha=0.5)
     for i, m in enumerate(means):
         ax_forest.text(m, y[i] + 0.18, f"{m:.3f}",
@@ -574,6 +550,100 @@ def comparison_combined(axis_dfs: dict, out_path: str,
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[plot] {out_path}")
+    for n, m, mu, lo, hi in zip(names, per_anchor, means, los, his):
+        print(f"  {n:10s} within={m['within'].mean():.3f} (sd {m['within'].std():.3f})  "
+              f"cross={m['cross'].mean():.3f} (sd {m['cross'].std():.3f})  "
+              f"drop={mu:.3f} CI=[{lo:.3f}, {hi:.3f}]")
+
+
+def comparison_cross_vs_noise(axis_dfs: dict, out_path: str,
+                              n_bootstrap: int = 1000, seed: int = 0, *,
+                              value_col: str = "delta",
+                              ylabel: str = "|Δ predicted PHQ-9|",
+                              anchor_cols=("agent_a",)):
+    """Side-by-side: box plot (left, per-anchor mean CROSS-setting value) +
+    forest plot (right, mean cross value with 95 % cluster-bootstrap CI),
+    both against one dashed LLM-noise line.
+
+    Unlike `comparison_combined` nothing is subtracted: the boxes show the
+    raw cross-setting |Δ| (or cosine) per anchor, and the noise line is the
+    mean within-setting value pooled over all axes (same setting, different
+    unseeded replicate). An axis whose box sits on the line moves the output
+    no more than resampling the LLM does."""
+    rng = np.random.default_rng(seed)
+    names = list(axis_dfs.keys())
+    colours = [_AXIS_COLOURS.get(n, "#7f7f7f") for n in names]
+
+    per_anchor = [_per_anchor_means(axis_dfs[n], value_col=value_col,
+                                    anchor_cols=anchor_cols) for n in names]
+    cross = [m["cross"].values for m in per_anchor]
+    noise = float(np.concatenate([m["within"].values for m in per_anchor]).mean())
+
+    # Cluster bootstrap over anchors, as in comparison_combined.
+    means, los, his = [], [], []
+    for x in cross:
+        boots = [float(rng.choice(x, size=len(x), replace=True).mean())
+                 for _ in range(n_bootstrap)]
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        means.append(float(x.mean())); los.append(float(lo)); his.append(float(hi))
+
+    fig, (ax_box, ax_forest) = plt.subplots(
+        1, 2, figsize=(7.0, 3.3),
+        gridspec_kw={"width_ratios": [1.2, 1.0]},
+    )
+
+    # --- Box plot (left): per-anchor cross values, one box per axis ---
+    bp = ax_box.boxplot(cross, tick_labels=names, patch_artist=True,
+                        widths=0.55, showmeans=True,
+                        meanprops=dict(marker="D", markerfacecolor="black",
+                                       markeredgecolor="black", markersize=5),
+                        medianprops=dict(color="black", linewidth=1.2),
+                        flierprops=dict(marker="o", markersize=3, alpha=0.4,
+                                        markeredgecolor="none",
+                                        markerfacecolor="grey"))
+    for patch, c in zip(bp["boxes"], colours):
+        patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor("black")
+    ax_box.axhline(noise, color="#555555", linewidth=1.0, linestyle="--",
+                   alpha=0.8, label="LLM noise")
+    ax_box.legend(loc="upper left", fontsize=9, frameon=True)
+    ax_box.set_ylabel(ylabel)
+    ax_box.grid(axis="y", linestyle=":", alpha=0.5)
+    ax_box.set_axisbelow(True)
+
+    # --- Right: mean cross value ± 95 % CI, against the noise line ---
+    y = np.arange(len(names))[::-1]
+    err_low  = [m - lo for m, lo in zip(means, los)]
+    err_high = [hi - m for m, hi in zip(means, his)]
+    ax_forest.errorbar(means, y, xerr=[err_low, err_high],
+                       fmt="none", color="black",
+                       capsize=5, capthick=1.2, linewidth=1.2)
+    for i, (m, c) in enumerate(zip(means, colours)):
+        ax_forest.plot(m, y[i], "o", color=c, markersize=7,
+                       markeredgecolor="black", markeredgewidth=0.8, zorder=3)
+    ax_forest.set_yticks(y); ax_forest.set_yticklabels(names)
+    ax_forest.set_xlabel(ylabel)
+    ax_forest.axvline(noise, color="#555555", linewidth=1.0, linestyle="--", alpha=0.8)
+    ax_forest.grid(axis="x", linestyle=":", alpha=0.5)
+    for i, m in enumerate(means):   # white backing so labels stay legible over the noise line
+        ax_forest.text(m, y[i] + 0.18, f"{m:.3f}",
+                       ha="center", va="bottom", fontsize=10,
+                       bbox=dict(facecolor="white", edgecolor="none", pad=1))
+    ax_forest.set_ylim(y.min() - 0.55, y.max() + 0.55)
+    ax_forest.set_xlim(left=0)
+
+    _panel_y = -0.30
+    ax_box.text(0.5, _panel_y, "(a) Distribution per anchor",
+                transform=ax_box.transAxes, ha="center", va="top", fontsize=11)
+    ax_forest.text(0.5, _panel_y, "(b) Mean ± 95 % CI",
+                   transform=ax_forest.transAxes, ha="center", va="top", fontsize=11)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[plot] {out_path}")
+    print(f"  LLM noise (mean within, all axes pooled) = {noise:.3f}")
+    for n, m, mu, lo, hi in zip(names, per_anchor, means, los, his):
+        print(f"  {n:10s} within={m['within'].mean():.3f}  cross={mu:.3f} CI=[{lo:.3f}, {hi:.3f}]")
 
 
 # =====================================================================
@@ -788,13 +858,14 @@ def comparison_decoding_centroids(runs: dict, out_path: str,
 def _order_decoding_settings(settings):
     """Order decoding settings baseline-first, then knob-grouped, and assign a
     colour per setting (one hue per knob). Returns (ordered_list, {setting:hex})."""
-    # One hue per knob, distinguished light (lo) → dark (hi) so the lo/hi
-    # settings no longer share an identical colour. 'both' uses the brown used
-    # elsewhere in this module (the Neighbour axis) instead of sea green.
+    # One hue per knob, light (lo) → dark (hi). 'both' runs purple → burgundy:
+    # the earlier brown pair sat too close to the oranges (dark brown #8d2c03 vs
+    # dark orange: normal-vision ΔE 9.7). Every pair of the current seven is
+    # ≥15.4 ΔE apart (≥12.5 under CVD simulation), checked with a palette validator.
     knobs = [
-        ("temp_", {"lo": "#86b8de", "hi": "#1f5c8a"}),   # blue:   light → dark
+        ("temp_", {"lo": "#86b8de", "hi": "#2a5fb7"}),   # blue:   light → dark
         ("topp_", {"lo": "#f0a868", "hi": "#a84e05"}),   # orange: light → dark
-        ("both_", {"lo": "#c47a52", "hi": "#8d2c03"}),   # brown:  light → dark
+        ("both_", {"lo": "#8f7ce3", "hi": "#6e1423"}),   # purple → burgundy
     ]
     ordered, cmap = [], {}
     for s in settings:                       # baseline(s) first
@@ -1129,6 +1200,12 @@ _DECODING_PARAMS = {
 }
 
 
+def _freedom_order(settings) -> list:
+    """Decoding settings sorted from least to most sampling freedom: ascending
+    (temperature, top_p); settings missing from the swept table go last."""
+    return sorted(settings, key=lambda s: _DECODING_PARAMS.get(s, (np.inf, np.inf)))
+
+
 def _decoding_tuple_label(s) -> str:
     """Display label '(temp, top_p)' for a decoding setting; falls back to the
     raw name when the setting isn't in the swept-parameter table."""
@@ -1143,16 +1220,20 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
 
     (a) Linearity, for each setting, the cosine between adjacent PHQ-9 class
         centroids walked along the severity ladder (see `_phq9_band_linearity`).
-        One line per decoding setting (baseline grey, knobs coloured); a high,
-        flat curve = a smooth ordinal severity encoding, a dip = a sharp class
-        boundary. Lets you read off how temp / top_p reshape the severity geometry.
-    (b) Diversity, per-setting mean (1 − within-cosine) ± 95 % CI, identical to
-        `comparison_decoding_diversity`'s forest panel, so the figure pairs
-        "does decoding blur the severity ladder?" with "does it widen the spread?".
+        Grouped bars: one group per severity step, one bar per decoding setting
+        ordered from least to most sampling freedom (low temp / top_p → high),
+        ± SD across reps. The y-axis is truncated (cosines sit in 0.8-0.95, so a
+        zero baseline would hide both the steps and the SD); high, even bars = a
+        smooth ordinal severity encoding, a low group = a sharp class boundary.
+    (b) Diversity, per-setting mean (1 − within-cosine) ± 95 % CI, the same
+        numbers as `comparison_decoding_diversity`'s forest panel, rows in (a)'s
+        freedom order, so the figure pairs "does decoding blur the severity
+        ladder?" with "does it widen the spread?".
+    One shared (temp, top_p) legend column sits right of (b), in the same order.
     """
     pair_labels, lin = _phq9_band_linearity(runs)
-    order_lin, cmap = _order_decoding_settings(sorted(lin.keys()))
-    order_lin = [s for s in order_lin if s in lin]
+    _, cmap = _order_decoding_settings(sorted(lin.keys()))
+    order_lin = _freedom_order(lin.keys())
     if not order_lin:
         print("[decoding-linearity] no settings with band centroids; skipping plot")
         return None
@@ -1161,29 +1242,39 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
           f"severity steps={pair_labels}")
 
     fig, (ax_lin, ax_for) = plt.subplots(
-        1, 2, figsize=(7.0, 3.6), gridspec_kw={"width_ratios": [1.55, 1.0]})
+        1, 2, figsize=(8.6, 3.6), gridspec_kw={"width_ratios": [2.4, 1.0]})
 
-    # --- (a) Linearity lines: cosine between adjacent class centroids. -------
+    # --- (a) Grouped bars: cosine between adjacent class centroids ± SD. -----
     x = np.arange(len(pair_labels))
-    for s in order_lin:
-        mean_vec, _sd_vec = lin[s]
-        ax_lin.plot(x, mean_vec, "o-", color=cmap[s], label=_decoding_tuple_label(s),
-                    linewidth=2.0 if s == "baseline" else 1.6,
-                    markersize=6, markeredgecolor="black", markeredgewidth=0.5,
-                    zorder=4 if s == "baseline" else 3)
+    n_set = len(order_lin)
+    w = 0.8 / n_set
+    lo_all, hi_all = [], []
+    for j, s in enumerate(order_lin):
+        mean_vec, sd_vec = lin[s]
+        xs = x + (j - (n_set - 1) / 2) * w
+        ax_lin.bar(xs, mean_vec, width=w, color=cmap[s], edgecolor="black",
+                   linewidth=0.5, yerr=sd_vec, zorder=3,
+                   error_kw=dict(ecolor="black", elinewidth=0.8, capsize=2,
+                                 capthick=0.8))
+        lo_all.append(np.nanmin(mean_vec - sd_vec))
+        hi_all.append(np.nanmax(mean_vec + sd_vec))
+    y_lo = np.floor((min(lo_all) - 0.01) * 20) / 20          # nearest 0.05 below
+    ax_lin.set_ylim(y_lo, max(hi_all) + 0.01)
+    ax_lin.set_xlim(-0.6, len(pair_labels) - 0.4)
     ax_lin.set_xticks(x)
     disp_labels = [lab.replace("Moderate", "Mod.").replace("Severe", "Sev.")
                    for lab in pair_labels]
     ax_lin.set_xticklabels(disp_labels, rotation=20, ha="right", fontsize=9)
     ax_lin.set_ylabel("Cosine similarity")
     ax_lin.grid(axis="y", linestyle=":", alpha=0.5)
-    ax_lin.legend(fontsize=8, ncol=2, framealpha=0.9, loc="lower right",
-                  handlelength=1.6, handletextpad=0.6, columnspacing=1.3,
-                  labelspacing=0.4, borderpad=0.5)
 
     # --- (b) Diversity forest: mean ± 95 % CI, baseline reference line. ------
+    # Rows top → bottom in the same least → most freedom order as (a).
     if div is not None:
         order, colours, means, los, his, base_mean, _n = div
+        perm = [order.index(s) for s in _freedom_order(order)]
+        order, colours, means, los, his = ([v[i] for i in perm]
+                                          for v in (order, colours, means, los, his))
         yy = np.arange(len(order))[::-1]
         err_low = [m - lo for m, lo in zip(means, los)]
         err_high = [hi - m for m, hi in zip(means, his)]
@@ -1200,6 +1291,13 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
         ax_for.set_xlabel("Mean diversity")
         ax_for.grid(axis="x", linestyle=":", alpha=0.5)
         ax_for.set_ylim(yy.min() - 0.55, yy.max() + 0.55)
+
+    # Shared legend (one column, right of the figure) in (a)'s freedom order.
+    handles = [Patch(facecolor=cmap[s], edgecolor="black", linewidth=0.5,
+                     label=_decoding_tuple_label(s)) for s in order_lin]
+    ax_for.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
+                  fontsize=8, frameon=False, handletextpad=0.5, labelspacing=0.7,
+                  title="(temp, top-$p$)", title_fontsize=8)
 
     _py = -0.34
     ax_lin.text(0.5, _py, "(a) PHQ-9 severity linearity",

@@ -1,0 +1,1 @@
+Fill in the PHQ-9 questionnaire based on post history. Infer pervasiveness from density of negative sentiment and functional impairment markers, not explicit timelines. Map nihilism and cognitive distress to higher severity scores. Distinguish situational stress from clinical pathology unless sentiment permeates multiple contexts. Ignore sarcasm without behavioral evidence.

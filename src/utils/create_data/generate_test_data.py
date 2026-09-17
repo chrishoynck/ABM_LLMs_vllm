@@ -93,6 +93,11 @@ def _parse_args():
                         help="Disable LLM engine + per-call sampling seeds — generations "
                              "vary across reruns. Pair with --agent-seed for replicate-based "
                              "variance estimation.")
+    parser.add_argument("--per-agent-seed", action="store_true",
+                        help="Seeded sampling with a distinct seed per (agent, round) "
+                             "(SeedSequence[--seed, agent id, round]) instead of one seed "
+                             "shared by every request in a round. Ignored with "
+                             "--nondeterministic. See checks/check_seeding.job.")
     parser.add_argument("--output-csv", type=str, default=None,
                         help="Full path to the posts CSV output. Overrides the default "
                              "<sweep_root>/SA_prompt/<instr_id>_<model>.csv layout.")
@@ -163,7 +168,7 @@ def _write_meta(out_csv: str, model_id: str, args, instr_path: str) -> None:
 
     Captures the generator, the resolved decoding parameters, seeds, prompt and
     neighbour settings, and the vLLM version, so per-model runs (Qwen / Gemma /
-    ...) stay auditable for the paper's decoding table.
+    Mistral / ...) stay auditable for the paper's decoding table.
     """
     import json
     from datetime import datetime
@@ -180,6 +185,7 @@ def _write_meta(out_csv: str, model_id: str, args, instr_path: str) -> None:
         "max_tokens": 512,
         "engine_seed": None if args.nondeterministic else SEED,
         "seed": args.seed,
+        "per_agent_seed": bool(args.per_agent_seed),
         "thinking": bool(args.thinking),
         "instruction_file": os.path.abspath(instr_path),
         "persona_phq9_file": os.path.abspath(args.persona_phq9_file),
@@ -358,6 +364,7 @@ def main():
                     num_neighbors=args.num_neighbors,
                     neighbor_seed=args.neighbor_seed,
                     nondeterministic_sampling=args.nondeterministic,
+                    per_agent_seed=args.per_agent_seed,
                     gen_temp=args.temp, gen_top_p=args.top_p,
                 )
                 # phq9_assignments keeps persona order (no permutation), so all_agents[i]

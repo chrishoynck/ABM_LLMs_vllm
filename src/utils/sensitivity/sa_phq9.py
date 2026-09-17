@@ -34,7 +34,7 @@ if not hasattr(_main, "neural_net_BERT"):
 
 from utils.sensitivity.sa_analyze import (
     _parse_setting,
-    comparison_combined,
+    comparison_cross_vs_noise,
     phq9_to_band,
 )
 
@@ -350,16 +350,16 @@ def main():
             _assert_slot_phq9_consistent(preds, axis)
             axis_deltas[_DISPLAY.get(axis, axis)] = phq9_within_cross(preds, paired=True)
 
-    # Cross-axis comparison: the same box(distribution)+forest(mean ± CI) figure
-    # as sa_analyze's axes_comparison, but on |Δ predicted PHQ-9| (cross − within)
-    # instead of cosine drop. drop_sign=-1 flips within−cross → cross−within so a
-    # tall box still means "factor moves output beyond LLM noise".
+    # Cross-axis comparison: box(distribution)+forest(mean ± CI) of the raw
+    # cross-setting |Δ predicted PHQ-9| per persona anchor, against one dashed
+    # LLM-noise line (mean within-setting |Δ| pooled over all axes). Nothing is
+    # subtracted, so the PHQ-9 axis reads directly in score points.
     if len(axis_deltas) >= 2:
         print("\n=== Cross-axis comparison (MentalBERT + MLP) ===")
-        comparison_combined(
+        comparison_cross_vs_noise(
             axis_deltas, os.path.join(args.out_dir, "axes_comparison.png"),
             value_col="delta", ylabel="|Δ predicted PHQ-9|",
-            anchor_cols=("agent_a",), drop_sign=-1.0)
+            anchor_cols=("agent_a",))
 
     print(f"\n[done] PHQ-9 SA outputs under {args.out_dir}/")
 

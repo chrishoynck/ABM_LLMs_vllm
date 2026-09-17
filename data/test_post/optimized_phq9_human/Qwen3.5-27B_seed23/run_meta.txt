@@ -1,0 +1,20 @@
+timestamp:         2026-09-15T14:14:36
+model:             Qwen/Qwen3.5-27B
+seed:              23
+resume:            False
+train_files:       data/finetune/train_posts.csv
+test_file:         data/finetune/test_posts.csv
+prompts_file:      data/prompts_post_minimal.json
+start_instruction: Fill in the PHQ-9 questionnaire based on the post history. Infer symptoms from emotional tone
+n_train/val/test:  2700/300/300
+
+timestamp:         2026-09-15T16:44:28
+model:             Qwen/Qwen3.5-27B
+seed:              23
+resume:            True
+train_files:       data/finetune/train_posts.csv
+test_file:         data/finetune/test_posts.csv
+prompts_file:      data/prompts_post_minimal.json
+start_instruction: Fill in the PHQ-9 questionnaire based on the post history. Infer symptoms from emotional tone
+n_train/val/test:  2700/300/300
+

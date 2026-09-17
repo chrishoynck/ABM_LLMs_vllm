@@ -1,15 +1,17 @@
 """TextGrad prompt optimization for post generation and PHQ-9 assessment, plus the MentalBERT+MLP regressor.
 
 Modes are selected with --mode (see docs/prompt_optimizer.md): phq9 / tweets optimize a
-prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, bert trains the
-regressor on cached embeddings, bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
+prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, grade-posts
+teacher-grades an existing posts CSV, bert trains the regressor on cached embeddings,
+bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
 and jobs/run_bert_optimizer.job.
 """
 """TextGrad prompt optimization for post generation and PHQ-9 assessment, plus the MentalBERT+MLP regressor.
 
 Modes are selected with --mode (see docs/prompt_optimizer.md): phq9 / tweets optimize a
-prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, bert trains the
-regressor on cached embeddings, bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
+prompt in a student-teacher loop, *-rerun-test re-score a saved prompt, grade-posts
+teacher-grades an existing posts CSV, bert trains the regressor on cached embeddings,
+bert-eval scores a CSV. Jobs: jobs/run_prompt_optimizer*.job
 and jobs/run_bert_optimizer.job.
 """
 import os
@@ -708,7 +710,7 @@ def train_val_test_split(rng, file_paths:list[str],
 
     perm = rng.permutation(len(tweet_blocks_list))
     n = len(tweet_blocks_list)
-    n_test = max(1, int(n * test_fraction))
+    n_test = max(1, int(n * test_fraction)) if test_fraction > 0 else 0
     n_val  = max(1, int(n * val_fraction))
 
     test_idx  = perm[:n_test]
@@ -743,6 +745,9 @@ def call_optimizer_phq9(
     max_model_len: int = 32768,
     output_dir: str = None,
     resume: bool = False,
+    prompts_file: str = None,
+    test_file: str = None,
+    out_root: str = "data/test_post/optimized_phq9",
     **vllm_kwargs,
 ):
     """Optimise the PHQ-9 system instruction via TextGrad with batched gradient accumulation.
@@ -761,6 +766,11 @@ def call_optimizer_phq9(
         seed: RNG seed.
         max_model_len: vLLM context budget.
         output_dir: where to write checkpoints, trajectory CSV, and plots.
+        prompts_file: prompts JSON giving the STARTING instruction and the fixed
+            format block; defaults to FC.PROMPTS_FILE.
+        test_file: tweets_with_phq9 CSV used as the whole test set. When given, no
+            test fraction is held out of `file_paths` (they feed train/val only).
+        out_root: parent of the per-seed run folder `<out_root>/<model>_seed<seed>/`.
         **vllm_kwargs: forwarded to ChatVLLM.
 
     Returns:
@@ -768,10 +778,17 @@ def call_optimizer_phq9(
     """
     rng = np.random.default_rng(seed)
 
-    # Load + split data.
-    train_data, val_data, test_data = train_val_test_split(
-        rng, file_paths, val_fraction, test_fraction,
-    )
+    # Load + split data. With a fixed test file, file_paths only feed train/val.
+    if test_file is not None:
+        train_data, val_data, _ = train_val_test_split(
+            rng, file_paths, val_fraction, test_fraction=0.0,
+        )
+        test_data = parse_tweets_with_phq9_csv(test_file)
+        print(f"Test: {len(test_data[0])} blocks from {test_file} (fixed held-out file)")
+    else:
+        train_data, val_data, test_data = train_val_test_split(
+            rng, file_paths, val_fraction, test_fraction,
+        )
     train_blocks, train_answers, train_personas, _train_aids = train_data
     val_blocks, val_answers, val_personas, _val_aids = val_data
     test_blocks, test_answers, test_personas, _test_aids = test_data
@@ -789,7 +806,8 @@ def call_optimizer_phq9(
     )
 
     # Split prompt into instruction (grad) + format (fixed).
-    with open(FC.PROMPTS_FILE, "r") as f:
+    prompts_file = prompts_file or FC.PROMPTS_FILE
+    with open(prompts_file, "r") as f:
         prompts = json.load(f)
 
     instruction_text = prompts["phq9"]["system_instruction"]
@@ -827,11 +845,24 @@ def call_optimizer_phq9(
 
     model_short = model_name.split("/")[-1]
     if output_dir is None:
-        output_dir = f"data/test_post/optimized_phq9/{model_short}_seed{seed}"
+        output_dir = os.path.join(out_root, f"{model_short}_seed{seed}")
     if not resume:
         # Fresh run: move any prior run aside so we never interleave with it.
         _archive_existing_run(output_dir)
     os.makedirs(output_dir, exist_ok=True)
+    # Provenance stamp: which corpus, test file and starting prompt this run used.
+    with open(os.path.join(output_dir, "run_meta.txt"), "a", encoding="utf-8") as fh:
+        fh.write(
+            f"timestamp:         {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+            f"model:             {model_name}\n"
+            f"seed:              {seed}\n"
+            f"resume:            {resume}\n"
+            f"train_files:       {', '.join(file_paths)}\n"
+            f"test_file:         {test_file or '(held-out split of train_files)'}\n"
+            f"prompts_file:      {prompts_file}\n"
+            f"start_instruction: {instruction_text}\n"
+            f"n_train/val/test:  {len(train_blocks)}/{len(val_blocks)}/{len(test_blocks)}\n\n"
+        )
 
     trajectory_path = os.path.join(output_dir, "training_trajectory.csv")
     _traj_fields = ["model", "seed", "step", "split", "mean_score", "std_score", "n_samples"]
@@ -1102,6 +1133,7 @@ def rerun_test_phq9(
     max_model_len: int = 32768,
     posts_file: str | None = None,
     result_subdir: str | None = None,
+    out_root: str = "data/test_post/optimized_phq9",
     **vllm_kwargs,
 ):
     """Reload a saved PHQ-9 instruction and re-run only the test phase (no training).
@@ -1122,6 +1154,7 @@ def rerun_test_phq9(
         result_subdir (str | None): write results to <output_dir>/<subdir>/ and leave
             training_trajectory.csv and the main test files untouched; use it to score
             a different instruction (e.g. the minimal prompt) on the same posts.
+        out_root (str): parent of the per-seed run folders when output_dir is None.
         **vllm_kwargs: forwarded to ChatVLLM.
 
     Returns:
@@ -1133,7 +1166,7 @@ def rerun_test_phq9(
     model_short = model_name.split("/")[-1]
 
     if output_dir is None:
-        output_dir = f"data/test_post/optimized_phq9/{model_short}_seed{seed}"
+        output_dir = os.path.join(out_root, f"{model_short}_seed{seed}")
 
     instr_path = os.path.join(output_dir, instruction_filename)
     if not os.path.isfile(instr_path):
@@ -2122,6 +2155,63 @@ def call_optimizer_tweets(
     torch.cuda.empty_cache()
 
     return best_instruction
+
+
+def _parse_score_feedback(text: str):
+    """(score clipped to 0-10, or None if unparsed; feedback) from a teacher reply with SCORE:/FEEDBACK: lines."""
+    score, feedback = None, ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.upper().startswith("SCORE:"):
+            m = re.search(r"[\d.]+", line)
+            try:
+                score = min(10.0, max(0.0, float(m.group()))) if m else None
+            except ValueError:
+                pass
+        elif line.upper().startswith("FEEDBACK:"):
+            feedback = line.split(":", 1)[-1].strip()
+    return score, feedback
+
+
+def grade_posts_csv(posts_file: str, out_csv: str, model_name: str = QWEN_27,
+                    max_model_len: int = 16384, **vllm_kwargs):
+    """Teacher-grade every block of an existing posts CSV on the 0-10 post-quality scale.
+
+    Same rating prompt as the post-prompt optimizer (`_make_loss_prompt_tweet_set`),
+    so the scores are on the scale of the prompt evaluations, but without student
+    generation: the posts already exist (e.g. another generator's held-out set) and
+    every post of a block is rated as one set. Writes one row per block; `score` is
+    empty when the teacher's SCORE line could not be parsed.
+
+    Args:
+        posts_file (str): tweets_with_phq9-style CSV (agent_id, persona, phq9, tweet).
+        out_csv (str): grades CSV to write (agent_id, persona, phq9, n_posts, score, feedback).
+        model_name (str): teacher model id.
+        max_model_len (int): vLLM context budget.
+        **vllm_kwargs: forwarded to ChatVLLM (e.g. seed).
+    """
+    blocks, answers, personas, agent_ids = parse_tweets_with_phq9_csv(posts_file)
+    blocks = [[t for t in b if t not in ("NO_POST", "NO_TWEET")] for b in blocks]
+    print(f"[grade] {len(blocks)} blocks from {posts_file}")
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or len(
+        (os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(",")
+    )
+    _, teacher_engine = _build_engines(model_name, tp, 0.90, max_model_len=max_model_len,
+                                       enable_prefix_caching=False, **vllm_kwargs)
+    prompts = [_make_loss_prompt_tweet_set(b, p, int(a)) for b, p, a in zip(blocks, personas, answers)]
+    responses = _batch_teacher_rate(teacher_engine, prompts, max_tokens=4096)
+
+    rows = []
+    for aid, persona, phq9, block, resp in zip(agent_ids, personas, answers, blocks, responses):
+        score, feedback = _parse_score_feedback(resp or "")
+        rows.append({"model": model_name.split("/")[-1], "agent_id": aid, "persona": persona,
+                     "phq9": int(phq9), "n_posts": len(block), "score": score, "feedback": feedback})
+    df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(os.path.abspath(out_csv)) or ".", exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    ok = df["score"].dropna()
+    print(f"[grade] mean {ok.mean():.2f} +/- {ok.std():.2f} over {len(ok)} blocks "
+          f"({df['score'].isna().sum()} unparsed) -> {out_csv}")
 
 
 def rerun_test_tweets(
@@ -3129,7 +3219,7 @@ if __name__ == "__main__":
                         help="HuggingFace model id (e.g. Qwen/Qwen3.5-27B)")
     parser.add_argument("--mode", type=str, default="tweets",
                         choices=["tweets", "phq9", "phq9-rerun-test",
-                                 "tweets-rerun-test", "bert", "bert-cv", "bert-eval"],
+                                 "tweets-rerun-test", "grade-posts", "bert", "bert-cv", "bert-eval"],
                         help="Which entry point to run: tweets, phq9, phq9-rerun-test "
                              "(re-test saved best instruction without retraining), "
                              "tweets-rerun-test (score a saved tweet instruction by "
@@ -3137,7 +3227,9 @@ if __name__ == "__main__":
                              "+ --persona-phq9-file), bert, bert-cv "
                              "(one-shot partition-variance diagnostic for the BERT regressor), "
                              "or bert-eval (score trained regressor(s) on a single "
-                             "tweets_with_phq9 CSV; see --posts-file + --seeds).")
+                             "tweets_with_phq9 CSV; see --posts-file + --seeds), "
+                             "grade-posts (teacher-grade every block of an existing posts "
+                             "CSV; see --posts-file + --out-csv).")
     parser.add_argument("--instruction-filename", type=str, default="optimized_instruction.txt",
                         help="(--mode phq9-rerun-test only) which prompt file under the seed "
                              "directory to test. Default: optimized_instruction.txt — the prompt "
@@ -3160,6 +3252,26 @@ if __name__ == "__main__":
                              "<seed_dir>/eval_on_<posts_stem>/ subdir; the original "
                              "in-distribution test files and trajectory.csv test row are "
                              "preserved untouched.")
+    parser.add_argument("--out-csv", type=str, default=None,
+                        help="(--mode grade-posts only) grades CSV to write.")
+    parser.add_argument("--train-posts-file", type=str, nargs="+", default=None,
+                        help="(--mode phq9 / phq9-rerun-test) tweets_with_phq9 CSV(s) the "
+                             "optimizer draws train/val from, instead of the base set under "
+                             "data/test_post/Qwen_Qwen3.5-27B/. E.g. the human-optimized "
+                             "corpus data/finetune/train_posts.csv.")
+    parser.add_argument("--test-posts-file", type=str, default=None,
+                        help="(--mode phq9 only) CSV used as the whole test set; no test "
+                             "fraction is then held out of the training file(s). E.g. the "
+                             "shared 300-block data/finetune/test_posts.csv.")
+    parser.add_argument("--prompts-file", type=str, default=None,
+                        help="(--mode phq9 only) prompts JSON whose phq9.system_instruction "
+                             "is the STARTING instruction (the format block is read from it "
+                             "too). Default: FC.PROMPTS_FILE = data/prompts_optimal.json, "
+                             "whose instruction is by now itself a TextGrad output; pass "
+                             "data/prompts_post_minimal.json to start from the minimal prompt.")
+    parser.add_argument("--out-root", type=str, default="data/test_post/optimized_phq9",
+                        help="(--mode phq9 / phq9-rerun-test) parent of the per-seed run "
+                             "folders <out-root>/<model>_seed<seed>/.")
     parser.add_argument("--persona-phq9-file", type=str, default=None,
                         help="(--mode tweets-rerun-test only) (persona, phq9) CSV — fresh "
                              "agent-PHQ-9 pairs are sampled from here with --sample-seed.")
@@ -3223,6 +3335,9 @@ if __name__ == "__main__":
     for inter in ["inter", "no_inter"]:
         base_dir = f"data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_{inter}"
         file_paths.extend(_generate_file_path(base_dir))
+    if args.train_posts_file:
+        # Optimize on another corpus (e.g. the human-optimized train_posts.csv).
+        file_paths = list(args.train_posts_file)
 
     for fp in file_paths:
         print(fp)
@@ -3244,6 +3359,9 @@ if __name__ == "__main__":
                 test_sample_size=args.test_sample_size,
                 seed=seed,
                 resume=args.resume,
+                prompts_file=args.prompts_file,
+                test_file=args.test_posts_file,
+                out_root=args.out_root,
             )
     elif run_mode == "phq9-rerun-test":
         for seed in args.seeds:
@@ -3256,6 +3374,7 @@ if __name__ == "__main__":
                 instruction_filename=args.instruction_filename,
                 posts_file=args.posts_file,
                 result_subdir=args.result_subdir,
+                out_root=args.out_root,
             )
     elif run_mode == "tweets":
         for seed in args.seeds:
@@ -3292,6 +3411,11 @@ if __name__ == "__main__":
                 tweets_per_sample=args.tweets_per_sample,
                 **vllm_extra,
             )
+    elif run_mode == "grade-posts":
+        if not args.posts_file or not args.out_csv:
+            raise SystemExit("--mode grade-posts requires --posts-file and --out-csv")
+        vllm_extra = {"seed": args.llm_seed} if args.llm_seed is not None else {}
+        grade_posts_csv(args.posts_file, args.out_csv, model_name=model_name, **vllm_extra)
     elif run_mode == "bert-eval":
         if not args.posts_file:
             raise SystemExit("--mode bert-eval requires --posts-file (the tweets_with_phq9 CSV to score)")

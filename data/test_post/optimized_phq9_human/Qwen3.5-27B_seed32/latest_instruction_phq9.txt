@@ -1,0 +1,1 @@
+Assess PHQ-9 symptoms from post history using explicit behavioral evidence, not general emotional tone. Treat descriptions of relief as confirmation of prior distress. Distinguish situational stress or metaphors from intrinsic clinical impairment. Only score items supported by functional decline.

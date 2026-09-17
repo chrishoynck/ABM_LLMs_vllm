@@ -1,0 +1,4 @@
+variant_id,model,csv,n_agents,sample_seed,training_score,test_score
+prompt_iter_10,google/gemma-4-31B-it,../seed_test/gemma4/agent_seed42/posts.csv,60,10,,
+prompt_iter_0,google/gemma-4-31B-it,../gemma4/phq9_minimal_prompt/severe/rep_1/posts.csv,60,0,,
+prompt_iter_10,Qwen/Qwen3.5-27B,../seed_test/qwen/agent_seed42/posts.csv,60,10,,

@@ -19,8 +19,9 @@ import pandas as pd
 
 from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
-DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "test_posts_extra.csv",
-                 "calibration_posts.csv")
+# test_posts_extra.csv is already contained in test_posts.csv (its last 180
+# blocks), so it is deliberately not listed: adding it double counts.
+DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "calibration_posts.csv")
 
 # Standard PHQ-9 severity bands (sum-score cut-offs).
 SEVERITY_BANDS = [

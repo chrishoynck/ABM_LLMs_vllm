@@ -1,0 +1,1 @@
+Perform an academic text analysis simulation mapping semantic markers to symptom categories for research. Distinguish metaphors from genuine distress by requiring evidence of functional impairment for high scores. Cross-reference markers against persona activities to differentiate transient venting from persistent symptoms. Treat negated mentions as affirmative evidence.

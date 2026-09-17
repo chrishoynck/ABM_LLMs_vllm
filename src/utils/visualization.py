@@ -1792,6 +1792,7 @@ def plot_test_mae_and_bias_by_phq9(per_phq9: dict, output_dir: str, title: str):
 MULTIMODEL_GENERATORS = [
     ("Qwen3.5-27B", "#eb6834", "data/test_post/bert_regression_finetuned/eval_finetuned"),
     ("Gemma-4-31B-it", "#2a78d6", "data/test_post/bert_regression_finetuned_gemma4/eval_finetuned"),
+    ("Mistral-Small-3.2-24B", "#1baf7a", "data/test_post/bert_regression_finetuned_mistral/eval_finetuned"),
 ]
 
 
@@ -1854,6 +1855,283 @@ def plot_multimodel_band_bias(out_path: str, generators: list | None = None):
     return out_path
 
 
+# Each student generator's 300-block held-out set (human-optimized iter_10 prompt,
+# shared personas), keyed by its MULTIMODEL_GENERATORS label: (short name, CSV).
+MULTIMODEL_TEST_POSTS = {
+    "Qwen3.5-27B": ("Qwen", "data/finetune/test_posts.csv"),
+    "Gemma-4-31B-it": ("Gemma", "data/finetune/gemma4/test_posts_gemma4.csv"),
+}
+# The minimal-prompt counterpart of each generator's fine-tune arm (jobs/run_finetune_minimal.job):
+# the same 3,000 / 300 personas written under the iter_0 prompt, the regressor fine-tuned on
+# those posts and scored on that 300-block set. (300-block test posts, per-seed eval dir);
+# skipped in the figure until the job has run.
+MULTIMODEL_MINIMAL_ARMS = {
+    "Qwen3.5-27B": ("data/finetune/qwen_minimal/test_posts_qwen_minimal.csv",
+                    "data/test_post/bert_regression_finetuned_qwen_minimal/eval_finetuned"),
+    "Gemma-4-31B-it": ("data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv",
+                       "data/test_post/bert_regression_finetuned_gemma4_minimal/eval_finetuned"),
+}
+# PHQ-9-axis sensitivity-analysis root per generator (sa_run.sh / sa_phq9_minimal_run.sh,
+# jobs/sa_phq9_gemma4.job): <root>/<subdir>/<band>/rep_*/embeddings_sbert.npz, read by
+# sa_analyze.phq9_adjacent_band_ladder. Subdirs: (legend suffix, subdir).
+MULTIMODEL_SA_ROOTS = {
+    "Qwen3.5-27B": "data/sensitivity",
+    "Gemma-4-31B-it": "data/sensitivity/gemma4",
+}
+MULTIMODEL_SA_PROMPTS = [("human-opt.", "phq9"), ("minimal", "phq9_minimal_prompt")]
+# One visual code for the whole multi-model figure: the colour is the generator
+# (MULTIMODEL_GENERATORS: Qwen orange, Gemma blue; the teacher set grey), the line
+# style + marker is the generation prompt the posts were written under.
+MULTIMODEL_PROMPT_STYLES = {
+    "human-opt.": ("-", "o"),
+    "minimal": ("--", "^"),
+    "TextGrad best": ("-.", "D"),
+}
+# The paper's two assessors on the teacher base set (Table 1): label, colour, line
+# style, marker, per-seed prediction CSV pattern, seeds. Each BERT seed scores its
+# own 1,125-block split; every prompt seed scores the seed-35 split.
+MULTIMODEL_TEACHER_ASSESSORS = [
+    ("MentalBERT+MLP, teacher set", "#3b3b3b", ":", "s",
+     "data/test_post/bert_regression/Qwen3.5-27B_seed{seed}/test_raw_scores.csv", [34, 35, 36, 37, 38]),
+    ("LLM (TextGrad), teacher set", "#9a9a9a", ":", "P",
+     "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}/eval_on_test_blocks_seed35/test_raw_scores.csv",
+     [23, 24, 25, 32, 33]),
+]
+# Teacher gradings (0-10) on the paper's protocol: the 100 test personas, 3 fresh posts
+# each per generator (checks/check_grading_consistency.job); one row per block
+# (columns persona, phq9, score): generator (MULTIMODEL_GENERATORS label, sets the
+# colour), prompt (MULTIMODEL_PROMPT_STYLES key, sets line style + marker), CSV. The
+# 10-post grades of the 300-block sets (jobs/grade_posts_multimodel.job) are the
+# `grades_<tag>300.csv` files next to them. The minimal and TextGrad rows are the
+# paper's original test runs (same 100 personas, same protocol): iter_0 (mean 5.68)
+# and the best of the five TextGrad generation prompts, seed 29 (val 7.42, test
+# 6.74). Those two have no persona column, their agent_id is the row of
+# MULTIMODEL_GRADING_PERSONAS.
+MULTIMODEL_GRADINGS = [
+    ("Qwen3.5-27B", "human-opt.", "data/test_post/teacher_grades/grades_100x3_qwen.csv"),
+    ("Gemma-4-31B-it", "human-opt.", "data/test_post/teacher_grades/grades_100x3_gemma4.csv"),
+    ("Qwen3.5-27B", "TextGrad best", "data/test_post/optimized_tweets/Qwen3.5-27B_seed29/test_raw_scores.csv"),
+    ("Qwen3.5-27B", "minimal", "data/prompt_optimization_h/qwen27_baseline/iter_0/test_raw_scores.csv"),
+]
+MULTIMODEL_GRADING_PERSONAS = "data/personas_eval_1000_phq9.csv"
+# Posts the human reviewer read while editing the generation prompt; 19 of the 300
+# test personas are among them (optional exclusion in plot_multimodel_linearity_bias).
+MULTIMODEL_PROMPT_ITER_POSTS = "data/prompt_optimization_h/qwen27_baseline/iter_*/posts.csv"
+_MM_BAND_SHORT = ["Minimal", "Mild", "Mod.", "Mod. Sev", "Sev"]
+
+
+def _band_bias_per_seed(paths: list, keep_ids=None) -> np.ndarray:
+    """Signed bias (pred - true) per severity band for each prediction CSV that exists; shape (n_seeds, 5).
+
+    Args:
+        paths (list): prediction CSVs (true_phq9, pred_phq9, agent_id).
+        keep_ids (set | None): agent ids to keep; None keeps every row.
+    """
+    rows = []
+    for p in paths:
+        if not os.path.isfile(p):
+            print(f"[multimodel-linearity] missing {p}")
+            continue
+        d = pd.read_csv(p)
+        if keep_ids is not None:
+            d = d[d["agent_id"].isin(keep_ids)]
+        err = d["pred_phq9"] - d["true_phq9"]
+        rows.append([err[d["true_phq9"].between(lo, hi)].mean() for lo, hi, _ in _MM_BANDS])
+    return np.array(rows, float)
+
+
+def _errorbar_annotated(ax, y, err, colour, style, marker, label, fmt="{:.3f}", below=False, annotate=True):
+    """Line with capped error bars and, unless `annotate=False`, the value printed at each point (above, or below the bar if `below`)."""
+    x = np.arange(len(y))
+    ax.errorbar(x, y, yerr=err, fmt=marker, linestyle=style, color=colour, capsize=2.5,
+                linewidth=1.6, markersize=5.5, markeredgecolor="black", markeredgewidth=0.5,
+                zorder=3, label=label)
+    if not annotate:
+        return
+    sign = -1 if below else 1
+    for xi, yi, ei in zip(x, y, err):
+        ax.annotate(fmt.format(yi), (xi, yi + sign * ei), xytext=(0, 3 * sign), textcoords="offset points",
+                    ha="center", va="top" if below else "bottom", fontsize=6.5, color=colour)
+
+
+def plot_multimodel_linearity_bias(out_path: str, n_bootstrap: int = 1000, seed: int = 0,
+                                   exclude_prompt_iter_personas: bool = False):
+    """Three panels: (a) PHQ-9-axis SA adjacent-band cosine per generator and prompt, (b) per-band bias of every assessor, (c) teacher gradings.
+
+    Same compact style as the SA figure `sa_analyze.plot_agent_phq9_combined`, whose
+    left panel (a) reproduces for every generator: the same-persona S-BERT cosine
+    between consecutive PHQ-9 bands from the PHQ-9 conditioning runs
+    (`sa_analyze.phq9_adjacent_band_ladder` on `MULTIMODEL_SA_ROOTS[<generator>]`),
+    for the human-optimized prompt (3 reps, error bar = SD across reps) and the
+    minimal prompt (1 rep, no bar), `MULTIMODEL_SA_PROMPTS`. Personas, their per-band
+    scores and the neighbour posts are pinned across bands, reps, prompts and
+    generators, so only the conditioned band (and the generator) moves. (b) and (c)
+    use the paired 300-block held-out sets / 100 test personas generated with the
+    human-optimized prompt. `exclude_prompt_iter_personas` drops the 19 blocks whose
+    persona the reviewer saw while editing that prompt (`MULTIMODEL_PROMPT_ITER_POSTS`)
+    from the FT lines of (b) and from (c); off by default, so all 300 blocks are used.
+    (b) is the signed bias per band of the regressor
+    fine-tuned on each generator's own posts (the human-optimized arm and, once
+    `MULTIMODEL_MINIMAL_ARMS` exists on disk, the minimal-prompt arm on the same
+    personas) next to the paper's two assessors on the teacher base set (greys),
+    mean +/- SD over seeds. (c) is the teacher's 0-10 grading
+    per band (`MULTIMODEL_GRADINGS`: the paper's 100 test personas x 3 posts, so a
+    different persona set from (a)/(b)) for each generator under the human-optimized
+    prompt and for Qwen under the best TextGrad and the minimal prompt, mean +/- SEM
+    over blocks. Colour = generator, line style + marker = prompt
+    (`MULTIMODEL_PROMPT_STYLES`) in every panel; the teacher-set assessors are grey.
+    Missing inputs are skipped. Also writes the (a) numbers next to the PNG as
+    `<stem>.csv`.
+
+    Args:
+        out_path (str): PNG to write.
+        n_bootstrap (int): unused, kept for the CLI signature.
+        seed (int): unused, kept for the CLI signature.
+        exclude_prompt_iter_personas (bool): drop the reviewer-seen personas (see above).
+
+    Returns:
+        str | None: `out_path`, or None if no generator had data.
+    """
+    from .sensitivity.sa_analyze import phq9_adjacent_band_ladder
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    steps = [f"{a} → {b}" for a, b in zip(_MM_BAND_SHORT[:-1], _MM_BAND_SHORT[1:])]
+    x = np.arange(len(_MM_BANDS))
+    fig, (ax_lin, ax_bias, ax_grade) = plt.subplots(
+        1, 3, figsize=(7.5, 2.4), gridspec_kw={"width_ratios": [1, 1.2, 1], "wspace": 0.45})
+    rows, plotted = [], False
+    seen = set()  # personas the reviewer read during prompt editing
+    if exclude_prompt_iter_personas:
+        for f in glob.glob(MULTIMODEL_PROMPT_ITER_POSTS):
+            seen |= set(pd.read_csv(f)["persona"].astype(str))
+
+    for label, colour, eval_dir in MULTIMODEL_GENERATORS:
+        short, posts_csv = MULTIMODEL_TEST_POSTS.get(label, (None, None))
+        seeds = [f for f in sorted(glob.glob(os.path.join(eval_dir, "seed*.csv"))) if "summary" not in f]
+        if not posts_csv or not os.path.isfile(posts_csv) or not seeds:
+            print(f"[multimodel-linearity] skip {label}: no test posts or eval CSVs")
+            continue
+
+        # (a) the SA PHQ-9-axis ladder, one line per prompt (skipped if that SA was not run/embedded).
+        for suffix, subdir in MULTIMODEL_SA_PROMPTS:
+            ladder = phq9_adjacent_band_ladder(MULTIMODEL_SA_ROOTS.get(label, ""), subdir=subdir)
+            if ladder is None or ladder.empty:
+                continue
+            _errorbar_annotated(ax_lin, ladder["cos"].to_numpy(), ladder["std"].to_numpy(), colour,
+                                *MULTIMODEL_PROMPT_STYLES[suffix], f"{short} ({suffix} prompt)", annotate=False)
+            rows += [{"generator": label, "prompt": subdir, "step": r.step, "cosine": r.cos, "std": r.std,
+                      "n_reps": r.n_reps, "n_anchors": r.n_anchors} for r in ladder.itertuples(index=False)]
+
+        # (b) the regressor fine-tuned on this generator's posts, per prompt arm.
+        arms = [("human-opt.", posts_csv, seeds)]
+        if label in MULTIMODEL_MINIMAL_ARMS:
+            m_csv, m_dir = MULTIMODEL_MINIMAL_ARMS[label]
+            m_seeds = [f for f in sorted(glob.glob(os.path.join(m_dir, "seed*.csv"))) if "summary" not in f]
+            if os.path.isfile(m_csv) and m_seeds:
+                arms.append(("minimal", m_csv, m_seeds))
+        for prompt_key, arm_csv, arm_seeds in arms:
+            style, marker = MULTIMODEL_PROMPT_STYLES[prompt_key]
+            persona_of = pd.read_csv(arm_csv).groupby("agent_id")["persona"].first().astype(str)
+            keep_ids = set(persona_of.index[~persona_of.isin(seen)])
+            print(f"[multimodel-linearity] {short} ({prompt_key}): {len(keep_ids)} of {len(persona_of)} blocks kept")
+            bias = _band_bias_per_seed(arm_seeds, keep_ids)
+            ax_bias.fill_between(x, bias.mean(0) - bias.std(0), bias.mean(0) + bias.std(0),
+                                 color=colour, alpha=0.2, linewidth=0)
+            ax_bias.plot(x, bias.mean(0), linestyle=style, marker=marker, color=colour, linewidth=1.6,
+                         markersize=5.5, markeredgecolor="black", markeredgewidth=0.5, zorder=3,
+                         label=f"FT MentalBERT+MLP, {short} posts"
+                               + (f" ({prompt_key} prompt)" if prompt_key != "human-opt." else ""))
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    for label, colour, style, marker, pattern, seeds in MULTIMODEL_TEACHER_ASSESSORS:
+        bias = _band_bias_per_seed([pattern.format(seed=s) for s in seeds])
+        if not len(bias):
+            continue
+        ax_bias.fill_between(x, bias.mean(0) - bias.std(0), bias.mean(0) + bias.std(0),
+                             color=colour, alpha=0.15, linewidth=0)
+        ax_bias.plot(x, bias.mean(0), linestyle=style, marker=marker, color=colour, linewidth=1.4,
+                     markersize=5, markeredgecolor="black", markeredgewidth=0.5, zorder=2, label=label)
+
+    gen_colour = {label: colour for label, colour, _ in MULTIMODEL_GENERATORS}
+    for gen, prompt_key, path in MULTIMODEL_GRADINGS:
+        if not os.path.isfile(path):
+            print(f"[multimodel-linearity] no gradings: {path}")
+            continue
+        short = MULTIMODEL_TEST_POSTS.get(gen, (gen,))[0]
+        label, colour = f"{short} ({prompt_key} prompt)", gen_colour[gen]
+        style, marker = MULTIMODEL_PROMPT_STYLES[prompt_key]
+        d = pd.read_csv(path)
+        if "persona" not in d.columns:  # iter_0 raw scores: agent_id indexes the eval-1000 persona file
+            d["persona"] = pd.read_csv(MULTIMODEL_GRADING_PERSONAS)["persona"].reindex(d["agent_id"]).to_numpy()
+        d = d[~d["persona"].astype(str).isin(seen)].dropna(subset=["score"])
+        by_band = [d["score"][d["phq9"].between(lo, hi)] for lo, hi, _ in _MM_BANDS]
+        mean = np.array([g.mean() for g in by_band])
+        sem = np.array([g.std(ddof=1) / np.sqrt(len(g)) if len(g) > 1 else 0 for g in by_band])
+        _errorbar_annotated(ax_grade, mean, sem, colour, style, marker, label, annotate=False)  # four lines: no value labels
+
+    ax_bias.axhline(0, color="black", linewidth=0.8)
+    ax_lin.set_xticks(np.arange(len(steps)))
+    ax_lin.set_xticklabels(steps, rotation=30, ha="right", fontsize=8)
+    ax_lin.set_ylabel("Cosine similarity", fontsize=9.5)
+    ax_bias.set_ylabel("Bias = mean(pred − true)", fontsize=9.5)
+    ax_grade.set_ylabel("Teacher score (0–10)", fontsize=9.5)
+    for ax in (ax_bias, ax_grade):
+        ax.set_xticks(x)
+        ax.set_xticklabels(_MM_BAND_SHORT, rotation=30, ha="right", fontsize=8)
+    for ax, panel in ((ax_lin, "(a) Adjacent-band cosine"), (ax_bias, "(b) Assessor bias per band"),
+                      (ax_grade, "(c) Post gradings per band")):
+        ax.tick_params(axis="y", labelsize=8.5)
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        ax.set_axisbelow(True)
+        ax.margins(x=0.12, y=0.15)
+        if ax.get_legend_handles_labels()[0]:  # above the panel: the legends are wider than the axes
+            ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02), borderaxespad=0, fontsize=6.5,
+                      framealpha=0.9, handlelength=1.6, handletextpad=0.5, borderpad=0.3, labelspacing=0.3)
+        ax.text(0.5, -0.40, panel, transform=ax.transAxes, ha="center", va="top", fontsize=10.5)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    pd.DataFrame(rows).to_csv(os.path.splitext(out_path)[0] + ".csv", index=False)
+    print(f"Multi-model linearity/bias/grading plot → {out_path}")
+    return out_path
+
+
+def write_multimodel_post_samples(out_path: str, n_per_band: int = 1, seed: int = 0):
+    """Markdown file with the same personas' posts from every generator, `n_per_band` blocks per severity band.
+
+    Picks the sample agents from the first generator in `MULTIMODEL_TEST_POSTS`
+    (the sets share personas and PHQ-9 targets) so the blocks are paired across
+    generators, for reading post quality side by side.
+
+    Args:
+        out_path (str): markdown file to write.
+        n_per_band (int): sampled blocks (agents) per band.
+        seed (int): RNG seed of the agent sample.
+    """
+    sets = {short: pd.read_csv(csv) for short, csv in MULTIMODEL_TEST_POSTS.values() if os.path.isfile(csv)}
+    if not sets:
+        return None
+    first = next(iter(sets.values()))
+    agents = first.groupby("agent_id")[["persona", "phq9"]].first()
+    rng = np.random.default_rng(seed)
+    lines = ["# Paired post samples (human-optimized prompt, 300-block held-out sets)\n"]
+    for lo, hi, name in _MM_BANDS:
+        pool = agents.index[agents["phq9"].between(lo, hi)]
+        for aid in rng.choice(pool, min(n_per_band, len(pool)), replace=False):
+            lines.append(f"\n## {name} ({lo}–{hi}): agent {aid}, PHQ-9 = {agents.loc[aid, 'phq9']:.0f}\n")
+            lines.append(f"Persona: {agents.loc[aid, 'persona']}\n")
+            for short, d in sets.items():
+                lines.append(f"\n**{short}**\n")
+                lines += [f"{i + 1}. {t}" for i, t in enumerate(d.loc[d["agent_id"] == aid, "tweet"].astype(str))]
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    with open(out_path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print(f"Paired post samples → {out_path}")
+    return out_path
+
+
 def plot_multimodel_mae_bias(summary: "pd.DataFrame", out_path: str):
     """Grouped bars: MAE (left) and signed bias (right) per generator x estimator.
 
@@ -1895,10 +2173,16 @@ def plot_multimodel_mae_bias(summary: "pd.DataFrame", out_path: str):
     return out_path
 
 
-MULTIMODEL_LABELS = {"qwen": "Qwen3.5-27B", "gemma4": "Gemma-4-31B-it"}
+MULTIMODEL_LABELS = {"qwen": "Qwen3.5-27B", "gemma4": "Gemma-4-31B-it",
+                     "mistral": "Mistral-Small-3.2-24B",
+                     "qwen_minimal": "Qwen3.5-27B (minimal prompt)",
+                     "gemma4_minimal": "Gemma-4-31B-it (minimal prompt)"}
 _MM_BANDS = [(0, 4, "Minimal"), (5, 9, "Mild"), (10, 14, "Moderate"),
              (15, 19, "Mod. severe"), (20, 27, "Severe")]
 _MM_OPT_DIR = "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}"
+# TextGrad assessment prompt optimized on the human-optimized corpus itself
+# (train_posts.csv, minimal start prompt; jobs/run_prompt_optimizer_phq9_human.job).
+_MM_OPT_HUMAN_DIR = "data/test_post/optimized_phq9_human/Qwen3.5-27B_seed{seed}"
 
 
 def _multimodel_estimator_files(tag, bert_seeds, prompt_seeds):
@@ -1915,6 +2199,12 @@ def _multimodel_estimator_files(tag, bert_seeds, prompt_seeds):
     }
     if tag != "qwen":  # Qwen-fine-tuned regressors transferred to this generator's posts
         files["BERT fine-tuned (Qwen posts)"] = bert(f"data/test_post/bert_regression_finetuned/eval_{tag}300")
+    # The human-corpus TextGrad run tests on the shared 300 Qwen blocks itself, so its
+    # run-dir test_raw_scores.csv is that eval; other generators need a
+    # `phq9-rerun-test --out-root data/test_post/optimized_phq9_human` first.
+    human_sub = "" if tag == "qwen" else f"eval_on_{held}/"
+    files["LLM prompt (TextGrad, human corpus)"] = [
+        _MM_OPT_HUMAN_DIR.format(seed=s) + f"/{human_sub}test_raw_scores.csv" for s in prompt_seeds]
     return files
 
 
@@ -1926,7 +2216,7 @@ def run_multimodel_summary(argv=None):
     skipped with a warning, so it can run while jobs are still pending.
     """
     ap = argparse.ArgumentParser(description="Generator x estimator MAE/bias summary.")
-    ap.add_argument("--generators", nargs="+", default=["qwen", "gemma4"])
+    ap.add_argument("--generators", nargs="+", default=["qwen", "gemma4", "mistral"])
     ap.add_argument("--bert-seeds", nargs="+", type=int, default=[34, 35, 36, 37, 38])
     ap.add_argument("--prompt-seeds", nargs="+", type=int, default=[23, 24, 25, 32, 33])
     ap.add_argument("--out-dir", default="data/test_post/method_comparison/multimodel")
@@ -1986,6 +2276,8 @@ def run_multimodel_summary(argv=None):
 
     plot_multimodel_mae_bias(summary, f"{args.out_dir}/multimodel_mae_bias.png")
     plot_multimodel_band_bias(f"{args.out_dir}/mae_bias_per_band_finetuned.png")
+    plot_multimodel_linearity_bias(f"{args.out_dir}/linearity_bias.png")
+    write_multimodel_post_samples(f"{args.out_dir}/sample_posts.md")
     print(f"[done] -> {args.out_dir}/")
 
 

@@ -81,8 +81,8 @@ source .venv_vllm/bin/activate
 uv pip install -r requirements_vllm.txt
 ```
 
-The non-Qwen student generator (Gemma-4-31B-it) needs a newer
-vLLM and runs in a second venv, used only for post generation:
+The non-Qwen student generators (Gemma-4-31B-it, Mistral-Small-3.2-24B) run in
+a second venv with a newer vLLM and transformers, used only for post generation:
 
 ```bash
 uv venv --python 3.10 .venv_vllm_g4

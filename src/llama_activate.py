@@ -56,6 +56,7 @@ MODEL_ALIASES = {
     "dolphin72": "cognitivecomputations/dolphin-2.9.2-qwen2-72b",
     # Mirror of utils.create_data.loaders.MODEL_ALIASES (keep both in sync).
     "gemma4-31b": "google/gemma-4-31B-it",
+    "mistral-small-24b": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
     "kimi-linear": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 

@@ -13,11 +13,13 @@ import sys
 
 import pandas as pd
 
-# Tokens that mean the chat template or the POST: parser leaked into the text.
+# Tokens that mean the chat template or the POST: parser leaked into the text
+# (Qwen, Gemma 4, Mistral control tokens; substring match, so both closers listed).
 LEAKS = ["<|im_start|>", "<|im_end|>", "<think>", "</think>", "<|channel>",
-         "<turn|>", "<start_of_turn>", "<end_of_turn>", "POST:"]
+         "<turn|>", "<start_of_turn>", "<end_of_turn>",
+         "[INST]", "[/INST]", "[SYSTEM_PROMPT]", "[/SYSTEM_PROMPT]", "</s>", "POST:"]
 # Models whose decoding must not drift (regression check on loaders.STUDENT_DECODING).
-EXPECTED_DECODING = {"qwen27": (0.7, 0.9)}
+EXPECTED_DECODING = {"qwen27": (0.7, 0.9), "mistral-small-24b": (0.15, 1.0)}
 NO_CONTENT = {"NO_POST", "NO_TWEET"}
 
 

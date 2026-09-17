@@ -3,6 +3,9 @@
 # torch==2.10.0 (CUDA 12.8), the same torch the Qwen venv (.venv_vllm, vLLM
 # 0.17.1) uses. Gemma 4's tokenizer config needs transformers 5.x, hence
 # transformers 5.5.4 + sentence-transformers 6 (which requires transformers 5).
+# mistralai/Mistral-Small-3.2-24B-Instruct-2506 runs in the same venv: it ships
+# only tekken.json, which transformers 5.x / vLLM read through mistral-common
+# (a vLLM dependency, 1.11.7 installed, so no extra pin is needed).
 #
 #   uv venv --python 3.10 .venv_vllm_g4
 #   uv pip install --python .venv_vllm_g4/bin/python -r requirements_vllm_g4.txt
