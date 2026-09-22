@@ -18,7 +18,6 @@ from collections import defaultdict
 from itertools import combinations, product
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -27,7 +26,7 @@ import seaborn as sns
 # 5-band PHQ-9 split (matches visualization._phq9_severity_color).
 PHQ9_BANDS = [
     (0,  4,  "Minimal",     "#2ecc71"),
-    (5,  9,  "Mild",        "#f1c40f"),
+    (5,  9,  "Mild",        "#ffd60a"),
     (10, 14, "Moderate",    "#e67e22"),
     (15, 19, "Mod. Severe", "#e74c3c"),
     (20, 27, "Severe",      "#8b0000"),
@@ -856,51 +855,63 @@ def comparison_decoding_centroids(runs: dict, out_path: str,
 
 
 def _order_decoding_settings(settings):
-    """Order decoding settings baseline-first, then knob-grouped, and assign a
-    colour per setting (one hue per knob). Returns (ordered_list, {setting:hex})."""
-    # One hue per knob, light (lo) → dark (hi). 'both' runs purple → burgundy:
-    # the earlier brown pair sat too close to the oranges (dark brown #8d2c03 vs
-    # dark orange: normal-vision ΔE 9.7). Every pair of the current seven is
-    # ≥15.4 ΔE apart (≥12.5 under CVD simulation), checked with a palette validator.
-    knobs = [
-        ("temp_", {"lo": "#86b8de", "hi": "#2a5fb7"}),   # blue:   light → dark
-        ("topp_", {"lo": "#f0a868", "hi": "#a84e05"}),   # orange: light → dark
-        ("both_", {"lo": "#8f7ce3", "hi": "#6e1423"}),   # purple → burgundy
-    ]
-    ordered, cmap = [], {}
-    for s in settings:                       # baseline(s) first
-        if s == "baseline":
-            ordered.append(s); cmap[s] = "#7f7f7f"
-    for prefix, shades in knobs:             # then lo→hi within each knob
-        for suffix in ("lo", "hi"):
-            name = f"{prefix}{suffix}"
-            if name in settings:
-                ordered.append(name); cmap[name] = shades[suffix]
-    for s in settings:                       # anything unmatched, appended as-is
-        if s not in cmap:
-            ordered.append(s); cmap[s] = "#999999"
+    """Order decoding settings from least to most sampling freedom and colour them
+    on a cold → grey → hot scale around the baseline.
+
+    Order is `_freedom_order` (ascending (temp, top_p)). Settings below the
+    baseline get blues, darkest for the most deterministic; the baseline is grey
+    (it is also the dashed reference line in the forests); settings above get
+    reds, darkest for the most random, so hue tracks the sampling-freedom axis
+    and the temperature metaphor at once. Shades are sampled from the Blues /
+    Reds colormaps, so any grid size works. Without a baseline every setting is
+    coloured by its rank on one blue → red ramp.
+
+    Args:
+        settings (iterable): decoding setting names.
+
+    Returns:
+        tuple: `(ordered_list, {setting: hex})`.
+    """
+    from matplotlib.colors import to_hex
+
+    ordered = _freedom_order(list(settings))
+    cmap = {}
+    blues, reds = plt.get_cmap("Blues"), plt.get_cmap("Reds")
+    if "baseline" in ordered:
+        i0 = ordered.index("baseline")
+        lo, hi = ordered[:i0], ordered[i0 + 1:]
+        cmap["baseline"] = "#7f7f7f"
+    else:
+        mid = len(ordered) // 2
+        lo, hi = ordered[:mid], ordered[mid:]
+    for s, t in zip(lo, np.linspace(0.9, 0.4, max(len(lo), 1))):
+        cmap[s] = to_hex(blues(t))
+    for s, t in zip(hi, np.linspace(0.4, 0.9, max(len(hi), 1))):
+        cmap[s] = to_hex(reds(t))
     return ordered, cmap
 
 
-def comparison_decoding_diversity(runs: dict, out_path: str,
-                                  n_bootstrap: int = 1000, seed: int = 0):
-    """Box + forest of per-anchor within-setting DIVERSITY for the decoding axis.
+def comparison_decoding_diversity(runs: dict, n_bootstrap: int = 1000, seed: int = 0):
+    """Per-anchor within-setting DIVERSITY for the decoding axis, as a table.
 
     At each anchor (agent, round) a setting holds the prompt, persona and
     neighbour input fixed and varies only the LLM RNG across its reps, so the
     scatter of those reps is pure decoding stochasticity. Diversity at the
     anchor is `1 − mean_pairwise_cosine` of the setting's rep embeddings
-    (higher ⇒ the same prompt produces more varied posts). One box per decoding
-    setting; the dashed line marks the baseline (temp 0.7 / top_p 0.9) mean, so
-    you read off directly whether raising a knob widens the output distribution.
+    (higher ⇒ the same prompt produces more varied posts). The returned table
+    carries the mean and bootstrap 95% CI per setting plus the delta against
+    the baseline (temp 0.7 / top_p 0.9).
 
     Contrast with `comparison_decoding_centroids`, which asks whether the MEAN
     output MOVES. This asks whether the SPREAD changes, the quantity decoding
     parameters are actually meant to control, so it needs no shared-noise floor.
+
+    The companion figure (decoding_settings_comparison.png) was retired
+    2026-09-22; `checks/check_decoding_alignment.py` consumes the CSV instead.
     """
     rng = np.random.default_rng(seed)
     settings, reps, per_anchor = _anchor_centroids(runs)
-    order, cmap = _order_decoding_settings(settings)
+    order, _cmap = _order_decoding_settings(settings)
 
     per_setting = {s: [] for s in order}
     for by_setting in per_anchor.values():
@@ -910,10 +921,9 @@ def comparison_decoding_diversity(runs: dict, out_path: str,
                 per_setting[s].append(1.0 - mean_pairwise_cos(grp))
     order = [s for s in order if per_setting[s]]          # drop empty settings
     if not order:
-        print("[decoding-diversity] no settings with >=2 reps; skipping plot")
+        print("[decoding-diversity] no settings with >=2 reps; skipping")
         return None
     data = [np.asarray(per_setting[s]) for s in order]
-    colours = [cmap[s] for s in order]
     print(f"[decoding-diversity] {len(per_anchor)} anchors, {len(reps)} reps; "
           f"settings={order}")
 
@@ -926,61 +936,6 @@ def comparison_decoding_diversity(runs: dict, out_path: str,
 
     means, los, his = map(list, zip(*[_ci(d) for d in data]))
     base_mean = means[order.index("baseline")] if "baseline" in order else None
-
-    fig, (ax_box, ax_forest) = plt.subplots(
-        1, 2, figsize=(8.2, 3.7),
-        gridspec_kw={"width_ratios": [1.7, 1.0]})
-
-    # --- Box plot (left): per-anchor diversity distribution per setting. ---
-    pos = np.arange(1, len(order) + 1)
-    bp = ax_box.boxplot(data, positions=pos, tick_labels=order,
-                        patch_artist=True, widths=0.6, showmeans=True,
-                        meanprops=dict(marker="D", markerfacecolor="black",
-                                       markeredgecolor="black", markersize=5),
-                        medianprops=dict(color="black", linewidth=1.2),
-                        flierprops=dict(marker="o", markersize=3, alpha=0.35,
-                                        markeredgecolor="none",
-                                        markerfacecolor="grey"))
-    for patch, c in zip(bp["boxes"], colours):
-        patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor("black")
-    if base_mean is not None:
-        ax_box.axhline(base_mean, color="#333333", linestyle="--",
-                       linewidth=1.1, alpha=0.85, label="baseline mean")
-        ax_box.legend(loc="upper left", fontsize=9, framealpha=0.9)
-    ax_box.set_ylabel("Output diversity  (1 − within cosine)")
-    ax_box.grid(axis="y", linestyle=":", alpha=0.5)
-    ax_box.tick_params(axis="x", labelrotation=30)
-
-    # --- Forest (right): mean diversity ± 95% CI, baseline line for reference. -
-    y = np.arange(len(order))[::-1]
-    err_low = [m - lo for m, lo in zip(means, los)]
-    err_high = [hi - m for m, hi in zip(means, his)]
-    ax_forest.errorbar(means, y, xerr=[err_low, err_high], fmt="none",
-                       color="black", capsize=5, capthick=1.2, linewidth=1.2)
-    for i, (m, c) in enumerate(zip(means, colours)):
-        ax_forest.plot(m, y[i], "o", color=c, markersize=7,
-                       markeredgecolor="black", markeredgewidth=0.8, zorder=3)
-    if base_mean is not None:
-        ax_forest.axvline(base_mean, color="#333333", linestyle="--",
-                          linewidth=1.0, alpha=0.85)
-    ax_forest.set_yticks(y); ax_forest.set_yticklabels(order)
-    ax_forest.set_xlabel("Mean diversity")
-    ax_forest.grid(axis="x", linestyle=":", alpha=0.5)
-    for i, m in enumerate(means):
-        ax_forest.text(m, y[i] + 0.18, f"{m:.3f}", ha="center", va="bottom",
-                       fontsize=9)
-    ax_forest.set_ylim(y.min() - 0.55, y.max() + 0.55)
-
-    _panel_y = -0.42
-    ax_box.text(0.5, _panel_y, "(a) Distribution per anchor",
-                transform=ax_box.transAxes, ha="center", va="top", fontsize=11)
-    ax_forest.text(0.5, _panel_y, "(b) Mean ± 95 % CI",
-                   transform=ax_forest.transAxes, ha="center", va="top", fontsize=11)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[plot] {out_path}")
 
     return pd.DataFrame({
         "setting": order,
@@ -1044,55 +999,33 @@ def _phq9_band_probe(runs: dict, n_splits: int = 5):
     return out
 
 
-def comparison_decoding_phq9_probe(runs: dict, out_path: str, n_splits: int = 5):
-    """Bar plot: PHQ-9 band DISTINGUISHABILITY per decoding setting.
+def comparison_decoding_phq9_probe(runs: dict, n_splits: int = 5):
+    """PHQ-9 band DISTINGUISHABILITY per decoding setting, as a table.
 
     For each setting an agent-grouped CV logistic probe predicts the 5-class
     PHQ-9 band from post embeddings (see `_phq9_band_probe`), giving one CV score
-    per rep. Bar height = mean balanced accuracy ACROSS the reps; the thin
-    whisker = ±1 SD across reps (rep = an independent generation; drop `yerr=`
-    for a plain bar). The y-axis starts at chance (0.20), balanced accuracy of
-    an uninformative classifier is 0.20 by construction, so bar height above the
-    floor is the actual severity signal. The dotted line marks the baseline (temp
-    0.7 / top_p 0.9); a setting below it blurs the severity classes, the knobs
-    that raise diversity cost PHQ-9 signal.
+    per rep. The returned table carries the mean balanced accuracy ACROSS the
+    reps, ±1 SD across reps (rep = an independent generation), and the delta
+    against the baseline (temp 0.7 / top_p 0.9). Chance is 0.20 by construction,
+    so the margin above it is the actual severity signal; a setting below the
+    baseline blurs the severity classes, i.e. the knobs that raise diversity
+    cost PHQ-9 signal.
+
+    The companion figure (decoding_phq9_separability.png) was retired
+    2026-09-22; `checks/check_decoding_alignment.py` consumes the CSV instead.
     """
     acc = _phq9_band_probe(runs, n_splits=n_splits)
-    order, cmap = _order_decoding_settings(sorted(acc.keys()))
+    order, _cmap = _order_decoding_settings(sorted(acc.keys()))
     order = [s for s in order if len(acc.get(s, [])) > 0]
     if not order:
-        print("[decoding-probe] no settings with probe estimates; skipping plot")
+        print("[decoding-probe] no settings with probe estimates; skipping")
         return None
-    colours = [cmap[s] for s in order]
     print(f"[decoding-probe] settings={order}; "
           f"reps/setting={[len(acc[s]) for s in order]}")
 
     means = [float(np.mean(acc[s])) for s in order]
     sds = [float(np.std(acc[s], ddof=1)) if len(acc[s]) > 1 else 0.0 for s in order]
     base_mean = means[order.index("baseline")] if "baseline" in order else None
-    chance = 0.20
-
-    fig, ax = plt.subplots(figsize=(6.8, 4.0))
-    x = np.arange(len(order))
-    ax.bar(x, means, width=0.7, color=colours, edgecolor="black", linewidth=0.6,
-           yerr=sds, capsize=4, error_kw=dict(elinewidth=1.0, alpha=0.6))
-    ax.axhline(chance, color="#b22222", linestyle="--", linewidth=1.1, alpha=0.85,
-               label=f"chance ({chance:.2f})")
-    if base_mean is not None:
-        ax.axhline(base_mean, color="#333333", linestyle=":", linewidth=1.3,
-                   alpha=0.85, label="baseline")
-    for xi, m in zip(x, means):
-        ax.text(xi, m + 0.004, f"{m:.3f}", ha="center", va="bottom", fontsize=9)
-    ax.set_xticks(x); ax.set_xticklabels(order, rotation=30, ha="right")
-    ax.set_ylabel("PHQ-9 band probe — balanced accuracy")
-    ax.set_ylim(chance - 0.02, max(m + s for m, s in zip(means, sds)) + 0.02)
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[plot] {out_path}")
 
     return pd.DataFrame({
         "setting": order,
@@ -1154,6 +1087,50 @@ def _phq9_band_linearity(runs: dict):
     return pair_labels, out
 
 
+def _phq9_band_map(runs: dict, setting="baseline"):
+    """2D map of one decoding setting's posts on the plane of its PHQ-9 band centroids.
+
+    Pools the setting's reps, L2-normalises the post embeddings and takes one
+    centroid (plain mean) per PHQ-9 band, then fits a 2-component PCA to those
+    five centroids only and projects every post onto that plane. The plane is
+    where the severity ladder lives, so the picture shows what the
+    adjacent-centroid cosines measure: how far apart consecutive band centroids
+    sit, and how widely the posts scatter around them. The means are NOT
+    renormalised here (unlike `_phq9_band_linearity`): cosine is scale-invariant
+    so the ladder is the same, and the plain mean is the visual centre of its
+    projected points, whereas the unit-length version would sit outside its own
+    cloud. Unsupervised PCA / UMAP of the posts themselves put severity nowhere
+    near the leading axes (the top-2 post PCs carry ~3 % of the variance each
+    and show no gradient), so they would only draw topic noise. SBERT only.
+
+    Args:
+        runs (dict): `{(setting, rep): {...}}` from `load_axis_runs`.
+        setting (str): decoding setting to draw (default: baseline).
+
+    Returns:
+        tuple | None: `(Z_posts, post_bands, Z_cents, bands, explained)` with the
+        posts' 2D coordinates, their band labels, the centroids' coordinates in
+        severity order, the bands present and the PCA explained-variance ratio;
+        None when the setting is absent or has fewer than 2 bands.
+    """
+    from sklearn.decomposition import PCA
+
+    reps = sorted(r for (s, r) in runs if s == setting)
+    if not reps:
+        return None
+    X = np.vstack([runs[(setting, r)]["embeddings"] for r in reps]).astype(np.float64)
+    X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+    y = np.array([phq9_to_band(int(p)) for r in reps
+                  for p in runs[(setting, r)]["phq9"]])
+    bands = [b for b in BAND_LABELS if (y == b).any()]
+    if len(bands) < 2:
+        return None
+    cents = np.vstack([X[y == b].mean(axis=0) for b in bands])
+    pca = PCA(n_components=2).fit(cents)
+    return (pca.transform(X), y, pca.transform(cents), bands,
+            pca.explained_variance_ratio_)
+
+
 def _decoding_diversity_stats(runs: dict, n_bootstrap: int = 1000, seed: int = 0):
     """Per-setting within-setting diversity stats for the forest panel, pure
     numbers, no plotting. Mirrors `comparison_decoding_diversity`'s computation
@@ -1189,6 +1166,8 @@ def _decoding_diversity_stats(runs: dict, n_bootstrap: int = 1000, seed: int = 0
 
 
 # (temperature, top_p) actually swept per decoding setting (see scripts/sensitivity/sa_decoding_run.sh).
+# The Qwen grid; `_read_decoding_params` overrides entries from the runs' sidecars
+# when they exist (another generator's grid, e.g. Gemma-4 in jobs/sa_seeded.job).
 _DECODING_PARAMS = {
     "baseline": (0.7, 0.9),
     "temp_lo":  (0.4, 0.9),
@@ -1198,6 +1177,19 @@ _DECODING_PARAMS = {
     "both_lo":  (0.4, 0.8),
     "both_hi":  (1.0, 1.0),
 }
+
+
+def _read_decoding_params(root: str) -> None:
+    """Take (temp, top_p) per decoding setting from `<root>/decoding/setting_*/rep_1/posts.csv.meta.json`
+    when present (generate_test_data writes one per run), so labels and the freedom order match
+    the grid that was actually run; settings without a sidecar keep the table above."""
+    import json
+    for meta in sorted(glob.glob(os.path.join(root, "decoding", "setting_*", "rep_1", "posts.csv.meta.json"))):
+        with open(meta, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if m.get("temp") is not None and m.get("top_p") is not None:
+            label = os.path.basename(os.path.dirname(os.path.dirname(meta)))[len("setting_"):]
+            _DECODING_PARAMS[label] = (float(m["temp"]), float(m["top_p"]))
 
 
 def _freedom_order(settings) -> list:
@@ -1215,21 +1207,28 @@ def _decoding_tuple_label(s) -> str:
 
 def comparison_decoding_linearity(runs: dict, out_path: str,
                                   n_bootstrap: int = 1000, seed: int = 0):
-    """Two-panel decoding figure: PHQ-9 severity LINEARITY (left) + within-setting
-    DIVERSITY forest (right). Both read SBERT embeddings (cosine-appropriate).
+    """Three-panel decoding figure: embedding MAP (left), PHQ-9 severity LINEARITY
+    (middle) and across-replicate DIVERSITY forest (right). All read SBERT
+    embeddings (cosine-appropriate).
 
-    (a) Linearity, for each setting, the cosine between adjacent PHQ-9 class
+    (a) Map, the baseline setting's posts projected onto the plane of its five
+        PHQ-9 band centroids (see `_phq9_band_map`), coloured by band, with the
+        centroids themselves overplotted as ringed markers. It shows the quantity
+        (b) measures: the spacing of consecutive band centroids and the posts'
+        spread around them.
+    (b) Linearity, for each setting, the cosine between adjacent PHQ-9 class
         centroids walked along the severity ladder (see `_phq9_band_linearity`).
         Grouped bars: one group per severity step, one bar per decoding setting
         ordered from least to most sampling freedom (low temp / top_p → high),
-        ± SD across reps. The y-axis is truncated (cosines sit in 0.8-0.95, so a
+        ± SD across reps. The y-axis starts at 0.8 (cosines sit in 0.8-0.95, so a
         zero baseline would hide both the steps and the SD); high, even bars = a
         smooth ordinal severity encoding, a low group = a sharp class boundary.
-    (b) Diversity, per-setting mean (1 − within-cosine) ± 95 % CI, the same
-        numbers as `comparison_decoding_diversity`'s forest panel, rows in (a)'s
-        freedom order, so the figure pairs "does decoding blur the severity
-        ladder?" with "does it widen the spread?".
-    One shared (temp, top_p) legend column sits right of (b), in the same order.
+    (c) Diversity across replicates, per-setting mean (1 − cosine between the
+        setting's reps at the same persona-round anchor) ± 95 % bootstrap CI, the
+        same numbers as `comparison_decoding_diversity`'s forest panel, rows in
+        (b)'s freedom order, so the figure pairs "does decoding blur the severity
+        ladder?" with "does it widen the spread?". Its row labels double as the
+        (temp, top_p) key for (b)'s bar colours, so there is no separate legend.
     """
     pair_labels, lin = _phq9_band_linearity(runs)
     _, cmap = _order_decoding_settings(sorted(lin.keys()))
@@ -1240,11 +1239,47 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
     div = _decoding_diversity_stats(runs, n_bootstrap=n_bootstrap, seed=seed)
     print(f"[decoding-linearity] settings={order_lin}; "
           f"severity steps={pair_labels}")
+    map_setting = "baseline" if "baseline" in order_lin else order_lin[0]
+    bmap = _phq9_band_map(runs, setting=map_setting)
 
-    fig, (ax_lin, ax_for) = plt.subplots(
-        1, 2, figsize=(8.6, 3.6), gridspec_kw={"width_ratios": [2.4, 1.0]})
+    fig, (ax_map, ax_lin, ax_for) = plt.subplots(
+        1, 3, figsize=(8.6, 3.1), gridspec_kw={"width_ratios": [1.6, 2.1, 1.25]})
 
-    # --- (a) Grouped bars: cosine between adjacent class centroids ± SD. -----
+    # --- (a) Map: posts of one setting on the band-centroid PCA plane. -------
+    band_col = {b[2]: b[3] for b in PHQ9_BANDS}
+    if bmap is not None:
+        Z, y_band, Zc, bands, expl = bmap
+        print(f"[decoding-linearity] map setting={map_setting}, "
+              f"{Z.shape[0]} posts, centroid-plane explained var={expl.round(3)}")
+        for b in bands:
+            m = y_band == b
+            ax_map.scatter(Z[m, 0], Z[m, 1], s=7, alpha=0.45, color=band_col[b],
+                           edgecolors="none", zorder=2)
+        for b, c in zip(bands, Zc):
+            ax_map.scatter(c[0], c[1], s=44, color=band_col[b], edgecolors="black",
+                           linewidths=0.8, zorder=5)
+        handles = [plt.Line2D([], [], marker="o", linestyle="none", markersize=5,
+                              markerfacecolor=band_col[b], markeredgecolor="black",
+                              markeredgewidth=0.6,
+                              label=b.replace("Mod. Severe", "Mod. Sev."))
+                   for b in bands]
+        ax_map.legend(handles=handles, loc="lower left", fontsize=6.5, frameon=True,
+                      framealpha=0.8, handletextpad=0.25, borderpad=0.35,
+                      labelspacing=0.25, title="PHQ-9 band", title_fontsize=6.5)
+        ax_map.set_xlabel("PC 1 (band centroids)")
+        ax_map.set_ylabel("PC 2 (band centroids)")
+        ax_map.tick_params(labelsize=8)
+        # datalim (not box) keeps the axes box the size gridspec gave it, so (a)'s
+        # caption stays on the same baseline as (b)'s and (c)'s; the extra left
+        # pad is the legend's room, so it sits beside the cloud and not on it.
+        ax_map.set_aspect("equal", adjustable="datalim")
+        ax_map.grid(linestyle=":", alpha=0.5)
+        span = Z[:, 0].max() - Z[:, 0].min()
+        ax_map.set_xlim(Z[:, 0].min() - 0.22 * span, Z[:, 0].max() + 0.05 * span)
+    else:
+        ax_map.set_axis_off()
+
+    # --- (b) Grouped bars: cosine between adjacent class centroids ± SD. -----
     x = np.arange(len(pair_labels))
     n_set = len(order_lin)
     w = 0.8 / n_set
@@ -1258,8 +1293,11 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
                                  capthick=0.8))
         lo_all.append(np.nanmin(mean_vec - sd_vec))
         hi_all.append(np.nanmax(mean_vec + sd_vec))
-    y_lo = np.floor((min(lo_all) - 0.01) * 20) / 20          # nearest 0.05 below
+    y_lo = 0.8                                     # fixed floor; lowered only if a bar would be cut
+    if min(lo_all) < y_lo:
+        y_lo = np.floor((min(lo_all) - 0.01) * 20) / 20    # nearest 0.05 below
     ax_lin.set_ylim(y_lo, max(hi_all) + 0.01)
+    ax_lin.yaxis.set_major_locator(plt.MultipleLocator(0.05))
     ax_lin.set_xlim(-0.6, len(pair_labels) - 0.4)
     ax_lin.set_xticks(x)
     disp_labels = [lab.replace("Moderate", "Mod.").replace("Severe", "Sev.")
@@ -1268,8 +1306,9 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
     ax_lin.set_ylabel("Cosine similarity")
     ax_lin.grid(axis="y", linestyle=":", alpha=0.5)
 
-    # --- (b) Diversity forest: mean ± 95 % CI, baseline reference line. ------
-    # Rows top → bottom in the same least → most freedom order as (a).
+    # --- (c) Diversity forest: mean ± 95 % CI, baseline reference line. ------
+    # Rows top → bottom in the same least → most freedom order as (b); the row
+    # labels are the (temp, top_p) key for (b)'s bar colours.
     if div is not None:
         order, colours, means, los, his, base_mean, _n = div
         perm = [order.index(s) for s in _freedom_order(order)]
@@ -1292,17 +1331,12 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
         ax_for.grid(axis="x", linestyle=":", alpha=0.5)
         ax_for.set_ylim(yy.min() - 0.55, yy.max() + 0.55)
 
-    # Shared legend (one column, right of the figure) in (a)'s freedom order.
-    handles = [Patch(facecolor=cmap[s], edgecolor="black", linewidth=0.5,
-                     label=_decoding_tuple_label(s)) for s in order_lin]
-    ax_for.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
-                  fontsize=8, frameon=False, handletextpad=0.5, labelspacing=0.7,
-                  title="(temp, top-$p$)", title_fontsize=8)
-
-    _py = -0.34
-    ax_lin.text(0.5, _py, "(a) PHQ-9 severity linearity",
+    _py = -0.36
+    ax_map.text(0.5, _py, f"(a) Post embeddings, {_decoding_tuple_label(map_setting)}",
+                transform=ax_map.transAxes, ha="center", va="top", fontsize=11)
+    ax_lin.text(0.5, _py, "(b) PHQ-9 severity linearity",
                 transform=ax_lin.transAxes, ha="center", va="top", fontsize=11)
-    ax_for.text(0.5, _py, "(b) Within-setting diversity",
+    ax_for.text(0.5, _py, "(c) Replicate diversity",
                 transform=ax_for.transAxes, ha="center", va="top", fontsize=11)
 
     fig.tight_layout()
@@ -1318,50 +1352,6 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
                          "mean_adjacent_cos": float(m),
                          "sd_across_reps": float(sd)})
     return pd.DataFrame(rows)
-
-
-def phq9_distance_lineplot(matrix_df: pd.DataFrame, out_path: str):
-    """Line plot of mean cosine vs PHQ-9 band-distance.
-
-    Collapses the 5×5 PHQ-9 conditioning matrix into one curve. A smooth
-    monotonic decline = continuous PHQ-9 encoding (the model treats PHQ-9 as
-    a slider). A step pattern (e.g. all band-distances ≥1 land at the same
-    cosine, no further decline) = banded encoding (the model treats PHQ-9 as
-    a categorical severity classifier).
-    """
-    bands = list(matrix_df.index)
-    n = len(bands)
-    by_dist: dict[int, list[float]] = defaultdict(list)
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue   # diagonal trivially 1.0; uninformative
-            v = float(matrix_df.iloc[i, j])
-            if not np.isnan(v):
-                by_dist[abs(i - j)].append(v)
-
-    xs = sorted(by_dist.keys())
-    means = [float(np.mean(by_dist[d])) for d in xs]
-    stds  = [float(np.std(by_dist[d]))  for d in xs]
-    counts = [len(by_dist[d]) for d in xs]
-
-    fig, ax = plt.subplots(figsize=(6.5, 4.6))
-    ax.errorbar(xs, means, yerr=stds, fmt="o-", color="#e74c3c",
-                capsize=4, linewidth=1.8, markersize=7)
-    for x, m, c in zip(xs, means, counts):
-        ax.text(x, m + 0.005, f"  n={c}", fontsize=8, va="bottom", color="grey")
-    ax.set_xticks(xs)
-    ax.set_xlabel("PHQ-9 band-distance  (|source band index − target band index|)")
-    ax.set_ylabel("Mean cosine similarity")
-    ax.set_title("PHQ-9 conditioning — output similarity vs PHQ-9 band-distance")
-    ax.grid(linestyle=":", alpha=0.5)
-    # A horizontal line at the within-band ceiling for visual reference
-    # (diagonal of the matrix = 1.0 trivially; the off-diagonal max is more useful).
-    ax.axhline(max(means), color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"[plot] {out_path}")
 
 
 # =====================================================================
@@ -1650,7 +1640,7 @@ def print_prompt_summary(df: "pd.DataFrame", title: str) -> None:
               f"val={r['best_val']:.2f}  test={r['test_mean']:.2f}\n{wrapped}")
 
 
-def summarize_bert_runs(base_dir: str = "data/test_post/bert_regression",
+def summarize_bert_runs(base_dir: str = "data/assessors/bert/teacher/models",
                         model_short: str = "Qwen3.5-27B") -> "pd.DataFrame":
     """Read performance.json for each BERT seed dir; return a summary DataFrame."""
     import glob as _glob
@@ -2251,6 +2241,7 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     print(f"[sa] reading {args.emb_name}  ->  out_dir = {args.out_dir}")
+    _read_decoding_params(args.root)
 
     axis_dfs: dict[str, pd.DataFrame] = {}
     for axis_dir, axis_label, cosine_fn in [
@@ -2290,8 +2281,8 @@ def main():
         axis_dfs[axis_label] = df
 
     # Cross-axis comparison: combined box (distribution) + forest (mean ± CI).
-    # Decoding is excluded here, it gets its own per-setting figure below
-    # (decoding_settings_comparison.png); this plot stays the structural axes.
+    # Decoding is excluded here, it gets its own per-setting treatment below
+    # (decoding_settings_summary.csv); this plot stays the structural axes.
     cross_axis_dfs = {k: v for k, v in axis_dfs.items() if k != "Decoding"}
 
     # PHQ-9 conditioning as a 4th box: bands play the role of "setting", so
@@ -2319,16 +2310,15 @@ def main():
 
     # Decoding axis: per-setting within-setting DIVERSITY (1 − within-cosine of
     # each setting's reps). Directly shows whether raising temperature / top_p
-    # widens the output distribution, with temp 0.7 / top_p 0.9 (baseline) as the
-    # reference line. (comparison_decoding_centroids, centroid shift, i.e. does
-    # the MEAN move, is kept in the module as the complementary view.)
+    # widens the output distribution, against temp 0.7 / top_p 0.9 (baseline).
+    # Table-only since 2026-09-22; read by checks/check_decoding_alignment.py.
+    # (comparison_decoding_centroids, centroid shift, i.e. does the MEAN move,
+    # is kept in the module as the complementary view.)
     if os.path.isdir(os.path.join(args.root, "decoding")):
         print("\n=== Decoding settings (within-setting diversity) ===")
         dec_runs = load_axis_runs(args.root, "decoding", emb_name=args.emb_name)
         if dec_runs:
-            dec_summary = comparison_decoding_diversity(
-                dec_runs,
-                os.path.join(args.out_dir, "decoding_settings_comparison.png"))
+            dec_summary = comparison_decoding_diversity(dec_runs)
             if dec_summary is not None:
                 dec_summary.to_csv(
                     os.path.join(args.out_dir, "decoding_settings_summary.csv"),
@@ -2338,9 +2328,7 @@ def main():
             # PHQ-9 distinguishability per setting: does the decoding choice blur
             # the severity classes? (agent-grouped CV probe; chance = 0.20)
             print("\n=== Decoding settings (PHQ-9 distinguishability) ===")
-            probe_summary = comparison_decoding_phq9_probe(
-                dec_runs,
-                os.path.join(args.out_dir, "decoding_phq9_separability.png"))
+            probe_summary = comparison_decoding_phq9_probe(dec_runs)
             if probe_summary is not None:
                 probe_summary.to_csv(
                     os.path.join(args.out_dir, "decoding_phq9_separability.csv"),
@@ -2348,7 +2336,7 @@ def main():
                 print(probe_summary.round(4).to_string(index=False))
 
             # PHQ-9 severity LINEARITY (cosine between adjacent class centroids)
-            # paired with the diversity forest. Cosine-based, so SBERT only.
+            # paired with the diversity table. Cosine-based, so SBERT only.
             if args.emb_name == "embeddings_sbert.npz":
                 print("\n=== Decoding settings (PHQ-9 severity linearity) ===")
                 lin_summary = comparison_decoding_linearity(
@@ -2360,8 +2348,8 @@ def main():
                         index=False)
                     print(lin_summary.round(4).to_string(index=False))
 
-    # PHQ-9 conditioning: 5×5 cosine matrix → line plot of cosine vs band-distance
-    # (+ the agent_phq9_combined figure below).
+    # PHQ-9 conditioning: 5×5 cosine matrix → phq9_conditioning_matrix.csv, and
+    # panel (b) of the agent_phq9_combined figure below.
     # Diagonal = per-band LLM-noise floor, borrowed from the agent axis's
     # within-setting cosine (same model + baseline decoding; the PHQ-9 runs have
     # no repeats of their own). Without it the diagonal falls back to within-band.
@@ -2375,8 +2363,6 @@ def main():
                                            emb_name=args.emb_name,
                                            diag_floor=diag_floor)
     if phq9_matrix is not None:
-        phq9_distance_lineplot(phq9_matrix,
-                               os.path.join(args.out_dir, "phq9_distance_line.png"))
         # Combined: (a) per-band within-rep floor vs cross-persona cosine +
         # (b) the conditioning heatmap. The left panel needs >=2 reps/band with the
         # active encoder; on SBERT run `sa_embed --sbert` on the extra reps first

@@ -1,0 +1,5 @@
+step,from_band,to_band,cos,std,sem,n_reps,n_anchors
+Minimal → Mild,Minimal,Mild,0.33755211115924594,0.0,0.0,1,600
+Mild → Moderate,Mild,Moderate,0.31312518526645083,0.0,0.0,1,600
+Moderate → Mod. Severe,Moderate,Mod. Severe,0.34811231972077433,0.0,0.0,1,600
+Mod. Severe → Severe,Mod. Severe,Severe,0.3636844911903049,0.0,0.0,1,600

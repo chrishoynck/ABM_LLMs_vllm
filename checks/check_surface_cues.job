@@ -19,6 +19,6 @@ cd ~/thesis/ABM_based_LLMS/
 source .venv_vllm/bin/activate
 
 PYTHONPATH=src srun python checks/check_surface_cues.py \
-    --regressor data/test_post/bert_regression/Qwen3.5-27B_seed34/regressor.pt \
-    --csv data/finetune/test_posts.csv \
+    --regressor data/assessors/bert/teacher/models/Qwen3.5-27B_seed34/regressor.pt \
+    --csv data/finetune/qwen/test_posts_qwen.csv \
     --out-dir data/test_post/surface_ablation/qwen_seed34

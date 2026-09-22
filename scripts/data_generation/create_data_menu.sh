@@ -51,8 +51,8 @@ PYTHONPATH=src python -m utils.create_data.generate_posts_opt_h \
 # Sweeps best_instruction*.txt (or any *.txt) under --instruction-dir, OR runs
 # one --instruction-file. For each variant, samples NUM agents with rng(variant_idx)
 # so different variants see different agents (per-variant fresh subset). Runs
-# deterministic generation, writes one CSV per (variant, model) + a scores.csv
-# into a sibling SA_prompt/ folder where you hand-fill training_score / test_score.
+# deterministic generation, writes one CSV per (variant, model) into a sibling
+# SA_prompt/ folder (or to --output-csv).
 # Neighbour pool defaults to data/test_post/Qwen_Qwen3.5-27B/{inter,no_inter}/.
 # PYTHONPATH=src python -m utils.create_data.generate_test_data \
 #     --instruction-dir data/prompt_optimization_h/prompt_variants \

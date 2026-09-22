@@ -2,9 +2,9 @@
 
 The instruction is spliced into the `tweet_gen.system_forced` prompt at the RULES /
 CONSTRAINTS markers, exactly as `prompt_optimizer` evaluates a student instruction.
-Neighbour posts come from the Qwen3.5-27B test_post tree by default. Output: a sibling
-SA_prompt/ folder with one CSV per (instruction, model) plus scores.csv, or the path
-given by --output-csv. This is the generator behind every sensitivity run and the
+Neighbour posts come from the Qwen3.5-27B test_post tree by default. Output: the path
+given by --output-csv, or a sibling SA_prompt/ folder with one CSV per
+(instruction, model). This is the generator behind every sensitivity run and the
 fine-tune data. Run: scripts/sensitivity/*.sh, create_data_menu.sh block 3.
 """
 
@@ -97,7 +97,7 @@ def _parse_args():
                         help="Seeded sampling with a distinct seed per (agent, round) "
                              "(SeedSequence[--seed, agent id, round]) instead of one seed "
                              "shared by every request in a round. Ignored with "
-                             "--nondeterministic. See checks/check_seeding.job.")
+                             "--nondeterministic. Rationale: checks/README.md, \"Retired checks\".")
     parser.add_argument("--output-csv", type=str, default=None,
                         help="Full path to the posts CSV output. Overrides the default "
                              "<sweep_root>/SA_prompt/<instr_id>_<model>.csv layout.")
@@ -242,44 +242,15 @@ def _sa_output_dir(sweep_root: str, instruction_file: str | None) -> str:
     return out
 
 
-def _merge_scores_csv(path: str, new_rows: list[dict]) -> None:
-    """Append/refresh rows; preserve manually-entered training_score / test_score."""
-    fieldnames = ["variant_id", "model", "csv", "n_agents", "sample_seed",
-                  "training_score", "test_score"]
-    existing: dict[tuple[str, str], dict] = {}
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            for row in _csv.DictReader(fh):
-                existing[(row.get("variant_id"), row.get("model"))] = row
-
-    merged = dict(existing)
-    for row in new_rows:
-        key = (row["variant_id"], row["model"])
-        prev = merged.get(key, {})
-        is_test = row.pop("_is_test", False)
-        if is_test:
-            row["test_score"] = prev.get("test_score", "") or row["test_score"]
-            row["training_score"] = prev.get("training_score", "")
-        else:
-            row["training_score"] = prev.get("training_score", "") or row["training_score"]
-            row["test_score"] = prev.get("test_score", "")
-        merged[key] = row
-
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = _csv.DictWriter(fh, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in merged.values():
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
-
-
 def main():
-    """Resolve the instruction files, generate posts for each and write the CSVs plus scores.csv."""
+    """Resolve the instruction files, generate posts for each and write the CSVs."""
     args = _parse_args()
     set_seed(args.seed)
 
     instr_paths, sweep_root = _resolve_instruction_paths(args)
-    sa_dir = _sa_output_dir(sweep_root, args.instruction_file)
-    print(f"[sa] {len(instr_paths)} instruction(s); output -> {sa_dir}")
+    # --output-csv gives the full path; only the default layout needs SA_prompt/.
+    sa_dir = None if args.output_csv else _sa_output_dir(sweep_root, args.instruction_file)
+    print(f"[sa] {len(instr_paths)} instruction(s); output -> {sa_dir or args.output_csv}")
 
     import pandas as pd
     df_pp = pd.read_csv(args.persona_phq9_file)
@@ -304,7 +275,6 @@ def main():
         sys.exit("--output-csv is only valid with --instruction-file (single instruction); "
                  "got --instruction-dir with multiple matches.")
 
-    score_rows: list[dict] = []
     try:
         for sorted_idx, instr_path in enumerate(instr_paths):
             instr_id, variant_idx = _instr_identity(instr_path, sweep_root, sorted_idx)
@@ -416,23 +386,13 @@ def main():
                                         list(range(len(personas))))
                 _append_blocks(out_csv, agents, list(range(len(personas))),
                                interaction=False)
-            score_rows.append({
-                "variant_id": instr_id, "model": model_id,
-                "csv": os.path.relpath(out_csv, sa_dir),
-                "n_agents": args.num_agents, "sample_seed": variant_idx,
-                "training_score": "", "test_score": "",
-                "_is_test": os.path.basename(instr_path).lower().startswith("test_"),
-            })
     finally:
         del pipe
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    scores_csv = os.path.join(sa_dir, "scores.csv")
-    _merge_scores_csv(scores_csv, score_rows)
-    print(f"[sa] scores -> {scores_csv} ({len(score_rows)} row(s))")
-    print(f"[sa] done; {len(instr_paths)} CSV(s) under {sa_dir}/")
+    print(f"[sa] done; {len(instr_paths)} CSV(s) -> {sa_dir or args.output_csv}")
 
 
 if __name__ == "__main__":

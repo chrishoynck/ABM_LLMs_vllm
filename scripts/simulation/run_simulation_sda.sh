@@ -119,7 +119,7 @@ LOG=20                  # save network state snapshot every 30 iterations
 #                                                         -> saved under debiased/
 # The debiased/ vs non_debiased/ split (PathManager) keeps these runs from
 # overwriting each other at the same network parameters.
-_REG_DIR="data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35"
+_REG_DIR="data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35"
 
 # BIAS_TABLE="none"                                          # uncorrected
 BIAS_TABLE="${_REG_DIR}/phq9_bias_table_fullfit.csv"         # full-corrected (full plotted line)

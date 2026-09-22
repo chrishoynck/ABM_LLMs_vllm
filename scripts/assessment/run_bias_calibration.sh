@@ -24,12 +24,14 @@ SEED=35                                # deployed regressor seed — MUST match 
 PER_CLASS=50                           # blocks per PHQ-9 level (28 levels). 50 -> 1400 blocks.
 CHUNK_SIZE=100                         # chunked + resumable generation
 
-FT_DIR="data/test_post/bert_regression_finetuned"
+ARM="qwen27_optimized"                 # assessor arm holding the deployed regressor
+ARM_DIR="data/assessors/bert/${ARM}"
+FT_DIR="${ARM_DIR}/models"             # --regressor-dir: holds {model_short}_seed{NN}/
 REG_SUBDIR="${FT_DIR}/Qwen3.5-27B_seed${SEED}"
 PROMPT="data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt"
 POOL="data/finetune/personas_unseen_pool.csv"
-POSTS="data/finetune/calibration_posts.csv"
-EVAL_DIR="${FT_DIR}/eval_calibration"
+POSTS="data/finetune/qwen/calibration_posts_qwen.csv"
+EVAL_DIR="${ARM_DIR}/eval/on_calibration"
 TABLE_OUT="${REG_SUBDIR}/phq9_bias_table.csv"
 
 NUM_AGENTS=$(( PER_CLASS * 28 ))

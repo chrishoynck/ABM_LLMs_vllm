@@ -40,7 +40,7 @@ from utils.sensitivity.sa_analyze import (
 
 # Best fine-tuned regressor (lowest test MAE = 2.76); also the default wired in
 # llama_activate.py. Trained on MentalBERT (768-dim) -> 768*3 centroid input.
-DEFAULT_REGRESSOR = "data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35/regressor.pt"
+DEFAULT_REGRESSOR = "data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35/regressor.pt"
 INVALID_POSTS = {"NO_POST", "NO_TWEET"}
 MENTALBERT_DIM = 768
 

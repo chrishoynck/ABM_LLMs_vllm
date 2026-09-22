@@ -29,7 +29,7 @@ PROMPT_SCORES = {
     **{f"TextGrad seed {s}": f"data/test_post/optimized_tweets/Qwen3.5-27B_seed{s}/test_raw_scores.csv"
        for s in [24, 25, 28, 29, 53]},
 }
-SETS = {"qwen": "data/finetune/test_posts.csv", "gemma4": "data/finetune/gemma4/test_posts_gemma4.csv"}
+SETS = {"qwen": "data/finetune/qwen/test_posts_qwen.csv", "gemma4": "data/finetune/gemma4/test_posts_gemma4.csv"}
 BANDS = [(0, 4, "Minimal"), (5, 9, "Mild"), (10, 14, "Moderate"), (15, 19, "Mod. severe"), (20, 27, "Severe")]
 
 

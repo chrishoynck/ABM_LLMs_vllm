@@ -1,0 +1,24 @@
+{
+  "model": "google/gemma-4-31B-it",
+  "model_arg": "gemma4-31b",
+  "temp": 1.0,
+  "top_p": 0.975,
+  "max_tokens": 512,
+  "engine_seed": 1234,
+  "seed": 1401,
+  "per_agent_seed": true,
+  "thinking": false,
+  "instruction_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/sensitivity/inputs/prompt_iter_0.txt",
+  "persona_phq9_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/sensitivity/inputs/personas_eval_1000_phq9.csv",
+  "num_agents": 60,
+  "check_point": 10,
+  "num_neighbors": 5,
+  "neighbor_seed": 42,
+  "neighbor_source_dir": [
+    "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_inter",
+    "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter"
+  ],
+  "vllm_version": "0.19.1",
+  "python": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/.venv_vllm_g4/bin/python",
+  "timestamp": "2026-09-17T12:38:04"
+}

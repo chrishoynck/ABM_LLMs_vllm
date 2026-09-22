@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build the two estimator-comparison figures (MAE + signed bias, with error bars):
-#   fig1, BERT regressor: non-finetuned vs fine-tuned vs in-distribution (synthetic) test
-#   fig2, robustness to distribution shift: BERT vs the post-assessment prompt
+# Print the estimator-comparison table (MAE + signed bias, with error bars) that
+# backs Tables 1-2 / Results §PHQ-9 Assessment:
+#   BERT regressor: non-finetuned vs fine-tuned vs in-distribution (synthetic) test
+#   robustness to distribution shift: BERT vs the post-assessment prompt
 # Reads the per-sample test_raw_scores.csv / seed<seed>.csv files already on disk
-# (no GPU / model load needed) and writes PNGs + prints the underlying table.
+# (no GPU / model load needed). The two companion figures were retired 2026-09-22.
 #
 # Run from the repo root with the venv activated.
 set -euo pipefail
@@ -11,9 +12,9 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 # ============================== CONFIG ======================================
-OUT_DIR="data/test_post/method_comparison"
-BERT_DIR="data/test_post/bert_regression"               # {MODEL}_seed*/ (synthetic) + eval_baseline/ (human-opt)
-BERT_FT_DIR="data/test_post/bert_regression_finetuned"  # eval_finetuned/ (human-opt)
+BERT_ARM="teacher"                  # assessor arm for the non-fine-tuned bars
+BERT_FT_ARM="qwen27_optimized"      # assessor arm for the fine-tuned bars
+CORPUS="qwen27_optimized"           # held-out corpus both are scored on (eval/on_<corpus>/)
 PROMPT_DIR="data/test_post/optimized_phq9"              # {MODEL}_seed*/ + eval-on-* subdirs (aligned tests)
 PROMPT_EVAL_SUBDIR="eval_on_human300"                   # optimized prompt on the 300-block human-opt set (paired with BERT eval_baseline)
 PROMPT_SYNTH_SUBDIR="eval_on_test_blocks_seed35"        # optimized prompt on the BERT test blocks (aligned synthetic, paired with BERT synthetic)
@@ -22,9 +23,9 @@ PROMPT_SEEDS="23 24 25 32 33"
 
 export PYTHONUNBUFFERED=1
 PYTHONPATH=src python -m utils.visualization eval-comparison \
-    --out-dir "${OUT_DIR}" \
-    --bert-dir "${BERT_DIR}" \
-    --bert-ft-dir "${BERT_FT_DIR}" \
+    --bert-arm "${BERT_ARM}" \
+    --bert-ft-arm "${BERT_FT_ARM}" \
+    --corpus "${CORPUS}" \
     --prompt-dir "${PROMPT_DIR}" \
     --prompt-eval-subdir "${PROMPT_EVAL_SUBDIR}" \
     --prompt-synth-subdir "${PROMPT_SYNTH_SUBDIR}" \
@@ -32,6 +33,4 @@ PYTHONPATH=src python -m utils.visualization eval-comparison \
     --prompt-seeds ${PROMPT_SEEDS}
 
 echo ""
-echo "DONE. Figures:"
-echo "  ${OUT_DIR}/fig1_bert_finetune.png"
-echo "  ${OUT_DIR}/fig2_bert_vs_prompt_robustness.png"
+echo "DONE. Table printed above (Tables 1-2 source); no files written."

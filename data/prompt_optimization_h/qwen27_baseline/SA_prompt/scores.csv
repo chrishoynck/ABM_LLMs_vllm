@@ -1,4 +1,0 @@
-variant_id,model,csv,n_agents,sample_seed,training_score,test_score
-prompt,Qwen/Qwen3.5-27B,../../../test_post/teacher_grades/posts100x3_qwen.csv,100,0,,
-prompt,google/gemma-4-31B-it,../../../test_post/teacher_grades/posts100x3_gemma4.csv,100,0,,
-prompt,mistralai/Mistral-Small-3.2-24B-Instruct-2506,../../../finetune/smoke/smoke_mistral-small-24b.csv,3,0,,

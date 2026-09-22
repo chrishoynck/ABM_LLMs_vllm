@@ -1,6 +1,6 @@
 """Appendix diagnostics on the seed-35 BERT test set: S-BERT band cosines + confusion matrices.
 
-Subcommands over the same 1125-block test set (`bert_regression/test_blocks_seed35.csv`):
+Subcommands over the same 1125-block test set (`assessors/bert/teacher/test_blocks_seed35.csv`):
 `sbert-cosine` writes the 5x5 PHQ-9-band cosine matrix of plain S-BERT block embeddings
 (the first run encodes ~15 min on CPU, then it is cached); `confusion` draws row-normalised
 5-band confusion matrices for the best optimized prompt (seed 23) and the BERT+MLP
@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sklearn.metrics import precision_recall_fscore_support
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -47,8 +46,7 @@ def to_band(scores: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # sbert-cosine
 # --------------------------------------------------------------------------- #
-CSV_PATH = os.path.join(REPO, "data/test_post/bert_regression/test_blocks_seed35.csv")
-SBERT_FIG_PATH = os.path.join(OUT_DIR, "sbert_cosine_conditioning_seed35.png")
+CSV_PATH = os.path.join(REPO, "data/assessors/bert/teacher/test_blocks_seed35.csv")
 MATRIX_PATH = os.path.join(OUT_DIR, "sbert_cosine_conditioning_seed35.csv")
 CACHE_PATH = os.path.join(OUT_DIR, "sbert_blocks_seed35.npz")
 
@@ -143,37 +141,12 @@ def conditioning_matrix(emb: np.ndarray, band_idx: np.ndarray) -> np.ndarray:
     return mat
 
 
-def plot_cosine(mat: np.ndarray) -> None:
-    """Draw the band-vs-band cosine heatmap (Blues) and save it."""
-    fig = plt.figure(figsize=(3.4, 3.0))
-    ax = fig.add_subplot(111)
-    vmin, vmax = float(np.nanmin(mat)), float(np.nanmax(mat))
-    sns.heatmap(
-        mat, ax=ax, xticklabels=BAND_LABELS, yticklabels=BAND_LABELS,
-        vmin=vmin - 0.01, vmax=vmax + 0.01,
-        annot=True, fmt=".3f", annot_kws={"fontsize": 7},
-        cmap="Blues", linewidths=0.4, linecolor="white", cbar=False, square=True,
-    )
-    ax.tick_params(axis="x", rotation=30, labelsize=7.5)
-    ax.tick_params(axis="y", rotation=0, labelsize=7.5)
-    for lbl in ax.get_xticklabels():
-        lbl.set_ha("right")
-    divider = make_axes_locatable(ax)
-    cbar_ax = divider.append_axes("right", size="4%", pad=0.08)
-    sm = plt.cm.ScalarMappable(norm=plt.Normalize(vmin - 0.01, vmax + 0.01),
-                               cmap=plt.get_cmap("Blues"))
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_label("cosine similarity", fontsize=8)
-    cbar_ax.tick_params(labelsize=7)
-    ax.text(0.5, -0.34, "PHQ-9 conditioning (S-BERT)",
-            transform=ax.transAxes, ha="center", va="top", fontsize=10)
-    fig.savefig(SBERT_FIG_PATH, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[plot] {SBERT_FIG_PATH}")
-
-
 def run_sbert_cosine(device: str = "cpu", batch_size: int = 128, refresh: bool = False) -> None:
-    """Encode the test blocks (or load the cache), write the cosine matrix CSV and figure.
+    """Encode the test blocks (or load the cache) and write the cosine matrix CSV.
+
+    The standalone heatmap (sbert_cosine_conditioning_seed35.png) was retired
+    2026-09-22. The CSV stays: `run_confusion` draws it as panel (c) of
+    confusion_depression_classes.png, and the PNAS figure_scripts/ read it.
 
     Args:
         device (str): torch device for the encoder.
@@ -203,7 +176,6 @@ def run_sbert_cosine(device: str = "cpu", batch_size: int = 128, refresh: bool =
     adj = [(f"{BAND_LABELS[i]}->{BAND_LABELS[i+1]}", mat[i, i + 1])
            for i in range(len(BAND_LABELS) - 1)]
     print("[adjacent-band] " + ", ".join(f"{k} {v:.3f}" for k, v in adj))
-    plot_cosine(mat)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +187,7 @@ METHODS = [
     ("Optimized prompt (LLM)",
      "data/test_post/optimized_phq9/Qwen3.5-27B_seed23/eval_on_test_blocks_seed35/test_raw_scores.csv"),
     ("BERT+MLP",
-     "data/test_post/bert_regression/Qwen3.5-27B_seed35/test_raw_scores.csv"),
+     "data/assessors/bert/teacher/models/Qwen3.5-27B_seed35/test_raw_scores.csv"),
 ]
 # Per-seed metrics use different test sets per group: each BERT seed has its own
 # held-out split; all prompt seeds are scored on the seed-35 BERT test set.
@@ -228,7 +200,7 @@ METRICS_PATH = os.path.join(OUT_DIR, "confusion_depression_metrics.csv")
 
 def bert_path(seed: int) -> str:
     """Raw-scores CSV of one BERT+MLP seed on its own test split."""
-    return f"data/test_post/bert_regression/Qwen3.5-27B_seed{seed}/test_raw_scores.csv"
+    return f"data/assessors/bert/teacher/models/Qwen3.5-27B_seed{seed}/test_raw_scores.csv"
 
 
 def prompt_path(seed: int) -> str:

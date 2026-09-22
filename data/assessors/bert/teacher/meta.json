@@ -1,0 +1,25 @@
+{
+  "arm": "teacher",
+  "generator": "Qwen/Qwen3.5-27B",
+  "generator_label": "Qwen3.5-27B",
+  "generation_prompt": "teacher",
+  "generation_prompt_file": "data/prompts_post.json",
+  "train_posts": "data/test_post/Qwen_Qwen3.5-27B/",
+  "finetuned_from": null,
+  "model_short": "Qwen3.5-27B",
+  "note": "12k-block teacher corpus, historical prompts_post.json (March 2026).",
+  "legacy_dir": "data/test_post/bert_regression",
+  "backfilled": "2026-09-21 (run predates meta.json)",
+  "seeds": [
+    34,
+    35,
+    36,
+    37,
+    38
+  ],
+  "learning_rate": 0.0001,
+  "epochs": 30,
+  "trained": "2026-05-25",
+  "split": "agent-level 80/10/10 of the teacher set",
+  "native_test": "data/assessors/bert/teacher/test_blocks_seed35.csv"
+}

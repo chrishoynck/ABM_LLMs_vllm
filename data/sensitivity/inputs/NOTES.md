@@ -11,5 +11,5 @@ Originals unchanged in their homes (they have non-SA consumers).
 
 NOT duplicated (documented deps): the implicit neighbour pool
 (`DEFAULT_NEIGHBOR_ROOTS` → `data/test_post/Qwen_Qwen3.5-27B/...`) and the
-`sa_phq9.py` regressor (`data/test_post/bert_regression_finetuned/
-Qwen3.5-27B_seed35/regressor.pt`).
+`sa_phq9.py` regressor
+(`data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35/regressor.pt`).

@@ -37,6 +37,7 @@ import torch.nn as nn
 import copy
 import torch.optim as optim
 from .metrics import *
+from . import assessors
 from .tools.format_config import FC
 from .visualization import (
     plot_optimizer_trajectory,
@@ -2196,8 +2197,9 @@ def grade_posts_csv(posts_file: str, out_csv: str, model_name: str = QWEN_27,
     tp = vllm_kwargs.pop("tensor_parallel_size", None) or len(
         (os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(",")
     )
+    enable_prefix_caching = vllm_kwargs.pop("enable_prefix_caching", False)
     _, teacher_engine = _build_engines(model_name, tp, 0.90, max_model_len=max_model_len,
-                                       enable_prefix_caching=False, **vllm_kwargs)
+                                       enable_prefix_caching=enable_prefix_caching, **vllm_kwargs)
     prompts = [_make_loss_prompt_tweet_set(b, p, int(a)) for b, p, a in zip(blocks, personas, answers)]
     responses = _batch_teacher_rate(teacher_engine, prompts, max_tokens=4096)
 
@@ -2209,9 +2211,48 @@ def grade_posts_csv(posts_file: str, out_csv: str, model_name: str = QWEN_27,
     df = pd.DataFrame(rows)
     os.makedirs(os.path.dirname(os.path.abspath(out_csv)) or ".", exist_ok=True)
     df.to_csv(out_csv, index=False)
+    _write_grade_meta(out_csv, posts_file, model_name, enable_prefix_caching, tp, vllm_kwargs)
     ok = df["score"].dropna()
     print(f"[grade] mean {ok.mean():.2f} +/- {ok.std():.2f} over {len(ok)} blocks "
           f"({df['score'].isna().sum()} unparsed) -> {out_csv}")
+
+
+def _write_grade_meta(out_csv, posts_file, model_name, enable_prefix_caching, tp, vllm_kwargs):
+    """Sidecar recording everything a grade must match to be comparable to another grade.
+
+    Two gradings are only comparable when the rubric, the inference stack and the code path
+    agree. Before 2026-09-22 none of that was recorded, which is why a 0.53-point shift in
+    the paper's human-opt vs TextGrad gap took a day to localise: the rubric changed in
+    commit bc8b1ab (2026-05-30), `enable_prefix_caching` flipped True -> False, and vLLM went
+    0.12.0 -> 0.17.1 while requirements_vllm.txt still pinned 0.12.0. `rubric_md5` is over the
+    rendered rating prompt, so a rubric edit changes it whether or not it was committed.
+    """
+    import hashlib
+    import json
+    try:
+        import vllm
+        vllm_version = getattr(vllm, "__version__", "unknown")
+    except Exception:
+        vllm_version = "unknown"
+    probe = _make_loss_prompt_tweet_set(["probe"], "probe persona", 0)
+    # count criteria only after "Evaluate on:", else the numbered tweet list inflates it
+    criteria_block = probe.split("Evaluate on:", 1)[-1]
+    meta = {
+        "posts_file": os.path.abspath(posts_file),
+        "grader_model": model_name,
+        "rubric_md5": hashlib.md5(probe.encode()).hexdigest(),
+        "rubric_criteria": len(re.findall(r"^\s*\d+\.\s", criteria_block, re.M)),
+        "enable_prefix_caching": bool(enable_prefix_caching),
+        "tensor_parallel_size": tp,
+        "vllm_version": vllm_version,
+        "temperature": 0.2, "top_p": 0.99, "llm_seed": vllm_kwargs.get("seed"),
+        "python": os.sys.executable,
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(out_csv + ".meta.json", "w") as fh:
+        json.dump(meta, fh, indent=2)
+    print(f"[grade] rubric md5 {meta['rubric_md5'][:8]} ({meta['rubric_criteria']} criteria), "
+          f"prefix_cache={meta['enable_prefix_caching']}, vllm {vllm_version}")
 
 
 def rerun_test_tweets(
@@ -2671,7 +2712,7 @@ def run_bert_cv_diagnostic(embeddings_path, base_model_name, device, mental_bert
     much the validation MAE varies across data partitions. Use the regular
     `--mode bert` training afterwards for the actual production model(s).
 
-    Outputs land in `data/test_post/bert_regression/cv_diagnostic_seed{seed}/`:
+    Outputs land in `data/assessors/bert/teacher/cv_diagnostic_seed{seed}/`:
         ├── cv_results.csv
         └── cv_results.png
     """
@@ -2705,8 +2746,7 @@ def run_bert_cv_diagnostic(embeddings_path, base_model_name, device, mental_bert
     pool_agent_ids = [all_agent_ids[i] for i in pool_indices]
 
     model_short = base_model_name.split("/")[-1]
-    save_dir = os.path.join("data", "test_post", "bert_regression",
-                            f"cv_diagnostic_seed{seed}")
+    save_dir = os.path.join(assessors.arm_dir("teacher"), f"cv_diagnostic_seed{seed}")
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"CV diagnostic: pool={len(pool_indices)} blocks from "
@@ -2729,7 +2769,7 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     partition plus init noise (use `--mode bert-cv` for partition-only variance).
     Set `init_from` to continue training a saved regressor (fine-tuning) with a low
     learning rate and an `out_dir`, so the source regressor stays untouched. Outputs
-    under {out_dir or data/test_post/bert_regression}/{model_short}_seed{seed}/:
+    under {out_dir or data/assessors/bert/teacher/models}/{model_short}_seed{seed}/:
     regressor.pt, training_trajectory.csv, test_scores_phq9.csv, test_raw_scores.csv,
     performance.json and two PNGs.
 
@@ -2782,7 +2822,7 @@ def train_BERT_model(embeddings_path, base_model_name, device, mental_bert: bool
     print(f"Training blocks: {n_train}, val: {n_val}, test: {len(test_embs)}")
 
     model_short = base_model_name.split("/")[-1]
-    base_out = out_dir or os.path.join("data", "test_post", "bert_regression")
+    base_out = out_dir or assessors.models_dir("teacher")
     save_dir = os.path.join(base_out, f"{model_short}_seed{seed}")
     os.makedirs(save_dir, exist_ok=True)
 
@@ -3119,7 +3159,7 @@ def eval_bert_regressors_on_csv(
     seeds: list[int],
     model_name: str = QWEN_27,
     out_dir: str | None = None,
-    regressor_dir: str = "data/test_post/bert_regression",
+    regressor_dir: str = assessors.models_dir("teacher"),
     mentalbert: bool = True,
     device: str | None = None,
 ) -> list[dict]:
@@ -3258,11 +3298,11 @@ if __name__ == "__main__":
                         help="(--mode phq9 / phq9-rerun-test) tweets_with_phq9 CSV(s) the "
                              "optimizer draws train/val from, instead of the base set under "
                              "data/test_post/Qwen_Qwen3.5-27B/. E.g. the human-optimized "
-                             "corpus data/finetune/train_posts.csv.")
+                             "corpus data/finetune/qwen/train_posts_qwen.csv.")
     parser.add_argument("--test-posts-file", type=str, default=None,
                         help="(--mode phq9 only) CSV used as the whole test set; no test "
                              "fraction is then held out of the training file(s). E.g. the "
-                             "shared 300-block data/finetune/test_posts.csv.")
+                             "shared 300-block data/finetune/qwen/test_posts_qwen.csv.")
     parser.add_argument("--prompts-file", type=str, default=None,
                         help="(--mode phq9 only) prompts JSON whose phq9.system_instruction "
                              "is the STARTING instruction (the format block is read from it "
@@ -3298,9 +3338,9 @@ if __name__ == "__main__":
     parser.add_argument("--weight-decay", type=float, default=1e-4,
                         help="(--mode bert / bert-cv only) AdamW weight-decay "
                              "coefficient for the regressor. Default: 1e-4.")
-    parser.add_argument("--regressor-dir", type=str, default="data/test_post/bert_regression",
+    parser.add_argument("--regressor-dir", type=str, default=assessors.models_dir("teacher"),
                         help="(--mode bert-eval only) root holding {model_short}_seed{seed}/"
-                             "regressor.pt. Default: data/test_post/bert_regression.")
+                             "regressor.pt. Default: data/assessors/bert/teacher/models.")
     parser.add_argument("--bert-eval-out-dir", type=str, default=None,
                         help="(--mode bert-eval only) output dir for per-seed + aggregate "
                              "CSVs. Default: <posts-file dir>/bert_eval/.")
@@ -3319,7 +3359,7 @@ if __name__ == "__main__":
                              "and the embedding cache.")
     parser.add_argument("--bert-out-dir", type=str, default=None,
                         help="(--mode bert only) base dir for fine-tuned regressor output. "
-                             "Default: data/test_post/bert_regression (overwrites!). When "
+                             "Default: data/assessors/bert/teacher/models (overwrites!). When "
                              "fine-tuning, set this to a fresh dir.")
     parser.add_argument("--learning-rate", type=float, default=1e-4,
                         help="(--mode bert only) initial AdamW LR. Use ~2e-5 when "
@@ -3474,7 +3514,7 @@ if __name__ == "__main__":
                                    batch_size=args.batch_size,
                                    weight_decay=args.weight_decay)
         else:
-            base_out_ft = args.bert_out_dir or os.path.join("data", "test_post", "bert_regression")
+            base_out_ft = args.bert_out_dir or assessors.models_dir("teacher")
             for seed in args.seeds:
                 init_from = None
                 if finetuning:

@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=regrade_paper
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=01:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Why the paper's "human-optimized beats TextGrad" (+0.70, p=0.0018, 100 personas x 3)
+# does not reproduce on the 300-persona rerun (+0.03, p=0.78).
+#
+# The paper's three arms were graded INLINE by the optimizer in 2026-05/06; the rerun
+# grades through `grade-posts`. On identical iter_10 posts the two paths differ by -0.25
+# (regrade_iter10_test100.csv = 7.16 vs stored 7.41), so the path is not neutral. This
+# job regrades the OTHER two stored arms through the same path, on the same 100 personas
+# and the same original posts, isolating grading path from generation:
+#   iter_10  regrade 7.16 (already have)  vs stored 7.41
+#   seed29   regrade   ?                  vs stored 6.74
+#   iter_0   regrade   ?                  vs stored 5.68
+# If human-opt minus TextGrad stays ~+0.70 under one path, the paper's effect is real and
+# the rerun differs for generation/persona reasons. If it collapses, the paper's gap was
+# partly a grading-path artefact.
+#   sbatch jobs/regrade_paper_arms.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+QPY=.venv_vllm/bin/python
+OUT=data/test_post/teacher_grades
+
+grade() {
+    [[ -f "$2" ]] && { echo "[skip] $2 exists"; return; }
+    srun "${QPY}" -m utils.prompt_optimizer --mode grade-posts --posts-file "$1" --out-csv "$2"
+}
+
+grade data/test_post/optimized_tweets/Qwen3.5-27B_seed29/test_posts.csv "${OUT}/regrade_textgrad29_test100.csv"
+grade data/prompt_optimization_h/qwen27_baseline/iter_0/test_posts.csv   "${OUT}/regrade_iter0_test100.csv"

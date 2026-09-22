@@ -51,10 +51,9 @@ Stage-by-stage file map, tagged with the manuscript that uses each:
 |---|---|
 | `src/` | all live Python — module map in [src/README.md](src/README.md) |
 | `scripts/<stage>/` + `jobs/` | shell drivers + SLURM jobs — full map in [docs/SCRIPTS.md](docs/SCRIPTS.md) |
-| `checks/` | small "how good is X" checks with their own jobs (surface cues, multi-model smoke run, CDS vs PHQ-9), see [checks/README.md](checks/README.md) |
+| `checks/` | small "how good is X" checks with their own jobs (surface cues, grading consistency, CDS vs PHQ-9, band variance), see [checks/README.md](checks/README.md) |
 | `data/` | inputs + run outputs — non-confidential research data is tracked in git; `confidential/` (HELIUS), `methodology_paper/`, `networks_post/` (14 GB) and `test/` stay local. **Provenance map (what comes from where, used for what): [data/README.md](data/README.md)**; cleanup/status notes in `data/NOTES.md` |
 | `plots/` | figure outputs (gitignored) |
-| `logs/` | run logs; nothing reads them back (gitignored) |
 | `bin/` | recoverable discard from the 2026-08 and 2026-09 cleanups — restore with `mv bin/X X`, see `bin/NOTES.md` |
 | `experiment.ipynb` | notebook entry point for several figures |
 | `docs/` | all documentation (index below) |
@@ -117,7 +116,7 @@ runs, so **any claim linking assessment error to linguistic overlap crosses dist
 unless it uses the base-set version (which exists: CS thesis App. B, `fig:phq9_confusion_cosim`).
 
 **The simulation is unaffected.** The fine-tuned regressor
-(`data/test_post/bert_regression_finetuned/`, via `scripts/assessment/run_finetune.sh`) was
+(`data/assessors/bert/qwen27_optimized/`, via `scripts/assessment/run_finetune.sh`) was
 fine-tuned on human-optimized data — the same distribution the optimized generative
 pipeline produces at simulation time — so the assessor the GABM uses is *in distribution*
 with the posts it scores, and the GABM-thesis results are internally consistent. Elsewhere

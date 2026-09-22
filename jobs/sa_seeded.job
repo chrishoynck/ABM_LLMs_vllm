@@ -1,0 +1,58 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=sa_seeded
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=05:00:00
+#SBATCH --array=0-3
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A_%a.out
+
+# Per-agent-seeded rerun of the well-being (PHQ-9 axis) and decoding sensitivity
+# analyses for Qwen3.5-27B and Gemma-4-31B-it (per-request
+# seeds SeedSequence[base, agent, round]; base = SA_BASE_SEED + 100*setting + rep,
+# so no two runs share random numbers). Same design as the unseeded runs
+# (60 personas, agent seed 42, Qwen-teacher neighbours seed 42, 10 posts).
+# Output roots (the paper's unseeded trees are untouched):
+#   data/sensitivity/seeded/qwen/{phq9,phq9_minimal_prompt,decoding}
+#   data/sensitivity/seeded/gemma4/{phq9,phq9_minimal_prompt,decoding}
+#   task 0: Qwen  PHQ-9 axis, iter_10 x 3 reps + iter_0 x 1 rep   (20 runs)
+#   task 1: Gemma PHQ-9 axis, same                                  (20 runs)
+#   task 2: Qwen  decoding grid, 7 settings x 3 reps                (21 runs)
+#   task 3: Gemma decoding grid, 7 settings x 3 reps                (21 runs)
+# Gemma grid: temp 0.7/1.0/1.3, top_p 0.95 (vendor default) / 0.975 (operating
+# point) / 1.0 = the same span as Qwen's 0.4/0.7/1.0 and 0.8/0.9/1.0.
+# All runs are guarded (existing posts.csv skipped), so a resubmit resumes.
+# Afterwards: sbatch --dependency=afterok:<jobid> jobs/sa_seeded_analyze.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+
+case "${SLURM_ARRAY_TASK_ID}" in
+    0|2) TAG=qwen;   MODEL=qwen27;     PY=.venv_vllm/bin/python ;;
+    1|3) TAG=gemma4; MODEL=gemma4-31b; PY=.venv_vllm_g4/bin/python
+         export HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache
+         export HF_HUB_OFFLINE=1 ;;
+esac
+ROOT=data/sensitivity/seeded/${TAG}
+
+srun nvidia-smi --query-gpu=name,memory.total --format=csv
+
+if [[ "${SLURM_ARRAY_TASK_ID}" -le 1 ]]; then
+    SA_MODEL=${MODEL} SA_ROOT=${ROOT} PYTHON=${PY} SA_SEED_MODE=agent SA_BASE_SEED=1000 \
+    SA_PROMPT=data/sensitivity/inputs/prompt_iter_10.txt NUM_PHQ9_REPS=3 OUT_SUBDIR=phq9 \
+      srun bash scripts/sensitivity/sa_phq9_minimal_run.sh
+    SA_MODEL=${MODEL} SA_ROOT=${ROOT} PYTHON=${PY} SA_SEED_MODE=agent SA_BASE_SEED=1000 \
+    SA_PROMPT=data/sensitivity/inputs/prompt_iter_0.txt NUM_PHQ9_REPS=1 OUT_SUBDIR=phq9_minimal_prompt \
+      srun bash scripts/sensitivity/sa_phq9_minimal_run.sh
+else
+    if [[ "${TAG}" == "gemma4" ]]; then
+        GRID="baseline 1.0 0.975;temp_hi 1.3 0.975;temp_lo 0.7 0.975;topp_hi 1.0 1.0;topp_lo 1.0 0.95;both_hi 1.3 1.0;both_lo 0.7 0.95"
+    else
+        GRID="baseline 0.7 0.9;temp_hi 1.0 0.9;temp_lo 0.4 0.9;topp_hi 0.7 1.0;topp_lo 0.7 0.8;both_hi 1.0 1.0;both_lo 0.4 0.8"
+    fi
+    SA_MODEL=${MODEL} SA_ROOT=${ROOT} PYTHON=${PY} SA_SEED_MODE=agent SA_BASE_SEED=2000 SA_GRID="${GRID}" \
+      srun bash scripts/sensitivity/sa_decoding_run.sh
+fi

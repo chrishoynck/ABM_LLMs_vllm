@@ -23,6 +23,12 @@
 #                  data/sensitivity/gemma4, so sa_embed / sa_analyze --root work unchanged
 #   OUT_SUBDIR     phq9_minimal_prompt or phq9
 #   PYTHON         interpreter with the generator's vLLM (.venv_vllm_g4 for Gemma / Mistral)
+#   SA_SEED_MODE   nondet (default): --nondeterministic, the original unseeded runs;
+#                  agent: --seed <SA_BASE_SEED + 100*band + rep> --per-agent-seed, one
+#                  seed per (agent, round) derived from a base seed that differs per
+#                  band AND rep, so no two runs share random numbers (see
+#                  checks/README.md, "Retired checks")
+#   SA_BASE_SEED   base for the agent mode (default 1000)
 # e.g. the Gemma-4 human-optimised run (jobs/sa_phq9_gemma4.job):
 #   SA_MODEL=gemma4-31b SA_PROMPT=data/sensitivity/inputs/prompt_iter_10.txt NUM_PHQ9_REPS=3 \
 #   SA_ROOT=data/sensitivity/gemma4 OUT_SUBDIR=phq9 PYTHON=.venv_vllm_g4/bin/python \
@@ -46,6 +52,8 @@ FIXED_NEIGHBOR_SEED=42                 # MUST match sa_run.sh so neighbours line
 NUM_PHQ9_REPS="${NUM_PHQ9_REPS:-1}"    # one unseeded draw per band
 SA_ROOT="${SA_ROOT:-data/sensitivity}"
 OUT_SUBDIR="${OUT_SUBDIR:-phq9_minimal_prompt}"   # dedicated dir; does NOT touch phq9/ (iter_10)
+SA_SEED_MODE="${SA_SEED_MODE:-nondet}"
+SA_BASE_SEED="${SA_BASE_SEED:-1000}"
 
 # === PHQ-9 bands ===========================================================
 PHQ9_BAND_LABELS=("minimal" "mild" "moderate" "modsevere" "severe")
@@ -62,7 +70,7 @@ echo "================================================================"
 echo "PHQ-9 conditioning: ${#PHQ9_BAND_LABELS[@]} band settings × ${NUM_PHQ9_REPS} rep(s)"
 echo "  model=${MODEL} python=${PYTHON}"
 echo "  prompt=${PROMPT}"
-echo "  agent_seed=${FIXED_AGENT_SEED} neighbor_seed=${FIXED_NEIGHBOR_SEED} (fixed) | LLM unseeded"
+echo "  agent_seed=${FIXED_AGENT_SEED} neighbor_seed=${FIXED_NEIGHBOR_SEED} (fixed) | seed mode=${SA_SEED_MODE}"
 echo "  output -> ${SA_ROOT}/${OUT_SUBDIR}/<band>/rep_<N>/posts.csv"
 echo "================================================================"
 
@@ -78,7 +86,12 @@ for i in "${!PHQ9_BAND_LABELS[@]}"; do
             continue
         fi
         mkdir -p "${out_dir}"
-        echo "[run] phq9 band=${label} rep=${rep}/${NUM_PHQ9_REPS} range=[${lo},${hi}]  (agent_seed=${FIXED_AGENT_SEED}, neighbor_seed=${FIXED_NEIGHBOR_SEED})"
+        if [[ "${SA_SEED_MODE}" == "agent" ]]; then
+            seed_flags=(--seed "$((SA_BASE_SEED + 100 * i + rep))" --per-agent-seed)
+        else
+            seed_flags=(--nondeterministic)
+        fi
+        echo "[run] phq9 band=${label} rep=${rep}/${NUM_PHQ9_REPS} range=[${lo},${hi}]  (agent_seed=${FIXED_AGENT_SEED}, neighbor_seed=${FIXED_NEIGHBOR_SEED}, ${seed_flags[*]})"
 
         PYTHONPATH=src "${PYTHON}" -m utils.create_data.generate_test_data \
             --instruction-file "${PROMPT}" \
@@ -90,7 +103,7 @@ for i in "${!PHQ9_BAND_LABELS[@]}"; do
             --neighbor-seed "${FIXED_NEIGHBOR_SEED}" \
             --phq9-band-range "${lo}" "${hi}" \
             --output-csv "${out_csv}" \
-            --nondeterministic
+            "${seed_flags[@]}"
     done
 done
 

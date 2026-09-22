@@ -1,0 +1,10 @@
+band,pair_type,mean,std,count
+Mild,cross,8.0489,5.1505,2160
+Mild,within,2.551,2.1141,180
+Minimal,cross,12.5593,5.0004,1620
+Minimal,within,1.4984,1.7807,180
+Mod. Severe,cross,5.6843,3.5999,540
+Mod. Severe,within,2.9615,2.4297,180
+Moderate,cross,5.6076,3.9286,1080
+Moderate,within,2.9784,2.0784,180
+Severe,within,2.5995,2.2321,180

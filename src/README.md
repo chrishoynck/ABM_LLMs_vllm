@@ -93,7 +93,7 @@ No `.sh`/`.job` wrapper; run from the repo root with the venv python.
 
 | Module | Run | Output |
 |---|---|---|
-| `utils.tools.plot_assessment_diagnostics` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_assessment_diagnostics all` (first encode ~15 min CPU, cached) | `data/test_post/method_comparison/{confusion_depression_classes,sbert_cosine_conditioning_seed35}.{png,csv}` |
+| `utils.tools.plot_assessment_diagnostics` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_assessment_diagnostics all` (first encode ~15 min CPU, cached) | `data/test_post/method_comparison/confusion_depression_classes.{png,csv}` + `sbert_cosine_conditioning_seed35.csv` (the cosine matrix; its standalone heatmap was retired 2026-09-22, panel (c) of the confusion figure draws it) |
 | `utils.tools.plot_phq9_mobility` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_phq9_mobility` | `data/networks_post/basis/plots/phq9_mobility_*.png`, `mobility_phq9.csv` |
 | `utils.tools.velocity_table` | `PYTHONPATH=src ./.venv_vllm/bin/python src/utils/tools/velocity_table.py` | console table + `plots/velocity_table.tex` |
 | `utils.sensitivity.plot_network_targets` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.sensitivity.plot_network_targets` | `data/sensitivity/network_target_ranges.png` |

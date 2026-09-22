@@ -11,7 +11,7 @@
 #   3. score each TextGrad-optimized prompt (per seed) on the same blocks
 #
 # BERT's own per-PHQ-9 result on these blocks is already on disk:
-#   data/test_post/bert_regression/Qwen3.5-27B_seed<SEED>/test_scores_phq9.csv
+#   data/assessors/bert/teacher/models/Qwen3.5-27B_seed<SEED>/test_scores_phq9.csv
 #
 # Run from the repo root on a GPU session:  bash scripts/assessment/run_phq9_on_bert_testset.sh
 set -euo pipefail
@@ -30,12 +30,13 @@ MINIMAL_PROMPTS_JSON="data/prompts_post_minimal.json"
 
 # Paths (derived)
 CACHE="data/test/Qwen/${MODEL_SHORT}/mentalbert_embeddings/embeddings_and_labels.pt"
-BERT_DIR="data/test_post/bert_regression"
-TESTSET="${BERT_DIR}/test_blocks_seed${BERT_SEED}.csv"
+BERT_ARM_DIR="data/assessors/bert/teacher"   # arm dir: test blocks live here
+BERT_DIR="${BERT_ARM_DIR}/models"            # {model_short}_seed{NN}/
+TESTSET="${BERT_ARM_DIR}/test_blocks_seed${BERT_SEED}.csv"
 # Minimal is scored on the SAME blocks but via a distinctly-named copy of the
 # posts file, so its eval subdir (named from the posts-file stem) does not collide
 # with the optimized seed-${MINIMAL_SEED} run, which also writes eval_on_test_blocks_seed${BERT_SEED}/.
-MINIMAL_TESTSET="${BERT_DIR}/test_blocks_seed${BERT_SEED}_minimal.csv"
+MINIMAL_TESTSET="${BERT_ARM_DIR}/test_blocks_seed${BERT_SEED}_minimal.csv"
 OPT_DIR="data/test_post/optimized_phq9"
 MINIMAL_INSTR="${OPT_DIR}/${MODEL_SHORT}_seed${MINIMAL_SEED}/minimal_instruction.txt"
 EVAL_SUBDIR="eval_on_test_blocks_seed${BERT_SEED}"            # optimized: rerun names it from posts-file stem

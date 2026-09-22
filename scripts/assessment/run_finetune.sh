@@ -3,9 +3,10 @@
 # (human-optimized) prompt, then compare baseline vs fine-tuned on a TEST_N-block
 # test set (disjoint from the training personas).
 #
-# Every setting is an env var. With GEN_TAG empty (default) this reproduces the
-# original Qwen3.5-27B run and layout. With GEN_TAG=<tag> the posts come from
-# another student generator and everything lands in tagged dirs, e.g.
+# Every setting is an env var. GEN_TAG names the generator arm and picks the
+# folder its posts live in, data/finetune/<tag>/. Empty (or `qwen`) = the
+# original Qwen3.5-27B run, whose test set is assembled from 120 pre-existing +
+# 180 fresh blocks; any other tag generates all TEST_N blocks in one go, e.g.
 #
 #   GEN_TAG=gemma4 GEN_MODEL=gemma4-31b PYTHON_GEN=.venv_vllm_g4/bin/python \
 #       bash scripts/assessment/run_finetune.sh
@@ -23,11 +24,12 @@ N_TRAIN="${N_TRAIN:-3000}"                 # training personas (<= 7736 availabl
 TEST_N="${TEST_N:-300}"                    # test blocks
 CHUNK_SIZE="${CHUNK_SIZE:-100}"            # generate posts in chunks (appended + crash-resumable)
 GEN_MODEL="${GEN_MODEL:-qwen27}"           # generator alias / HF id that writes the posts
-GEN_TAG="${GEN_TAG:-}"                     # "" = legacy Qwen layout, else per-generator dirs
+GEN_TAG="${GEN_TAG:-}"                     # generator arm; "" == "qwen" (see the Qwen branch below)
+[[ "${GEN_TAG}" == "qwen" ]] && GEN_TAG=""  # same arm, same paths as the default
 INIT_MODEL="${INIT_MODEL:-Qwen/Qwen3.5-27B}"          # names the SOURCE (baseline) regressors
 PYTHON_GEN="${PYTHON_GEN:-.venv_vllm/bin/python}"     # interpreter with the generator's vLLM
 PYTHON_BERT="${PYTHON_BERT:-.venv_vllm/bin/python}"   # interpreter for the MentalBERT steps
-SEEDS="${SEEDS:-34 35 36 37 38}"           # regressor seeds in data/test_post/bert_regression/
+SEEDS="${SEEDS:-34 35 36 37 38}"           # regressor seeds in <ARM_ROOT>/<arm>/models/
 LR="${LR:-2e-5}"                           # low LR for fine-tuning
 EPOCHS="${EPOCHS:-30}"
 PROMPT="${PROMPT:-data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt}"
@@ -44,28 +46,43 @@ DECODE_ARGS=()
 
 # Paths
 PERSONAS="data/personas_finetune_phq9.csv"
-BASELINE_DIR="data/test_post/bert_regression"
-QWEN_FT_DIR="data/test_post/bert_regression_finetuned"
+
+# Assessor tree (src/utils/assessors.py). An ARM is one training corpus, named
+# <generator>_<generation prompt>; every arm holds models/, eval/on_<corpus>/ and
+# meta.json. ARM is derived from GEN_TAG, so the legacy tags still work.
+ARM_ROOT="data/assessors/bert"
+BASELINE_ARM="teacher"                     # un-fine-tuned regressors every arm starts from
+QWEN_FT_ARM="qwen27_optimized"             # the deployed Qwen arm (cross-generator transfer row)
 if [[ -z "${GEN_TAG}" ]]; then
-    TRAIN_POSTS="data/finetune/train_posts.csv"
+    ARM="${QWEN_FT_ARM}"
+else
+    ARM="$(PYTHONPATH=src "${PYTHON_BERT}" -c \
+        "from utils.assessors import resolve; print(resolve('${GEN_TAG}'))")"
+fi
+BASELINE_DIR="${ARM_ROOT}/${BASELINE_ARM}/models"   # --init-from-dir / baseline --regressor-dir
+QWEN_FT_DIR="${ARM_ROOT}/${QWEN_FT_ARM}/models"
+FT_DIR="${ARM_ROOT}/${ARM}/models"                  # --bert-out-dir for this run
+
+# The three eval cells this run fills: <assessor arm>/eval/on_<corpus>, corpus = ARM.
+BASE_EVAL="${ARM_ROOT}/${BASELINE_ARM}/eval/on_${ARM}"
+FT_EVAL="${ARM_ROOT}/${ARM}/eval/on_${ARM}"
+XFER_EVAL="${ARM_ROOT}/${QWEN_FT_ARM}/eval/on_${ARM}"
+# Qwen's own run has no transfer cell (it would be the same dir as FT_EVAL).
+[[ "${ARM}" == "${QWEN_FT_ARM}" ]] && XFER_EVAL=""
+
+if [[ -z "${GEN_TAG}" ]]; then
+    # Qwen: the test set reuses the 120 SA_prompt blocks and tops up to TEST_N.
+    TRAIN_POSTS="data/finetune/qwen/train_posts_qwen.csv"
     EXISTING_TEST_POSTS="data/prompt_optimization_h/qwen27_baseline/SA_prompt/prompt_Qwen_Qwen3.5-27B.csv"
     EXISTING_TEST_N=120                    # blocks already generated in EXISTING_TEST_POSTS
     TEST_EXTRA_PERSONAS="data/finetune/personas_test_extra.csv"
-    TEST_EXTRA_POSTS="data/finetune/test_posts_extra.csv"
-    TEST_POSTS="data/finetune/test_posts.csv"
-    FT_DIR="${QWEN_FT_DIR}"
-    BASE_EVAL="${BASELINE_DIR}/eval_baseline"
-    FT_EVAL="${FT_DIR}/eval_finetuned"
-    XFER_EVAL=""
+    TEST_EXTRA_POSTS="data/finetune/qwen/test_posts_extra_qwen.csv"
+    TEST_POSTS="data/finetune/qwen/test_posts_qwen.csv"
     LOG_TAG=""
 else
     TRAIN_POSTS="data/finetune/${GEN_TAG}/train_posts_${GEN_TAG}.csv"
     TEST_PERSONAS="data/finetune/personas_test_${TEST_N}.csv"   # same personas/PHQ-9 as Qwen's test set
     TEST_POSTS="data/finetune/${GEN_TAG}/test_posts_${GEN_TAG}.csv"
-    FT_DIR="data/test_post/bert_regression_finetuned_${GEN_TAG}"
-    BASE_EVAL="${BASELINE_DIR}/eval_baseline_${GEN_TAG}"
-    FT_EVAL="${FT_DIR}/eval_finetuned"
-    XFER_EVAL="${QWEN_FT_DIR}/eval_${GEN_TAG}${TEST_N}"           # Qwen fine-tuned regressors on this generator
     LOG_TAG="_${GEN_TAG}"
 fi
 
@@ -172,6 +189,16 @@ PYTHONPATH=src "${PYTHON_BERT}" -m utils.prompt_optimizer \
     --mode bert-eval --model "${GEN_HF_ID}" --seeds ${SEEDS} \
     --posts-file "${TEST_POSTS}" --regressor-dir "${FT_DIR}" \
     --bert-eval-out-dir "${FT_EVAL}"
+
+# === 6. Provenance sidecar (so the arm dir describes itself) ================
+PYTHONPATH=src "${PYTHON_BERT}" -c "
+from utils import assessors
+print('[meta]', assessors.write_meta('${ARM}',
+    seeds=[int(s) for s in '${SEEDS}'.split()],
+    learning_rate=float('${LR}'), epochs=int('${EPOCHS}'),
+    generation_prompt_file='${PROMPT}',
+    trained_by='scripts/assessment/run_finetune.sh', log='${LOG}'))
+"
 
 echo ""
 echo "DONE. Compare MAE:"

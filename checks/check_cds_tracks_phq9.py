@@ -1,11 +1,13 @@
 """Check that cognitive-distortion (CDS) n-grams get more common as PHQ-9 rises.
 
-Loads the fine-tuning post CSVs, flags each post with the category-aware CDS
-detector (`utils.tools.cds`, the same one `network_evolution` uses) and reports
-the share of CDS posts per PHQ-9 score, overall and per category. If CDS are a
-real depression signal that share should go up with PHQ-9. Writes a two-panel
-figure (overall trend + category x severity-band heatmap) that the paper uses.
-Run: see checks/README.md.
+Loads the human-optimized-prompt training corpus of each generator (Qwen and
+Gemma: same personas, scores and neighbour draws, so the two are paired), flags
+each post with the category-aware CDS detector (`utils.tools.cds`, the same one
+`network_evolution` uses) and reports the share of CDS posts per PHQ-9 score,
+overall and per category. If CDS are a real depression signal that share should
+go up with PHQ-9. Writes a two-panel figure (overall trend per generator +
+category x severity-band heatmap, Qwen value with Gemma in brackets) that the
+paper uses. Run: see checks/README.md.
 """
 
 import argparse
@@ -19,9 +21,15 @@ import pandas as pd
 
 from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
-# test_posts_extra.csv is already contained in test_posts.csv (its last 180
-# blocks), so it is deliberately not listed: adding it double counts.
-DEFAULT_FILES = ("train_posts.csv", "test_posts.csv", "calibration_posts.csv")
+# (tag, label, colour, posts file). Both corpora were written with the iter_10
+# prompt over the same 3,000 (persona, PHQ-9) blocks; colours follow the
+# multi-model figures in `utils.visualization.MULTIMODEL_GENERATORS`. The first
+# entry is the primary one (heatmap colour, row order); the second goes in
+# brackets.
+GENERATORS = [
+    ("qwen", "Qwen", "#eb6834", "data/finetune/qwen/train_posts_qwen.csv"),
+    ("gemma4", "Gemma", "#2a78d6", "data/finetune/gemma4/train_posts_gemma4.csv"),
+]
 
 # Standard PHQ-9 severity bands (sum-score cut-offs).
 SEVERITY_BANDS = [
@@ -34,23 +42,6 @@ SEVERITY_BANDS = [
 BAND_ORDER = [b[2] for b in SEVERITY_BANDS]
 
 
-def load_posts(data_dir: str, files=DEFAULT_FILES) -> pd.DataFrame:
-    """Concatenate the fine-tuning post CSVs that exist in `data_dir` into one frame."""
-    frames = []
-    for name in files:
-        path = os.path.join(data_dir, name)
-        if not os.path.exists(path):
-            print(f"  [skip] {path} not found")
-            continue
-        df = pd.read_csv(path)
-        df["source"] = name
-        frames.append(df)
-        print(f"  [load] {name}: {len(df)} posts")
-    if not frames:
-        raise FileNotFoundError(f"No post CSVs found in {data_dir} (looked for {files})")
-    return pd.concat(frames, ignore_index=True)
-
-
 def _severity(phq9: int) -> str:
     """Map a PHQ-9 sum score to its severity band label."""
     for lo, hi, label in SEVERITY_BANDS:
@@ -59,48 +50,83 @@ def _severity(phq9: int) -> str:
     return "unknown"
 
 
-# Colours / labels matched to the SA cosine figure in sensitivity/sa_analyze.py
-# (blue = within-setting bar, orange = cross-setting bar, Oranges heatmap).
-COLOUR_BLUE = "#1f77b4"
-COLOUR_ORANGE = "#ff7f0e"
+def score_posts(path: str, patterns: dict) -> tuple[pd.DataFrame, list[str]]:
+    """Load one posts CSV and flag every post per CDS category.
+
+    Args:
+        path (str): posts CSV with `tweet` and `phq9` columns.
+        patterns (dict): category -> compiled regex (`compile_category_patterns`).
+
+    Returns:
+        tuple: (frame with `severity`, one `cds::<cat>` bool column per category
+        and `is_cds`, list of those category column names).
+    """
+    df = pd.read_csv(path).dropna(subset=["tweet", "phq9"]).copy()
+    df["phq9"] = df["phq9"].astype(int)
+    df["tweet"] = df["tweet"].astype(str)
+    df["severity"] = df["phq9"].apply(_severity)
+    cat_cols = []
+    for cat, pat in patterns.items():
+        col = f"cds::{cat}"
+        df[col] = df["tweet"].str.contains(pat)
+        cat_cols.append(col)
+    df["is_cds"] = df[cat_cols].any(axis=1)
+    return df, cat_cols
+
+
+def summarize(df: pd.DataFrame, patterns: dict, cat_cols: list[str]):
+    """Per-score CDS share, category x band table and overall category prevalence."""
+    per_score = (
+        df.groupby("phq9")["is_cds"]
+        .agg(n_posts="size", n_cds="sum")
+        .reset_index()
+    )
+    per_score["pct_cds"] = 100.0 * per_score["n_cds"] / per_score["n_posts"]
+    rows = {cat: df.groupby("severity")[col].mean().mul(100.0)
+            for cat, col in zip(patterns.keys(), cat_cols)}
+    cat_band = pd.DataFrame(rows).T.reindex(columns=BAND_ORDER)
+    cat_overall = df[cat_cols].mean() * 100.0
+    cat_overall.index = list(patterns.keys())
+    return per_score, cat_band, cat_overall
+
+
+# Heatmap colour matched to the SA cosine figure in sensitivity/sa_analyze.py.
 HEATMAP_CMAP = "Oranges"
 # Reference panel-(b) band labels (single line, Title case) so the x-axis
 # matches "Minimal / Mild / Moderate / Mod. Severe / Severe".
 FIG_BAND_LABELS = ["Minimal", "Mild", "Moderate", "Mod. Severe", "Severe"]
 
 
-def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
-                r_agg: float, fig_path: str):
-    """Write the two-panel figure: overall trend (left) + category heatmap (right).
+def make_figure(results: dict, fig_path: str):
+    """Write the two-panel figure: overall trend per generator (left) + category heatmap (right).
 
-    Colours and proportions match the SA cosine figure in `sensitivity/sa_analyze.py`.
+    The heatmap is coloured by the primary generator; each cell reads
+    "primary (secondary)".
 
     Args:
-        per_score (pd.DataFrame): columns phq9, pct_cds (overall, any category).
-        cat_band (pd.DataFrame): index=category, columns=severity bands, values=% CDS.
-        r_agg (float): per-score Pearson r (% CDS vs PHQ-9), shown on the left panel.
+        results (dict): tag -> dict(per_score, cat_band, r_agg), in GENERATORS order.
         fig_path (str): output path (.png).
     """
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(7.5, 3.5),
-                                   gridspec_kw={"width_ratios": [1, 1.1]})
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.4, 3.2),
+                                   gridspec_kw={"width_ratios": [1, 1.6]})
 
-    # ── Left: overall % CDS vs PHQ-9 score ──────────────────────────────────
-    ax0.plot(per_score["phq9"], per_score["pct_cds"], "o-",
-             color=COLOUR_BLUE, lw=2, ms=5, label="% CDS posts")
-    # linear fit to make the trend explicit
-    coef = np.polyfit(per_score["phq9"], per_score["pct_cds"], 1)
-    xs = np.array([per_score["phq9"].min(), per_score["phq9"].max()])
-    ax0.plot(xs, np.polyval(coef, xs), "--", color=COLOUR_ORANGE, lw=1.8,
-             label=f"linear fit (r={r_agg:+.2f})")
+    # ── Left: overall % CDS vs PHQ-9 score, one line per generator ──────────
+    for tag, label, colour, _ in GENERATORS:
+        ps = results[tag]["per_score"]
+        ax0.plot(ps["phq9"], ps["pct_cds"], "o-", color=colour, lw=2, ms=4,
+                 label=label)
     ax0.set_xlabel("PHQ-9 sum-score")
     ax0.set_ylabel("% of posts containing CDS")
-    ax0.set_ylim(25, 90)
+    ax0.set_ylim(33, 78)
     ax0.grid(axis="y", linestyle=":", alpha=0.5)
-    ax0.legend(loc="lower right", frameon=False)
-    ax0.text(0.5, -0.26, "(a) CDS vs PHQ-9", transform=ax0.transAxes,
-             ha="center", va="top", fontsize=11)
+    ax0.legend(loc="lower right", frameon=False, fontsize=9)
+    ax0.text(0.5, -0.34, "(a) CDS vs PHQ-9", transform=ax0.transAxes,
+             ha="center", va="top", fontsize=9.5)
 
-    # ── Right: category x severity-band heatmap (Oranges) ───────────────────
+    # ── Right: category x severity-band heatmap (Oranges), primary (secondary) ─
+    primary, secondary = GENERATORS[0][0], GENERATORS[1][0]
+    cat_band = results[primary]["cat_band"]
+    other = results[secondary]["cat_band"].reindex(index=cat_band.index)
     data = cat_band.values
     im = ax1.imshow(data, aspect="auto", cmap=HEATMAP_CMAP, vmin=0,
                     vmax=np.nanmax(data))
@@ -115,12 +141,13 @@ def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
             val = data[i, j]
             if np.isnan(val):
                 continue
-            ax1.text(j, i, f"{val:.1f}", ha="center", va="center", fontsize=8,
+            ax1.text(j, i, f"{val:.1f} ({other.values[i, j]:.1f})",
+                     ha="center", va="center", fontsize=6.2,
                      color="white" if val > thresh else "black")
     cbar = fig.colorbar(im, ax=ax1, fraction=0.045, pad=0.04)
     cbar.set_label("% of posts")
-    ax1.text(0.5, -0.26, "(b) CDS category by PHQ-9 band", transform=ax1.transAxes,
-             ha="center", va="top", fontsize=11)
+    ax1.text(0.5, -0.34, "(b) CDS category by PHQ-9 band, Qwen (Gemma)",
+             transform=ax1.transAxes, ha="center", va="top", fontsize=9.5)
 
     fig.tight_layout()
     os.makedirs(os.path.dirname(fig_path) or ".", exist_ok=True)
@@ -130,18 +157,17 @@ def make_figure(per_score: pd.DataFrame, cat_band: pd.DataFrame,
 
 
 def main():
-    """Score the posts, print the per-score and per-category tables, write the figure."""
+    """Score both corpora, print the per-score and per-category tables, write the figure."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-dir", default="data/finetune",
-                        help="Directory holding the *_posts.csv files.")
     parser.add_argument("--ngrams", default="data/distorted_language_ngrams.tsv",
                         help="TSV of distorted-language n-grams (categories|markers|variants).")
     parser.add_argument("--fig", default="plots/cds_validation.png",
                         help="Output path for the figure.")
     parser.add_argument("--out", default=None,
-                        help="Optional path to write the per-PHQ-9 CDS table as CSV "
-                             "(a *_by_category.csv sibling is written alongside it).")
+                        help="Optional path to write the per-PHQ-9 CDS table as CSV, long "
+                             "format with a `generator` column (a *_by_category.csv "
+                             "sibling is written alongside it).")
     args = parser.parse_args()
 
     print(f"Loading n-grams from {args.ngrams} ...")
@@ -150,91 +176,83 @@ def main():
     total_ngrams = sum(len(v) for v in by_cat.values())
     print(f"Loaded {total_ngrams} n-grams across {len(patterns)} categories.\n")
 
-    print(f"Loading posts from {args.data_dir} ...")
-    df = load_posts(args.data_dir)
-    df = df.dropna(subset=["tweet", "phq9"]).copy()
-    df["phq9"] = df["phq9"].astype(int)
-    df["tweet"] = df["tweet"].astype(str)
-    df["severity"] = df["phq9"].apply(_severity)
-    print(f"Total posts scored: {len(df)}\n")
-
-    # ── Per-post detection: one boolean column per category + overall ───────
-    cat_cols = []
-    for cat, pat in patterns.items():
-        col = f"cds::{cat}"
-        df[col] = df["tweet"].str.contains(pat)
-        cat_cols.append(col)
-    df["is_cds"] = df[cat_cols].any(axis=1)
-
-    # ── Average percentage CDS per PHQ-9 score (overall) ────────────────────
-    per_score = (
-        df.groupby("phq9")["is_cds"]
-        .agg(n_posts="size", n_cds="sum")
-        .reset_index()
-    )
-    per_score["pct_cds"] = 100.0 * per_score["n_cds"] / per_score["n_posts"]
-
-    print("Average % CDS posts per PHQ-9 score (any category)")
-    print("-" * 48)
-    print(f"{'PHQ-9':>5} {'n_posts':>8} {'n_cds':>7} {'% CDS':>8}")
-    for _, r in per_score.iterrows():
-        print(f"{int(r.phq9):>5} {int(r.n_posts):>8} {int(r.n_cds):>7} {r.pct_cds:>7.2f}%")
-    print(f"{'all':>5} {len(df):>8} {int(df.is_cds.sum()):>7} "
-          f"{100.0 * df.is_cds.mean():>7.2f}%\n")
-
-    # ── Category x severity-band table (% posts, used by the heatmap) ───────
-    rows = {}
-    for cat, col in zip(patterns.keys(), cat_cols):
-        rows[cat] = df.groupby("severity")[col].mean().mul(100.0)
-    cat_band = pd.DataFrame(rows).T.reindex(columns=BAND_ORDER)
-    # overall category prevalence, used to sort rows (most common at top)
-    cat_overall = (df[cat_cols].mean() * 100.0)
-    cat_overall.index = list(patterns.keys())
-    cat_band = cat_band.loc[cat_overall.sort_values(ascending=False).index]
-    # per-category Pearson r of % CDS vs PHQ-9 severity midpoint, for the trend
-    band_mid = {b[2]: (b[0] + b[1]) / 2 for b in SEVERITY_BANDS}
-
-    # short, single-line band labels so the stdout columns line up (the figure
-    # keeps the full two-line labels)
-    console_band = {"minimal": "minimal", "mild": "mild", "moderate": "moderate",
-                    "moderately\nsevere": "mod.sev", "severe": "severe"}
-    print("Average % CDS posts per category, by PHQ-9 severity band")
-    print("-" * 78)
-    hdr = "".join(f"{console_band[b]:>12}" for b in BAND_ORDER)
-    print(f"{'category':<28}{hdr}{'overall':>10}{'trend r':>9}")
-    for cat in cat_band.index:
-        vals = "".join(f"{cat_band.loc[cat, b]:>11.1f}%" for b in BAND_ORDER)
-        mids = np.array([band_mid[b] for b in BAND_ORDER])
-        r_cat = np.corrcoef(mids, cat_band.loc[cat, BAND_ORDER].values)[0, 1]
-        print(f"{cat:<28}{vals}{cat_overall[cat]:>9.1f}%{r_cat:>+9.2f}")
+    results = {}
+    for tag, label, _, path in GENERATORS:
+        print(f"Loading {label} posts from {path} ...")
+        df, cat_cols = score_posts(path, patterns)
+        per_score, cat_band, cat_overall = summarize(df, patterns, cat_cols)
+        cds = df["is_cds"].astype(float).values
+        phq = df["phq9"].astype(float).values
+        results[tag] = {
+            "label": label, "n": len(df),
+            "per_score": per_score, "cat_band": cat_band, "cat_overall": cat_overall,
+            "r_post": np.corrcoef(phq, cds)[0, 1],
+            "rank_r": pd.Series(phq).corr(pd.Series(cds), method="spearman"),
+            "r_agg": per_score["phq9"].corr(per_score["pct_cds"]),
+        }
+        print(f"  {len(df)} posts scored, {100.0 * df.is_cds.mean():.2f}% CDS overall")
     print()
 
-    # ── Does CDS get more probable with higher PHQ-9? ───────────────────────
-    cds = df["is_cds"].astype(float).values
-    phq = df["phq9"].astype(float).values
-    r_post = np.corrcoef(phq, cds)[0, 1]
-    rank_r = pd.Series(phq).corr(pd.Series(cds), method="spearman")
-    r_agg = per_score["phq9"].corr(per_score["pct_cds"])
+    # rows sorted by the primary generator's overall prevalence (most common at top)
+    primary = GENERATORS[0][0]
+    order = results[primary]["cat_overall"].sort_values(ascending=False).index
+    for tag in results:
+        results[tag]["cat_band"] = results[tag]["cat_band"].reindex(index=order)
 
+    # ── Per-score table, one % column per generator ──────────────────────────
+    tags = [g[0] for g in GENERATORS]
+    print("Average % CDS posts per PHQ-9 score (any category)")
+    print("-" * 48)
+    print(f"{'PHQ-9':>5}" + "".join(f"{results[t]['label']:>18}" for t in tags))
+    merged = results[tags[0]]["per_score"][["phq9"]].copy()
+    for t in tags:
+        merged[t] = results[t]["per_score"]["pct_cds"].values
+    for _, r in merged.iterrows():
+        print(f"{int(r.phq9):>5}" + "".join(f"{r[t]:>17.2f}%" for t in tags))
+    print()
+
+    # ── Category x severity-band table per generator ─────────────────────────
+    band_mid = {b[2]: (b[0] + b[1]) / 2 for b in SEVERITY_BANDS}
+    console_band = {"minimal": "minimal", "mild": "mild", "moderate": "moderate",
+                    "moderately\nsevere": "mod.sev", "severe": "severe"}
+    hdr = "".join(f"{console_band[b]:>12}" for b in BAND_ORDER)
+    mids = np.array([band_mid[b] for b in BAND_ORDER])
+    for t in tags:
+        res = results[t]
+        print(f"Average % CDS posts per category, by PHQ-9 severity band: {res['label']}")
+        print("-" * 78)
+        print(f"{'category':<28}{hdr}{'overall':>10}{'trend r':>9}")
+        for cat in res["cat_band"].index:
+            vals = "".join(f"{res['cat_band'].loc[cat, b]:>11.1f}%" for b in BAND_ORDER)
+            r_cat = np.corrcoef(mids, res["cat_band"].loc[cat, BAND_ORDER].values)[0, 1]
+            print(f"{cat:<28}{vals}{res['cat_overall'][cat]:>9.1f}%{r_cat:>+9.2f}")
+        print()
+
+    # ── Does CDS get more probable with higher PHQ-9? ────────────────────────
     print("Correlation between PHQ-9 and CDS probability (any category)")
     print("-" * 60)
-    print(f"  per-post Pearson (point-biserial) : {r_post:+.3f}")
-    print(f"  per-post Spearman                 : {rank_r:+.3f}")
-    print(f"  per-score Pearson (% vs PHQ-9)    : {r_agg:+.3f}")
-    verdict = "YES" if r_post > 0 else "NO"
-    print(f"\n=> CDS more probable for higher PHQ-9? {verdict} "
-          f"(positive correlation means yes)")
+    for t in tags:
+        res = results[t]
+        print(f"  {res['label']}")
+        print(f"    per-post Pearson (point-biserial) : {res['r_post']:+.3f}")
+        print(f"    per-post Spearman                 : {res['rank_r']:+.3f}")
+        print(f"    per-score Pearson (% vs PHQ-9)    : {res['r_agg']:+.3f}")
+        verdict = "YES" if res["r_post"] > 0 else "NO"
+        print(f"    => CDS more probable for higher PHQ-9? {verdict}")
 
-    # ── Figure ──────────────────────────────────────────────────────────────
-    make_figure(per_score, cat_band, r_agg, args.fig)
+    # ── Figure ───────────────────────────────────────────────────────────────
+    make_figure(results, args.fig)
 
-    # ── Optional CSVs ─────────────────────────────────────────────────────────
+    # ── Optional CSVs (long format: one block per generator) ─────────────────
     if args.out:
-        per_score.to_csv(args.out, index=False)
+        per = pd.concat([results[t]["per_score"].assign(generator=t) for t in tags],
+                        ignore_index=True)
+        per.to_csv(args.out, index=False)
         cat_out = args.out.replace(".csv", "_by_category.csv")
         if cat_out == args.out:
             cat_out = args.out + ".by_category.csv"
-        cat_band.to_csv(cat_out)
+        cat = pd.concat([results[t]["cat_band"].assign(generator=t) for t in tags])
+        cat.to_csv(cat_out)
         print(f"\nWrote per-PHQ-9 table to {args.out}")
         print(f"Wrote per-category table to {cat_out}")
 

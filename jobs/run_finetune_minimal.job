@@ -19,9 +19,10 @@
 # per block, per-model decoding from loaders.STUDENT_DECODING). Tagged layout, so
 # the human-optimized files are untouched:
 #   data/finetune/<tag>/{train,test}_posts_<tag>.csv (+ .meta.json)
-#   data/test_post/bert_regression_finetuned_<tag>/{<model>_seed3[4-8]/, eval_finetuned/}
-#   data/test_post/bert_regression/eval_baseline_<tag>/       teacher-set regressors
-#   data/test_post/bert_regression_finetuned/eval_<tag>300/   human-opt fine-tuned regressors
+#   data/assessors/bert/<arm>/{models/<model>_seed3[4-8]/, eval/on_<arm>/, meta.json}
+#   data/assessors/bert/teacher/eval/on_<arm>/            teacher-set regressors
+#   data/assessors/bert/qwen27_optimized/eval/on_<arm>/   human-opt fine-tuned regressors
+# <arm> is GEN_TAG resolved through utils.assessors (qwen_minimal -> qwen27_minimal).
 # Task 0 = Qwen3.5-27B (tag qwen_minimal, .venv_vllm), task 1 = Gemma-4-31B-it
 # (tag gemma4_minimal, .venv_vllm_g4). Generation is chunked and resumable, so a
 # timeout only needs a resubmit. The human-opt Gemma arm took 2h08 on 2x A100.

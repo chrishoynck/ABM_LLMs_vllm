@@ -14,10 +14,19 @@ import glob
 import json
 import os
 
+import re
+
 import numpy as np
 import pandas as pd
 
 from utils.metrics import create_embedding, generate_sbert_model
+
+# Emoji + variation selectors. Gemma writes 1.75 emoji into an average 130-char
+# Minimal-band post and none at all from Moderate up, so emoji act as a small shared
+# vocabulary that pulls unrelated personas together and depresses the measured
+# diversity of exactly the low-severity cells (checks/check_band_variance.py).
+# --strip-emoji re-encodes without them so the cosine reflects wording, not decoration.
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]")
 
 
 def find_runs(root: str) -> list[str]:
@@ -32,10 +41,18 @@ def find_runs(root: str) -> list[str]:
     return sorted(glob.glob(pattern, recursive=True))
 
 
-def encode_run(model, posts_csv: str) -> dict:
-    """Encode one posts.csv → embedding array + aligned metadata."""
+def encode_run(model, posts_csv: str, strip_emoji: bool = False) -> dict:
+    """Encode one posts.csv → embedding array + aligned metadata.
+
+    With `strip_emoji`, emoji are removed from each post before encoding; row order,
+    agent_ids, rounds and phq9 are untouched, so the output stays index-compatible
+    with the plain embeddings and any analysis can pair the two.
+    """
     df = pd.read_csv(posts_csv)
-    texts = df["tweet"].fillna("").astype(str).tolist()
+    texts = df["tweet"].fillna("").astype(str)
+    if strip_emoji:
+        texts = texts.map(lambda s: _EMOJI.sub("", s).strip())
+    texts = texts.tolist()
     embs = create_embedding(model, texts).cpu().numpy().astype(np.float32)
     return {
         "embeddings": embs,
@@ -54,6 +71,9 @@ def main():
                         help="Directory containing axis subdirs (default: data/sensitivity).")
     parser.add_argument("--sbert", action="store_true",
                         help="Use SBERT all-MiniLM-L6-v2 (384-dim) instead of MentalBERT (768-dim, default).")
+    parser.add_argument("--strip-emoji", action="store_true",
+                        help="Remove emoji before encoding; writes *_noemoji.npz so the "
+                             "plain embeddings are kept side by side.")
     parser.add_argument("--force", action="store_true",
                         help="Re-encode runs whose embeddings.npz already exists.")
     parser.add_argument("--device", default=None,
@@ -69,7 +89,11 @@ def main():
     # SBERT      -> embeddings_sbert.npz / meta_sbert.json  (content / topic axis)
     emb_name = "embeddings.npz" if mentalbert else "embeddings_sbert.npz"
     meta_name = "meta.json" if mentalbert else "meta_sbert.json"
-    print(f"[embed] encoder = {encoder_name}  ->  {emb_name}")
+    if args.strip_emoji:
+        emb_name = emb_name.replace(".npz", "_noemoji.npz")
+        meta_name = meta_name.replace(".json", "_noemoji.json")
+    print(f"[embed] encoder = {encoder_name}  ->  {emb_name}"
+          + ("  (emoji stripped)" if args.strip_emoji else ""))
 
     posts_csvs = find_runs(args.root)
     if not posts_csvs:
@@ -89,7 +113,7 @@ def main():
             continue
 
         print(f"  ({i:2d}/{len(posts_csvs)}) {csv_path}")
-        data = encode_run(model, csv_path)
+        data = encode_run(model, csv_path, strip_emoji=args.strip_emoji)
         np.savez_compressed(out_npz, **data)
 
         meta = {
@@ -99,6 +123,7 @@ def main():
             "n_agents":       int(len(np.unique(data["agent_ids"]))),
             "n_rounds":       int(len(np.unique(data["rounds"]))),
             "source_csv":     os.path.relpath(csv_path),
+            "strip_emoji":    bool(args.strip_emoji),
         }
         with open(meta_path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)

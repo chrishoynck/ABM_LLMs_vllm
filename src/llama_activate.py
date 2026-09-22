@@ -205,7 +205,7 @@ def generate_parser():
     parser.add_argument("--phq9_mode", type=str, default="llm", choices=["llm", "bert"],
                         help="PHQ-9 scoring backend: 'llm' (default) or 'bert' (BERT+MLP regressor).")
     parser.add_argument("--bert_regressor_path", type=str,
-                        default="data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35/regressor.pt",
+                        default="data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35/regressor.pt",
                         help="Path to a saved regressor.pt for --phq9_mode bert. "
                              "Defaults to the best fine-tuned seed (seed 35, test MAE=2.76).")
     parser.add_argument("--bias_table_path", type=str, default=None,

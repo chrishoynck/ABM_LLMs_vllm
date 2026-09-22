@@ -7,18 +7,42 @@
 - `phq9_minimal_prompt/` — `<band>/rep_1/`, iter_0 prompt (sa_phq9_minimal_run.sh)
 Each run dir: posts.csv + embeddings.npz (MentalBERT) + embeddings_sbert.npz (sa_embed).
 
-## Network Sobol SA — three dirs, three analyses (all KEEP)
-- `network/` — old N=200 degree-6 run → the Sobol figures CURRENTLY in the GABM thesis.
-- `network_n100/` — N=100 degree-6 (Jun 7). Needed: GABM `AppendixD.tex:47` TODO
-  regenerates Figs D.1/D.2 from this + `network_100_3`.
-- `network_100_3/` — N=100 degree-3 (Jun 10), the live `run_sa_network.sh` out-dir.
-- `network_sdc/` — SDC variant (manual invocation, `sa_network.py --net sdc`).
+## Network Sobol SA — two dirs (cleanup 2026-09-22)
+- `network_n100/` — N=100 degree-6 (Jun 7) → GABM Figs D.1/D.2 (`sobol_network.png` =
+  `stability_indices.png`, `sobol_grid.png` = `scatter_grid_averaged.png`). KEEP.
+- `network_sdc/` — SDC variant (manual invocation, `sa_network.py --net sdc`) → GABM
+  Figs D.3/D.4 (`sdc_sobol.png`, `sdc_scatter_grid.png`, byte-identical). KEEP.
+- `network/` — REMOVED 2026-09-22. Old N=200 degree-6 run; it backed Figs D.1/D.2 until
+  they were re-pointed at `network_n100` (the thesis is N=100 throughout).
+- `network_100_3/` — REMOVED 2026-09-22. N=100 degree-3 robustness run; its only thesis
+  use was a D.1 caption clause, which was dropped with it. `run_sa_network.sh` was
+  repointed at `network_n100/` (`--degree 6`) in the same pass, so the live script now
+  reproduces the figures in the thesis. Not rerun since.
 
 ## Plot dirs (naming quirk: they live under data/, not plots/)
 - `plots/` — REMOVED 2026-09-15 (MentalBERT-cosine arm, last written 2026-05-31; no tex referenced it,
   CS thesis `SA_anchors.png` lives in the thesis repo). `sa_analyze.py` without `--emb-name` would recreate it.
 - `plots_sbert/` — SBERT arm (current) → GABM appendix + PNAS paper figures.
 - `plots_phq9/` — `sa_phq9.py` (|Δ predicted PHQ-9|) → GABM appendix only.
+
+### plots_sbert figures REMOVED 2026-09-22
+In every root that has them (`plots_sbert/`, `gemma4/plots_sbert/`,
+`seeded/{qwen,gemma4}/plots_sbert/`). None was referenced by any `.tex`.
+- `phq9_distance_line.png` — collapsed the 5×5 conditioning matrix to one curve;
+  superseded by `agent_phq9_combined.png` (PNAS `SA-PHQ9.png`), which shows the
+  matrix itself. `sa_analyze.phq9_distance_lineplot` deleted with it.
+- `decoding_settings_comparison.png` (diversity box+forest) and
+  `decoding_phq9_separability.png` (band-probe bars) — **figures only**. Both
+  producers still run and still write `decoding_settings_summary.csv` /
+  `decoding_phq9_separability.csv`, which `checks/check_decoding_alignment.py`
+  reads. The surviving decoding figure is `decoding_phq9_linearity.png`
+  (PNAS `decoder_SA.jpg`).
+- `floor_vs_moved.png` — orphan; its producer was already binned in `612f12d`.
+- `variants_decoding/` — 4 ad-hoc colour variants of the diversity figure from a
+  throwaway 2026-09-15 session; never had producing code.
+- `axes_comparison_fixed.png`, `phq9_within_cross_by_band.csv` — stale outputs of
+  older code, no writer anywhere. (`axes_comparison.png` KEPT: the PNAS repo's
+  `figure_scripts/` reach for it.)
 
 ## inputs/
 Local copies of the small generation inputs (see `inputs/NOTES.md`). Drivers
@@ -29,4 +53,4 @@ point here since 2026-08; originals unchanged elsewhere.
   `data/test_post/Qwen_Qwen3.5-27B/...` — used implicitly by every SA generation
   (no driver passes `--neighbor-source-dir`).
 - Regressor for `sa_phq9.py` (DEFAULT_REGRESSOR, sa_phq9.py:80):
-  `data/test_post/bert_regression_finetuned/Qwen3.5-27B_seed35/regressor.pt`.
+  `data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35/regressor.pt`.

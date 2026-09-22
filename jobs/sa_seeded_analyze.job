@@ -1,0 +1,36 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=sa_seeded_an
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=01:30:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Embed + analyse the per-agent-seeded SA trees (after jobs/sa_seeded.job), per model
+# root: MentalBERT and S-BERT embeddings, sa_analyze (S-BERT: PHQ-9 ladder, decoding
+# diversity / linearity, agent_phq9_combined.png -> <root>/plots_sbert/) and sa_phq9
+# (MentalBERT+MLP PHQ-9 drop on the PHQ-9 axis with each generator's own fine-tuned
+# regressor -> <root>/plots_phq9/). Stochastic axes are absent under these roots and skipped.
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+export HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+
+srun python -m utils.sensitivity.sa_embed --root data/sensitivity/seeded --device cuda
+srun python -m utils.sensitivity.sa_embed --root data/sensitivity/seeded --device cuda --sbert
+for TAG in qwen gemma4; do
+    ROOT=data/sensitivity/seeded/${TAG}
+    srun python -m utils.sensitivity.sa_analyze --root ${ROOT} --emb-name embeddings_sbert.npz
+    if [[ "${TAG}" == "gemma4" ]]; then
+        REG=data/assessors/bert/gemma4_optimized/models/gemma-4-31B-it_seed35/regressor.pt
+    else
+        REG=data/assessors/bert/qwen27_optimized/models/Qwen3.5-27B_seed35/regressor.pt
+    fi
+    srun python -m utils.sensitivity.sa_phq9 --root ${ROOT} --out-dir ${ROOT}/plots_phq9 --axes phq9 --regressor ${REG} --device cuda
+done

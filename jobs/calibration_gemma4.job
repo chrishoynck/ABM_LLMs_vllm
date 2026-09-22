@@ -9,7 +9,7 @@
 #SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
 
 # Gemma-4-31B-it counterpart of the Qwen bias-calibration corpus
-# (data/finetune/calibration_posts.csv, 1,400 blocks = 50 per PHQ-9 level),
+# (data/finetune/qwen/calibration_posts_qwen.csv, 1,400 blocks = 50 per PHQ-9 level),
 # so the two generators can be compared on a paired, balanced set (CDS check).
 #
 # Alignment: personas_calibration_1400.csv holds the Qwen calibration

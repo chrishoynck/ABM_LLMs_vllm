@@ -1,0 +1,28 @@
+{
+  "arm": "qwen27_optimized",
+  "generator": "Qwen/Qwen3.5-27B",
+  "generator_label": "Qwen3.5-27B",
+  "generation_prompt": "optimized",
+  "generation_prompt_file": "data/prompt_optimization_h/qwen27_baseline/iter_10/prompt.txt",
+  "train_posts": "data/finetune/qwen/train_posts_qwen.csv",
+  "finetuned_from": "teacher",
+  "model_short": "Qwen3.5-27B",
+  "note": "Deployed in the simulation: seed 35 is llama_activate.py's default regressor.",
+  "legacy_dir": "data/test_post/bert_regression_finetuned",
+  "backfilled": "2026-09-21 (run predates meta.json)",
+  "seeds": [
+    34,
+    35,
+    36,
+    37,
+    38
+  ],
+  "learning_rate": 2e-05,
+  "epochs": 30,
+  "trained": "2026-05-31",
+  "decoding": {
+    "temp": 0.7,
+    "top_p": 0.9
+  },
+  "test_posts": "data/finetune/qwen/test_posts_qwen.csv"
+}

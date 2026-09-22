@@ -1,0 +1,14 @@
+{
+  "posts_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/prompt_optimization_h/qwen27_baseline/iter_10/test_posts.csv",
+  "grader_model": "Qwen/Qwen3.5-27B",
+  "rubric_md5": "735ff0170f4095ccc6d8c54afc6fdf9c",
+  "rubric_criteria": 5,
+  "enable_prefix_caching": false,
+  "tensor_parallel_size": 2,
+  "vllm_version": "0.17.1",
+  "temperature": 0.2,
+  "top_p": 0.99,
+  "llm_seed": null,
+  "python": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/.venv_vllm/bin/python",
+  "timestamp": "2026-09-22T14:39:50"
+}

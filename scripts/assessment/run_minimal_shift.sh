@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Score the minimal and the optimized PHQ-9 prompt on the same test sets, for figure 2
 # (BERT vs prompt under distribution shift): the per-seed synthetic split and the
-# 300-block human-opt set data/finetune/test_posts.csv (the blocks BERT's eval_baseline
+# 300-block human-opt set data/finetune/qwen/test_posts_qwen.csv (the blocks BERT's eval_baseline
 # uses). Results go to separate subdirs (--result-subdir), so nothing is overwritten.
 # Student model only, no teacher. GPU session: bash scripts/assessment/run_minimal_shift.sh
 set -euo pipefail
@@ -14,7 +14,7 @@ MODEL="Qwen/Qwen3.5-27B"
 MODEL_SHORT="Qwen3.5-27B"
 PROMPT_SEEDS="${PROMPT_SEEDS:-23 24 25 32 33}"   # same seeds the optimized group uses
 MINIMAL_PROMPTS_JSON="data/prompts_post_minimal.json"
-SHIFTED_POSTS="data/finetune/test_posts.csv"     # 300-block human-opt set (== BERT eval_baseline blocks)
+SHIFTED_POSTS="data/finetune/qwen/test_posts_qwen.csv"     # 300-block human-opt set (== BERT eval_baseline blocks)
 
 OPT_DIR="data/test_post/optimized_phq9"
 SYNTH_SUBDIR="minimal_synth"        # must match _EVAL_MINIMAL_SYNTH_SUBDIR in utils/visualization.py
@@ -68,12 +68,11 @@ PYTHONPATH=src "${PYTHON}" -m utils.prompt_optimizer --mode phq9-rerun-test \
     --posts-file "${SHIFTED_POSTS}" \
     --result-subdir "${OPT_HUMAN_SUBDIR}"
 
-# === 3. Regenerate the comparison figures (now with the Minimal prompt group) =
+# === 3. Reprint the comparison table (now with the Minimal prompt group) ======
 # (CPU-only, just reads the per-sample CSVs. Mirrors run_eval_comparison.sh
 #  defaults but uses ${PYTHON} so it works without activating the venv.)
-echo "[3] rebuilding comparison figures"
+echo "[3] reprinting comparison table"
 PYTHONPATH=src "${PYTHON}" -m utils.visualization eval-comparison \
-    --out-dir data/test_post/method_comparison \
     --prompt-dir "${OPT_DIR}" \
     --prompt-seeds ${PROMPT_SEEDS}
 
@@ -84,4 +83,4 @@ for s in ${PROMPT_SEEDS}; do
   echo "  ${OPT_DIR}/${MODEL_SHORT}_seed${s}/${HUMAN_SUBDIR}/test_raw_scores.csv     (minimal, human-opt 300)"
   echo "  ${OPT_DIR}/${MODEL_SHORT}_seed${s}/${OPT_HUMAN_SUBDIR}/test_raw_scores.csv      (optimized, human-opt 300)"
 done
-echo "Figure: data/test_post/method_comparison/fig2_bert_vs_prompt_robustness.png"
+echo "Comparison table printed in step 3 above."

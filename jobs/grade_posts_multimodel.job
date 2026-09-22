@@ -23,7 +23,7 @@ OUT=data/test_post/teacher_grades
 srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
 
 srun python -m utils.prompt_optimizer --mode grade-posts \
-    --posts-file data/finetune/test_posts.csv --out-csv "${OUT}/grades_qwen300.csv"
+    --posts-file data/finetune/qwen/test_posts_qwen.csv --out-csv "${OUT}/grades_qwen300.csv"
 srun python -m utils.prompt_optimizer --mode grade-posts \
     --posts-file data/finetune/gemma4/test_posts_gemma4.csv --out-csv "${OUT}/grades_gemma4300.csv"
 

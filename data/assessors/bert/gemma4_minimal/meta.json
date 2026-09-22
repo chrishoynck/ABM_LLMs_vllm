@@ -1,0 +1,29 @@
+{
+  "arm": "gemma4_minimal",
+  "generator": "google/gemma-4-31B-it",
+  "generator_label": "Gemma-4-31B-it",
+  "generation_prompt": "minimal",
+  "generation_prompt_file": "data/prompt_optimization_h/qwen27_baseline/iter_0/prompt.txt",
+  "train_posts": "data/finetune/gemma4_minimal/train_posts_gemma4_minimal.csv",
+  "finetuned_from": "teacher",
+  "model_short": "gemma-4-31B-it",
+  "note": "Minimal-prompt arm (slurm 26885535).",
+  "legacy_dir": "data/test_post/bert_regression_finetuned_gemma4_minimal",
+  "backfilled": "2026-09-21 (run predates meta.json)",
+  "seeds": [
+    34,
+    35,
+    36,
+    37,
+    38
+  ],
+  "learning_rate": 2e-05,
+  "epochs": 30,
+  "trained": "2026-09-18",
+  "slurm": "26885535",
+  "decoding": {
+    "temp": 1.0,
+    "top_p": 0.975
+  },
+  "test_posts": "data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv"
+}

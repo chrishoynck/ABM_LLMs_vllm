@@ -9,7 +9,7 @@ relative to the code-repo root. Doc index: [../README.md](../README.md).
 |---|---|---|---|
 | Methods §Simulation; App. A (simulation-step Alg.) | `src/classes/{network,agent}.py`, `src/llama_activate.py` | `sbatch jobs/run_simulation_sda.job` / `run_simulation_sdc.job` (2×A100, 9h) | bias table, personas; outputs `data/networks_post/…` (`net.json` checkpoints) |
 | Methods §Network (SDA eq., SDC stub matching) | `src/classes/network.py` (social space, bisection on `b`, power-law fit, stub matcher) | — (part of simulation) | — |
-| App. E §Sobol Sensitivity + §Parameter Search | `src/utils/sensitivity/sa_network.py` | `bash scripts/sensitivity/run_sa_network.sh` (CPU) | `data/confidential/phq9.sav`; outputs `data/sensitivity/network_100_3/` |
+| App. E §Sobol Sensitivity + §Parameter Search | `src/utils/sensitivity/sa_network.py` | `bash scripts/sensitivity/run_sa_network.sh` (CPU) | `data/confidential/phq9.sav`; outputs `data/sensitivity/network_n100/` |
 | Exp. §Network Statistics (`network_target_ranges{,_sdc}.png`) | `src/utils/sensitivity/plot_network_targets{,_sdc}.py` | hand-run — see `../src/README.md` ("Hand-run CLIs") | saved simulation runs |
 | Metrics §Semantic Drift + Results §Lexical Entrainment (global) | `src/utils/analyses/lexical_entrainment/global/plot_lexical_entrainment.py` | `sbatch jobs/run_lexical_entrainment.job` | `data/networks_post/` tweets; outputs `plots/lexical_entrainment/` |
 | App. C §Local Language Entrainment + §CDS detection | `src/utils/analyses/lexical_entrainment/local/cds_entrainment.py`, `src/utils/metrics.py` | hand-run — see `../src/README.md` | `data/distorted_language_ngrams.tsv`; outputs `plots/lexical_entrainment/local/` |

@@ -175,7 +175,7 @@ class TestLLMs:
         # seed (self.seed + round), so agents with similar prompts walk the same
         # random stream and repeat each other. With per_agent_seed each request
         # gets seed = SeedSequence([self.seed, agent.ID, round]): reproducible
-        # across runs, independent across agents (checks/check_seeding.job).
+        # across runs, independent across agents (checks/README.md, "Retired checks").
         self.per_agent_seed = bool(per_agent_seed)
         # Tweet-generation sampling. Defaults to the optimizer student values
         # (0.7 / 0.9) so every existing caller is byte-identical; the decoding

@@ -1,0 +1,9 @@
+generator,prompt,step,cosine,std,n_reps,n_posts
+Gemma-4-31B-it,phq9,Minimal → Mild,0.30908936640678847,0.006652523632084817,3,600
+Gemma-4-31B-it,phq9,Mild → Moderate,0.20790080049219029,0.006034340267191113,3,600
+Gemma-4-31B-it,phq9,Moderate → Mod. Severe,0.27288054248479954,0.0076292777881001505,3,600
+Gemma-4-31B-it,phq9,Mod. Severe → Severe,0.3198234815138249,0.00805263017029846,3,600
+Gemma-4-31B-it,phq9_minimal_prompt,Minimal → Mild,0.33755211115924594,0.0,1,600
+Gemma-4-31B-it,phq9_minimal_prompt,Mild → Moderate,0.31312518526645083,0.0,1,600
+Gemma-4-31B-it,phq9_minimal_prompt,Moderate → Mod. Severe,0.34811231972077433,0.0,1,600
+Gemma-4-31B-it,phq9_minimal_prompt,Mod. Severe → Severe,0.3636844911903049,0.0,1,600

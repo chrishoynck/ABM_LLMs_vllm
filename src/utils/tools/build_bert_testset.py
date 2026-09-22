@@ -71,14 +71,14 @@ def main() -> None:
     ap.add_argument("--cache", default="data/test/Qwen/Qwen3.5-27B/mentalbert_embeddings/embeddings_and_labels.pt",
                     help="Embeddings cache the regressor was trained from (provides agent_ids + the file::agent keys).")
     ap.add_argument("--out", default=None,
-                    help="Output tweets_with_phq9 CSV. Default: data/test_post/bert_regression/test_blocks_seed<seed>.csv")
+                    help="Output tweets_with_phq9 CSV. Default: data/assessors/bert/teacher/test_blocks_seed<seed>.csv")
     ap.add_argument("--train-frac", type=float, default=0.8)
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--expect-n", type=int, default=None,
                     help="Optional: assert the rebuilt block count equals this (the regressor's recorded n_test).")
     args = ap.parse_args()
 
-    out = args.out or f"data/test_post/bert_regression/test_blocks_seed{args.seed}.csv"
+    out = args.out or f"data/assessors/bert/teacher/test_blocks_seed{args.seed}.csv"
 
     print(f"[testset] loading agent_ids from {args.cache}")
     cache = torch.load(args.cache, map_location="cpu")
