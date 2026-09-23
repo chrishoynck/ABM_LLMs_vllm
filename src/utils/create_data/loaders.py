@@ -323,6 +323,60 @@ def load_persona_phq9_stratified(path: str, n_rows: int, sample_seed: int,
     return personas, phq9, chosen_idx
 
 
+def build_holdout_persona_set(path: str, n_rows: int, exclude_idx, sample_seed: int,
+                              bands=((0, 4), (5, 9), (10, 14), (15, 19), (20, 27)),
+                              ) -> pd.DataFrame:
+    """Draw a held-out persona set disjoint from rows already used elsewhere.
+
+    Rows in `exclude_idx` (positional indices into `path`) are dropped, then
+    `n_rows` personas are sampled stratified by PHQ-9 severity band with
+    largest-remainder allocation, so the band mix of the draw matches the pool's
+    instead of whatever a plain `rng.choice` happens to give. That matters at
+    small `n_rows`: post quality is scored per band, so an unrepresentative mix
+    shifts the level of everything measured on the set.
+
+    Args:
+        path (str): (persona, phq9) CSV to draw from.
+        n_rows (int): personas to keep.
+        exclude_idx (Iterable[int]): positional indices that must not be drawn.
+        sample_seed (int): RNG seed of the draw.
+        bands (tuple): inclusive (lo, hi) PHQ-9 bounds defining the strata.
+
+    Returns:
+        The sampled rows as a DataFrame, in pool order, with the pool's columns.
+    """
+    df = pd.read_csv(path)
+    excluded = set(int(i) for i in exclude_idx)
+    eligible = np.array([i for i in range(len(df)) if i not in excluded])
+    if len(eligible) < n_rows:
+        raise ValueError(
+            f"{path} has {len(eligible)} rows left after excluding {len(excluded)}, "
+            f"but {n_rows} requested."
+        )
+
+    phq9 = df["phq9"].to_numpy()
+    shares = np.array([((phq9 >= lo) & (phq9 <= hi)).sum() / len(df) for lo, hi in bands])
+    exact = shares * n_rows
+    take = np.floor(exact).astype(int)
+    for b in np.argsort(-(exact - take))[:n_rows - take.sum()]:
+        take[b] += 1
+
+    rng = np.random.default_rng(sample_seed)
+    pick = []
+    for (lo, hi), n, share in zip(bands, take, shares):
+        in_band = eligible[(phq9[eligible] >= lo) & (phq9[eligible] <= hi)]
+        if len(in_band) < n:
+            raise ValueError(f"band {lo}-{hi}: {len(in_band)} eligible rows, {n} needed")
+        print(f"  band {lo:>2}-{hi:<2}: pool share {share:.3f} -> {n} of {len(in_band)} eligible")
+        pick += rng.choice(in_band, size=n, replace=False).tolist()
+
+    out = df.iloc[sorted(pick)].reset_index(drop=True)
+    print(f"[holdout] {n_rows} of {len(eligible)} eligible rows "
+          f"({len(excluded)} excluded); PHQ-9 mean {out['phq9'].mean():.2f} "
+          f"vs pool {df['phq9'].mean():.2f}")
+    return out
+
+
 def load_well_being_zeros(num_agents: int, seed: int) -> list:
     """Load PHQ-9 well-being dicts and zero each `phq9_sumscore`.
 

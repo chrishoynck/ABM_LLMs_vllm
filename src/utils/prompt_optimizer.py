@@ -1537,16 +1537,32 @@ def _batch_teacher_rate(teacher_engine, rating_prompts: list, max_tokens: int = 
         sp = SamplingParams(temperature=0.2, max_tokens=max_tokens, top_p=0.99, n=1)
         raw_results = teacher_engine.base.client.generate(all_inputs, sp)
         outputs = []
+        n_truncated = 0
         for raw in raw_results:
             out = raw.outputs[0]
             if getattr(out, "reasoning_content", None):
                 text = out.text
             else:
-                stripped = Agent.strip_model_thinking(out.text)
-                text = _extract_score_feedback(stripped) or _extract_score_feedback(out.text)
+                raw_text = out.text or ""
+                # Missing </think> means thinking was truncated mid-stream, so there is no
+                # answer yet. The old code fell back to _extract_score_feedback(out.text),
+                # which scans the THINKING dump and returns a mid-deliberation draft score as
+                # if it were final. That is silent and biased: it fires on the blocks the
+                # teacher deliberates longest over. Mirror _TeacherEngine.generate (:296-303)
+                # and discard instead, so the block shows up as unparsed rather than as a
+                # confident wrong number.
+                if "</think>" not in raw_text:
+                    n_truncated += 1
+                    outputs.append("")
+                    continue
+                answer = raw_text.rsplit("</think>", 1)[1].strip()
+                text = _extract_score_feedback(answer)
                 if not text:
                     print("  [teacher batch] SCORE/FEEDBACK not found — discarding feedback")
             outputs.append(text)
+        if n_truncated:
+            print(f"  [teacher batch] {n_truncated}/{len(raw_results)} responses truncated "
+                  f"mid-thinking at max_tokens={max_tokens} — raise the budget")
         return outputs
     return [teacher_engine.generate(p, max_tokens=max_tokens) for p in rating_prompts]
 
@@ -2226,9 +2242,22 @@ def _write_grade_meta(out_csv, posts_file, model_name, enable_prefix_caching, tp
     commit bc8b1ab (2026-05-30), `enable_prefix_caching` flipped True -> False, and vLLM went
     0.12.0 -> 0.17.1 while requirements_vllm.txt still pinned 0.12.0. `rubric_md5` is over the
     rendered rating prompt, so a rubric edit changes it whether or not it was committed.
+
+    `rubric_md5` is the field that matters most, because commit dates do not identify the
+    rubric that ran. The 2026-05-28/29 gradings used the 6-criteria rubric while it was still
+    UNCOMMITTED in the working tree; it landed as bc8b1ab only the next morning, and the
+    previous commit (cbd4216) is dated eight days before the runs. Regrading against
+    "the last commit before the rewrite" therefore compares two different rubrics and
+    manufactures an apparent era shift of up to a point. Match on `rubric_md5`, never on
+    commit date. OLD 5-criteria = 735ff017, NEW 6-criteria = 204a73c8.
+
+    `session` records which SLURM job and process produced a number. Job-to-job spread on an
+    identical config is small (about 0.03 to 0.12) but it is not zero, so it is worth knowing
+    whether two arms came from one run.
     """
     import hashlib
     import json
+    import socket
     try:
         import vllm
         vllm_version = getattr(vllm, "__version__", "unknown")
@@ -2247,6 +2276,14 @@ def _write_grade_meta(out_csv, posts_file, model_name, enable_prefix_caching, tp
         "vllm_version": vllm_version,
         "temperature": 0.2, "top_p": 0.99, "llm_seed": vllm_kwargs.get("seed"),
         "python": os.sys.executable,
+        # Grading-session identity. Same slurm_job_id AND same pid = same engine, same batch
+        # regime, directly comparable. Anything else is a cross-session comparison.
+        "session": {
+            "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+            "slurm_step_id": os.environ.get("SLURM_STEP_ID"),
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+        },
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     with open(out_csv + ".meta.json", "w") as fh:
@@ -2457,8 +2494,15 @@ def rerun_test_tweets(
     # Reproducibility log, paths, seeds, pool sizes, sampled indices, summary.
     meta_path = os.path.join(iter_dir, "eval_meta.txt")
     with open(meta_path, "w", encoding="utf-8") as fh:
+        import socket
         fh.write(
             f"timestamp:           {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+            # Grading-session identity: arms sharing slurm_job_id AND pid were graded by the
+            # same engine in one batch regime and are directly comparable. Arms from
+            # different sessions are not. The paper's +0.697 gap was a session offset that
+            # went unnoticed because these three lines did not exist in May 2026.
+            f"grading_job:         {os.environ.get('SLURM_JOB_ID', '<none>')}\n"
+            f"grading_host_pid:    {socket.gethostname()}/{os.getpid()}\n"
             f"model:               {model_name}\n"
             f"seed:                {seed}\n"
             f"sample_seed:         {sample_seed}\n"
@@ -2556,6 +2600,167 @@ def split_embeddings_and_labels(rng, embeddings, labels, agent_ids=None,
     test_labels = labels[test_idx]
 
     return train_embs, val_embs, test_embs, train_labels, val_labels, test_labels
+
+
+def _holdout_exclusions(iter_root: str, persona_phq9_file: str) -> set:
+    """Pool rows a human-in-the-loop run has already shown itself, read off disk.
+
+    Two sources, both exact, so no sampling rule has to be re-derived:
+    the personas appearing in each `iter_<N>/posts.csv` (the working batch the
+    reviewer read) and the `sampled_row_idx` list recorded in each
+    `iter_<N>/eval_meta.txt` (the held-out test draw).
+
+    Args:
+        iter_root (str): run folder holding `iter_<N>/` subfolders.
+        persona_phq9_file (str): the pool those indices refer to.
+
+    Returns:
+        Positional indices into `persona_phq9_file` that must not be drawn again.
+    """
+    pool = pd.read_csv(persona_phq9_file)
+    row_of = {persona: i for i, persona in enumerate(pool["persona"])}
+
+    used = set()
+    for posts_path in sorted(glob.glob(os.path.join(iter_root, "iter_*", "posts.csv"))):
+        seen = set(pd.read_csv(posts_path)["persona"])
+        matched = {row_of[p] for p in seen if p in row_of}
+        if len(matched) != len(seen):
+            print(f"  [warn] {posts_path}: {len(seen) - len(matched)} persona(s) not in pool")
+        used |= matched
+    for meta_path in sorted(glob.glob(os.path.join(iter_root, "iter_*", "eval_meta.txt"))):
+        m = re.search(r"sampled_row_idx:\s*\[(.*?)\]", open(meta_path).read(), re.S)
+        if m:
+            used |= {int(x) for x in m.group(1).split(",")}
+    print(f"[holdout] {len(used)} pool rows already used by {iter_root}")
+    return used
+
+
+def val_sweep_tweets(iter_root: str, persona_phq9_file: str, num_agents: int = 20,
+                     sample_seed: int = 20260922,
+                     neighbor_pool_roots: list[str] | None = None,
+                     model_name: str = QWEN_27, seed: int = 42,
+                     tweets_per_sample: int = 3, max_chars: int = 240,
+                     max_model_len: int = 16384, **vllm_kwargs):
+    """Score every iteration of a human-in-the-loop run on one fixed held-out set.
+
+    The human loop judges each iteration on the working batch it just read and
+    keeps no validation split, so it has no per-step curve comparable to the
+    TextGrad runs. This gives it one: every `iter_<N>/prompt.txt` writes
+    `tweets_per_sample` posts for the same `num_agents` personas and the teacher
+    rates each post set, exactly the validation `call_optimizer_tweets` runs each
+    step. The persona set is drawn once (disjoint from everything the run has
+    already used, see `_holdout_exclusions`) and cached next to the results.
+
+    One engine load and one teacher session cover every iteration, so the whole
+    curve is measured on a single instrument.
+
+    An `iter_<N>/` without a `prompt.txt` is skipped: the prompt is gone, not
+    recoverable from the posts it produced.
+
+    Args:
+        iter_root (str): run folder holding `iter_<N>/prompt.txt`.
+        persona_phq9_file (str): (persona, phq9) pool to draw the held-out set from.
+        num_agents (int): personas in the held-out set.
+        sample_seed (int): RNG seed of that draw.
+        neighbor_pool_roots (list[str] | None): folders with neighbour posts.
+        model_name (str): student and teacher model id.
+        seed (int): neighbour/context sampling seed, reset per iteration so every
+            prompt meets the same context and only the instruction differs.
+        tweets_per_sample (int): posts per persona.
+        max_chars (int): per-post character budget in the prompt.
+        max_model_len (int): vLLM context budget.
+        **vllm_kwargs: forwarded to ChatVLLM (e.g. seed).
+
+    Writes `<iter_root>/val<num_agents>/`: `personas.csv`, `trajectory.csv`
+    (one row per iteration) and per-iteration `iter_<N>_posts.csv` and
+    `iter_<N>_scores.csv`.
+    """
+    # Imported here, not at module scope: utils.create_data pulls in the vLLM
+    # loaders, and only this entry point needs them.
+    from .create_data.loaders import build_aligned_context, build_holdout_persona_set
+
+    iters = []
+    for d in sorted(glob.glob(os.path.join(iter_root, "iter_*")), key=lambda p: int(p.rsplit("_", 1)[-1])):
+        n = int(d.rsplit("_", 1)[-1])
+        if os.path.isfile(os.path.join(d, "prompt.txt")):
+            iters.append(n)
+        else:
+            print(f"[val-sweep] skipping iter_{n}: no prompt.txt")
+    if not iters:
+        raise FileNotFoundError(f"no iter_<N>/prompt.txt under {iter_root}")
+
+    out_dir = os.path.join(iter_root, f"val{num_agents}")
+    os.makedirs(out_dir, exist_ok=True)
+    persona_csv = os.path.join(out_dir, "personas.csv")
+    if not os.path.isfile(persona_csv):
+        build_holdout_persona_set(
+            persona_phq9_file, num_agents,
+            _holdout_exclusions(iter_root, persona_phq9_file), sample_seed,
+        ).to_csv(persona_csv, index=False)
+        print(f"[val-sweep] wrote {persona_csv}")
+
+    df_val = pd.read_csv(persona_csv)
+    personas = df_val["persona"].tolist()
+    answers = df_val["phq9"].astype(int).tolist()
+    agent_ids = [str(i) for i in range(len(df_val))]
+    blocks = [[] for _ in personas]          # cold start: no post history
+    print(f"[val-sweep] {len(personas)} held-out personas, iterations {iters}")
+
+    if not neighbor_pool_roots:
+        neighbor_pool_roots = [
+            "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_inter",
+            "data/test_post/Qwen_Qwen3.5-27B/temp_0.8_top_p_0.6_cp_10_no_inter",
+        ]
+    all_tweets_flat: list[tuple[str, str]] = []
+    for root in neighbor_pool_roots:
+        for nb_path in sorted(glob.glob(os.path.join(root, "seed_*", "tweets_with_phq9.csv"))):
+            nb_blocks, _, _, nb_ids = parse_tweets_with_phq9_csv(nb_path)
+            for block, aid in zip(nb_blocks, nb_ids):
+                all_tweets_flat += [(t, aid) for t in block
+                                    if t and t not in ("NO_POST", "NO_TWEET")]
+    print(f"[val-sweep] neighbour pool: {len(all_tweets_flat)} posts")
+
+    tp = vllm_kwargs.pop("tensor_parallel_size", None) or len(
+        (os.environ.get("CUDA_VISIBLE_DEVICES") or "0").split(",")
+    )
+    student_engine, teacher_engine = _build_engines(
+        model_name, tp, 0.90, max_model_len=max_model_len,
+        enable_prefix_caching=False, **vllm_kwargs,
+    )
+
+    rows = []
+    for n in iters:
+        instruction, format_block, prompts = build_aligned_context(
+            os.path.join(iter_root, f"iter_{n}", "prompt.txt"), max_chars=max_chars,
+        )
+        print(f"\n{'='*66}\n[val-sweep] iter_{n}: {len(instruction.split())} words\n{'='*66}")
+        out_parsed, out_scores = [], []
+        mean, std, _ = _evaluate_tweet_instruction(
+            student_engine, teacher_engine, instruction, prompts,
+            blocks, answers, personas, all_tweets_flat,
+            np.random.default_rng(seed), format_block=format_block,
+            tweets_per_sample=tweets_per_sample, agent_ids=agent_ids,
+            out_parsed=out_parsed, out_scores=out_scores,
+        )
+        scored = [s for s in out_scores if s is not None]
+        print(f"[val-sweep] iter_{n}: mean {mean:.3f} +/- {std:.3f} "
+              f"over {len(scored)}/{len(personas)} blocks")
+        rows.append({"iter": n, "mean_score": round(mean, 4),
+                     "std_score": round(std, 4), "n_scored": len(scored)})
+
+        with open(os.path.join(out_dir, f"iter_{n}_posts.csv"), "w", newline="",
+                  encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["agent_id", "persona", "phq9", "step", "tweet"])
+            for aid, persona, phq9, posts in zip(agent_ids, personas, answers, out_parsed):
+                for step, tweet in enumerate(posts):
+                    writer.writerow([aid, persona, phq9, step, tweet])
+        pd.DataFrame({"agent_id": agent_ids, "phq9": answers, "score": out_scores}).to_csv(
+            os.path.join(out_dir, f"iter_{n}_scores.csv"), index=False)
+
+    traj = os.path.join(out_dir, "trajectory.csv")
+    pd.DataFrame(rows).sort_values("iter").to_csv(traj, index=False)
+    print(f"\n[val-sweep] wrote {traj}")
 
 
 def setup_BERT_model(tweet_blocks, model, device):
@@ -3259,7 +3464,8 @@ if __name__ == "__main__":
                         help="HuggingFace model id (e.g. Qwen/Qwen3.5-27B)")
     parser.add_argument("--mode", type=str, default="tweets",
                         choices=["tweets", "phq9", "phq9-rerun-test",
-                                 "tweets-rerun-test", "grade-posts", "bert", "bert-cv", "bert-eval"],
+                                 "tweets-rerun-test", "tweets-val-sweep", "grade-posts",
+                                 "bert", "bert-cv", "bert-eval"],
                         help="Which entry point to run: tweets, phq9, phq9-rerun-test "
                              "(re-test saved best instruction without retraining), "
                              "tweets-rerun-test (score a saved tweet instruction by "
@@ -3268,6 +3474,9 @@ if __name__ == "__main__":
                              "(one-shot partition-variance diagnostic for the BERT regressor), "
                              "or bert-eval (score trained regressor(s) on a single "
                              "tweets_with_phq9 CSV; see --posts-file + --seeds), "
+                             "tweets-val-sweep (score EVERY iter_<N>/prompt.txt of a "
+                             "human-in-the-loop run on one fixed held-out persona set; "
+                             "see --iter-root + --persona-phq9-file + --num-agents), "
                              "grade-posts (teacher-grade every block of an existing posts "
                              "CSV; see --posts-file + --out-csv).")
     parser.add_argument("--instruction-filename", type=str, default="optimized_instruction.txt",
@@ -3316,7 +3525,14 @@ if __name__ == "__main__":
                         help="(--mode tweets-rerun-test only) (persona, phq9) CSV — fresh "
                              "agent-PHQ-9 pairs are sampled from here with --sample-seed.")
     parser.add_argument("--num-agents", type=int, default=7,
-                        help="(--mode tweets-rerun-test only) agents drawn from the persona-phq9 file.")
+                        help="(--mode tweets-rerun-test / tweets-val-sweep) agents drawn "
+                             "from the persona-phq9 file. The sweep names its output dir "
+                             "after it (val<N>/) and caches the draw there.")
+    parser.add_argument("--iter-root", type=str, default=None,
+                        help="(--mode tweets-val-sweep only) human-in-the-loop run folder "
+                             "holding iter_<N>/prompt.txt, e.g. "
+                             "data/prompt_optimization_h/qwen27_baseline. An iteration "
+                             "whose prompt.txt is missing is skipped.")
     parser.add_argument("--sample-seed", type=int, default=None,
                         help="(--mode tweets-rerun-test only) RNG seed for agent sampling. "
                              "Defaults to N parsed from the prompt-file's iter_<N>/ parent dir, "
@@ -3445,6 +3661,26 @@ if __name__ == "__main__":
                 persona_phq9_file=args.persona_phq9_file,
                 num_agents=args.num_agents,
                 sample_seed=args.sample_seed,
+                neighbor_pool_roots=args.neighbor_pool_root,
+                model_name=model_name,
+                seed=seed,
+                tweets_per_sample=args.tweets_per_sample,
+                **vllm_extra,
+            )
+    elif run_mode == "tweets-val-sweep":
+        if not args.iter_root:
+            raise SystemExit("--mode tweets-val-sweep requires --iter-root")
+        if not args.persona_phq9_file:
+            raise SystemExit("--mode tweets-val-sweep requires --persona-phq9-file")
+        vllm_extra = {"seed": args.llm_seed} if args.llm_seed is not None else {}
+        for seed in args.seeds:
+            print(f"\n{'='*60}\nValidation sweep over {args.iter_root} "
+                  f"(seed={seed})\n{'='*60}")
+            val_sweep_tweets(
+                iter_root=args.iter_root,
+                persona_phq9_file=args.persona_phq9_file,
+                num_agents=args.num_agents,
+                sample_seed=args.sample_seed if args.sample_seed is not None else 20260922,
                 neighbor_pool_roots=args.neighbor_pool_root,
                 model_name=model_name,
                 seed=seed,

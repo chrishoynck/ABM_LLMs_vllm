@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=humanopt_val20
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=02:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# The validation curve the human-in-the-loop generation run never had.
+#
+# That loop judged each iteration on its own 7-agent working batch (hand-scored
+# in feedback.md, iters 0-7 only) and ran the 100-persona teacher eval at just
+# iters 0, 7, 8, 9 and 10, so the human arm has no per-step curve to put beside
+# the TextGrad one. `tweets-val-sweep` scores EVERY surviving iteration prompt
+# on one fixed held-out set of 20 personas, 3 posts per persona rated as a set,
+# which is the validation call_optimizer_tweets runs every step (20 blocks).
+#
+# The persona set is drawn once into val20/personas.csv, disjoint from the 100
+# test personas AND from every working batch (166 pool rows excluded, read off
+# disk). One engine load covers all iterations and ONE teacher session grades
+# them, so the contrasts are within-session -- the thing the +0.70 post-mortem
+# showed the May numbers did not have.
+#
+# Graded under both rubrics. 'new' is HEAD's 6-criteria prompt and is the one
+# that MATCHES the May gradings (the bc8b1ab rewrite was uncommitted in the
+# working tree while they ran). 'old' is the pre-bc8b1ab prompt, kept as a
+# sensitivity check only -- it sits ~1 point higher and matches nothing.
+#
+# iter_1 is skipped: its prompt.txt was never saved.
+#
+#   sbatch jobs/humanopt_val20.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+
+srun .venv_vllm/bin/python -m utils.prompt_optimizer \
+    --mode tweets-val-sweep \
+    --iter-root data/prompt_optimization_h/qwen27_baseline \
+    --persona-phq9-file data/personas_eval_1000_phq9.csv \
+    --num-agents 20 \
+    --rubrics new old \
+    --seeds 42 \
+    --model Qwen/Qwen3.5-27B
