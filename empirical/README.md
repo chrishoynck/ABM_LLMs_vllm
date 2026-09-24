@@ -13,9 +13,20 @@ results live outside the repo, in `~/data/social_twitter/`.
 | `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias |
 | `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b); PNG + CSV of the plotted numbers to `results/figures/` |
 
-Run: set `-A <allocation>` in the job, then `sbatch empirical/run_empirical.job` from the
-repo root, then the notebook. A resubmit reuses the embeddings; pass `--force` to
-`embed.py` to re-encode.
+One-time environment on Big Red: the python module already has pandas, scikit-learn,
+networkx, umap and matplotlib, so a small venv on top of it only adds CPU torch and
+sentence-transformers:
+
+```bash
+module load python
+python3 -m venv --system-site-packages ~/venvs/empirical
+source ~/venvs/empirical/bin/activate
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install sentence-transformers
+```
+
+Run: `sbatch empirical/run_empirical.job` from the repo root, then the notebook (same
+venv). A resubmit reuses the embeddings; pass `--force` to `embed.py` to re-encode.
 
 If compute nodes can't reach Hugging Face, fetch both encoders once on a login node:
 
