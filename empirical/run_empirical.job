@@ -1,55 +1,45 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_a100
-#SBATCH --gpus=1
-#SBATCH --job-name=empirical
+#SBATCH -A <allocation>
+#SBATCH --partition=general
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=9
-#SBATCH --time=01:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
+#SBATCH --time=00:30:00
+#SBATCH --job-name=empirical
 #SBATCH --output=slurm_empirical_%A.out
 
-# Empirical Twitter + PHQ-9 analyses. Submit from the repo root:
+# Empirical Twitter + PHQ-9 analyses on Big Red 200. Submit from the repo root:
 #   sbatch empirical/run_empirical.job
-# Inputs (built from the MariaDB pull, see empirical/README.md) go in DATA_DIR;
-# everything lands under data/confidential/, which is gitignored.
-#   1. S-BERT embedding of every tweet
+# CPU only: ~3k tweets through MentalBERT take minutes on 16 cores, and the queue for
+# a CPU node is shorter than for a GPU. The tweets are encoded ONCE (step 1 skips
+# encoders whose .npz exists), so a resubmit only reruns the cheap steps 2-4.
+# Data, embeddings and results all stay in DATA_DIR, outside the repo.
+#   1. S-BERT + MentalBERT embedding of every tweet
 #   2. demographically matched severity ladder (adjacent-band cosine)
-#   3. every MentalBERT+MLP assessor arm x seed scored on the users
+#   3. every MentalBERT+MLP assessor (arm x seed) scored from the saved embeddings
 #   4. per-band bias / MAE table over arms
 
 set -euo pipefail
-module purge
 cd "${SLURM_SUBMIT_DIR}"
 source .venv_vllm/bin/activate
-# Offline mode needs all-MiniLM-L6-v2 and mental/mental-bert-base-uncased in the cache.
-# export HF_HUB_CACHE=<your cache>
-export HF_HUB_OFFLINE=1
 export PYTHONUNBUFFERED=1
 export PYTHONPATH=src
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+# If compute nodes have no internet, download the two encoders once on a login node
+# (see empirical/README.md) and uncomment:
+# export HF_HUB_OFFLINE=1
 
-DATA_DIR=data/confidential/empirical
+DATA_DIR=$HOME/data/social_twitter
 TWEETS=${DATA_DIR}/260923_tweets_phq.csv
 USERS=${DATA_DIR}/260923_users.csv
+EMB=${DATA_DIR}/embeddings
 OUT=${DATA_DIR}/results
-SEEDS="34 35 36 37 38"
 
-# 1. embeddings
-python empirical/embed.py --tweets "$TWEETS" --out "$OUT/sbert_tweets.npz" --device cuda
-
-# 2. matched ladder
-python empirical/ladder.py --users "$USERS" --emb "$OUT/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
-
-# 3. assessors (arm:generator id; the id's short name is the regressor subfolder name)
-for pair in teacher:Qwen/Qwen3.5-27B qwen27_optimized:Qwen/Qwen3.5-27B \
-            qwen27_minimal:Qwen/Qwen3.5-27B gemma4_optimized:google/gemma-4-31B-it \
-            gemma4_minimal:google/gemma-4-31B-it; do
-    arm=${pair%%:*}; model=${pair#*:}
-    python -m utils.prompt_optimizer --mode bert-eval --model "$model" --seeds $SEEDS \
-        --posts-file "$TWEETS" --regressor-dir "data/assessors/bert/$arm/models" \
-        --bert-eval-out-dir "$OUT/bert_eval/$arm"
-done
-
-# 4. per-band bias
-python empirical/bias.py --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"
+python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cpu
+python empirical/ladder.py --users "$USERS" --emb "$EMB/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
+python empirical/score.py  --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/bert_eval"
+python empirical/bias.py   --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"
 
 echo "DONE -> $OUT"
