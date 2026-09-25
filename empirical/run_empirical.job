@@ -1,20 +1,20 @@
 #!/bin/bash
 
-#SBATCH -A r01133
-#SBATCH --partition=general
+#SBATCH --partition=gpu
+#SBATCH --gpus-per-node=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
 #SBATCH --job-name=empirical
 #SBATCH --output=slurm_empirical_%A.out
 
-# Empirical Twitter + PHQ-9 analyses on Big Red 200. Submit from the repo root:
-#   sbatch empirical/run_empirical.job
-# CPU only: ~3k tweets through MentalBERT take minutes on 16 cores, and the queue for
-# a CPU node is shorter than for a GPU. The tweets are encoded ONCE (step 1 skips
-# encoders whose .npz exists), so a resubmit only reruns the cheap steps 2-4.
+# Empirical Twitter + PHQ-9 analyses on Big Red 200. Submit from the repo root with
+# your allocation on the command line:
+#   sbatch -A <allocation> empirical/run_empirical.job
+# The GPU is only used by step 1; the tweets are encoded ONCE (embed.py skips an
+# encoder whose .npz exists), so a resubmit only reruns the cheap steps 2-4.
 # Data, embeddings and results all stay in DATA_DIR, outside the repo.
 #   1. S-BERT + MentalBERT embedding of every tweet
 #   2. demographically matched severity ladder (adjacent-band cosine)
@@ -23,16 +23,15 @@
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
-# Big Red's python module plus a small venv adding CPU torch + sentence-transformers
-# (one-time setup in empirical/README.md); the full .venv_vllm (vLLM, CUDA) is not needed.
+# Big Red's python module plus a small venv adding torch + sentence-transformers
+# (one-time setup in empirical/README.md); the full .venv_vllm (vLLM) is not needed.
 module load python
 source ~/venvs/empirical/bin/activate
 export PYTHONUNBUFFERED=1
 export PYTHONPATH=src
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-# If compute nodes have no internet, download the two encoders once on a login node
-# (see empirical/README.md) and uncomment:
-# export HF_HUB_OFFLINE=1
+# The encoders are downloaded once on the login node (README), so the compute node
+# needs no internet.
+export HF_HUB_OFFLINE=1
 
 DATA_DIR=$HOME/data/social_twitter
 TWEETS=${DATA_DIR}/260923_tweets_phq.csv
@@ -40,7 +39,8 @@ USERS=${DATA_DIR}/260923_users.csv
 EMB=${DATA_DIR}/embeddings
 OUT=${DATA_DIR}/results
 
-python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cpu
+nvidia-smi --query-gpu=name,memory.total --format=csv
+python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cuda
 python empirical/ladder.py --users "$USERS" --emb "$EMB/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
 python empirical/score.py  --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/bert_eval"
 python empirical/bias.py   --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"

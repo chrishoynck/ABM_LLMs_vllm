@@ -13,28 +13,22 @@ results live outside the repo, in `~/data/social_twitter/`.
 | `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias |
 | `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b); PNG + CSV of the plotted numbers to `results/figures/` |
 
-One-time environment on Big Red: the python module already has pandas, scikit-learn,
-networkx, umap and matplotlib, so a small venv on top of it only adds CPU torch and
-sentence-transformers:
+One-time setup on a Big Red login node, from the repo root. The python module already
+has pandas, scikit-learn, networkx, umap and matplotlib, so the venv on top of it only
+adds torch (CUDA build) and sentence-transformers; the last line downloads both
+encoders so the job can run offline:
 
 ```bash
 module load python
 python3 -m venv --system-site-packages ~/venvs/empirical
 source ~/venvs/empirical/bin/activate
-pip install --index-url https://download.pytorch.org/whl/cpu torch
-pip install sentence-transformers
+pip install torch sentence-transformers seaborn
+PYTHONPATH=src python -c "from utils.metrics import generate_sbert_model as g; g(mentalbert=False, device='cpu'); g(mentalbert=True, device='cpu'); print('ok')"
 ```
 
-Run: `sbatch empirical/run_empirical.job` from the repo root, then the notebook (same
-venv). A resubmit reuses the embeddings; pass `--force` to `embed.py` to re-encode.
-
-If compute nodes can't reach Hugging Face, fetch both encoders once on a login node:
-
-```bash
-PYTHONPATH=src python -c "from utils.metrics import generate_sbert_model as g; g(mentalbert=False, device='cpu'); g(mentalbert=True, device='cpu')"
-```
-
-and uncomment `HF_HUB_OFFLINE=1` in the job.
+Run: `sbatch -A <allocation> empirical/run_empirical.job` from the repo root (GPU
+partition), then the notebook (same venv). A resubmit reuses the embeddings; pass
+`--force` to `embed.py` to re-encode.
 
 ## Inputs (`~/data/social_twitter/`)
 
