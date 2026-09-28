@@ -5,21 +5,22 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --job-name=empirical
 #SBATCH --output=slurm_empirical_%A.out
 
 # Empirical Twitter + PHQ-9 analyses on Big Red 200. Submit from the repo root with
-# your allocation on the command line:
-#   sbatch -A <allocation> empirical/run_empirical.job
-# CPU only: ~3k tweets through MentalBERT take a few minutes. The tweets are encoded
-# ONCE (embed.py skips an encoder whose .npz exists), so a resubmit only reruns the
-# cheap steps 2-4.
+# your allocation, and TAG naming the input pull (<TAG>_tweets_phq.csv / <TAG>_users.csv):
+#   sbatch -A <allocation> --export=ALL,TAG=260928 empirical/run_empirical.job
+# CPU only: a few thousand tweets through MentalBERT take minutes. Each TAG gets its
+# own embeddings/ and results/, and the tweets are encoded ONCE per TAG (embed.py
+# skips an encoder whose .npz exists), so a resubmit only reruns the cheap steps.
 # Data, embeddings and results all stay in DATA_DIR, outside the repo.
 #   1. S-BERT + MentalBERT embedding of every tweet
 #   2. demographically matched severity ladder (adjacent-band cosine)
 #   3. every MentalBERT+MLP assessor (arm x seed) scored from the saved embeddings
 #   4. per-band bias / MAE table over arms
+#   5. teacher regressors fine-tuned on the users (k-fold CV) + from-scratch baseline
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
@@ -34,15 +35,18 @@ export PYTHONPATH=src
 export HF_HUB_OFFLINE=1
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
+TAG=${TAG:?submit with --export=ALL,TAG=<pull date>, e.g. TAG=260928}
 DATA_DIR=$HOME/data/social_twitter
-TWEETS=${DATA_DIR}/260923_tweets_phq.csv
-USERS=${DATA_DIR}/260923_users.csv
-EMB=${DATA_DIR}/embeddings
-OUT=${DATA_DIR}/results
+TWEETS=${DATA_DIR}/${TAG}_tweets_phq.csv
+USERS=${DATA_DIR}/${TAG}_users.csv
+EMB=${DATA_DIR}/${TAG}/embeddings
+OUT=${DATA_DIR}/${TAG}/results
 
-python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cpu
-python empirical/ladder.py --users "$USERS" --emb "$EMB/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
-python empirical/score.py  --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/bert_eval"
-python empirical/bias.py   --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"
+python empirical/embed.py       --tweets "$TWEETS" --out-dir "$EMB" --device cpu
+python empirical/ladder.py      --users "$USERS" --emb "$EMB/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
+python empirical/score.py       --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/bert_eval"
+python empirical/bias.py        --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"
+python empirical/finetune_cv.py --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/finetune_cv"
+python empirical/bias.py        --eval-root "$OUT/finetune_cv" --out "$OUT/bias_by_band_finetuned.csv"
 
 echo "DONE -> $OUT"
