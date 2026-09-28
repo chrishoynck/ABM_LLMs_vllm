@@ -1,10 +1,9 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu
-#SBATCH --gpus-per-node=1
+#SBATCH --partition=general
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
 #SBATCH --job-name=empirical
@@ -13,8 +12,9 @@
 # Empirical Twitter + PHQ-9 analyses on Big Red 200. Submit from the repo root with
 # your allocation on the command line:
 #   sbatch -A <allocation> empirical/run_empirical.job
-# The GPU is only used by step 1; the tweets are encoded ONCE (embed.py skips an
-# encoder whose .npz exists), so a resubmit only reruns the cheap steps 2-4.
+# CPU only: ~3k tweets through MentalBERT take a few minutes. The tweets are encoded
+# ONCE (embed.py skips an encoder whose .npz exists), so a resubmit only reruns the
+# cheap steps 2-4.
 # Data, embeddings and results all stay in DATA_DIR, outside the repo.
 #   1. S-BERT + MentalBERT embedding of every tweet
 #   2. demographically matched severity ladder (adjacent-band cosine)
@@ -32,6 +32,7 @@ export PYTHONPATH=src
 # The encoders are downloaded once on the login node (README), so the compute node
 # needs no internet.
 export HF_HUB_OFFLINE=1
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 DATA_DIR=$HOME/data/social_twitter
 TWEETS=${DATA_DIR}/260923_tweets_phq.csv
@@ -39,8 +40,7 @@ USERS=${DATA_DIR}/260923_users.csv
 EMB=${DATA_DIR}/embeddings
 OUT=${DATA_DIR}/results
 
-nvidia-smi --query-gpu=name,memory.total --format=csv
-python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cuda
+python empirical/embed.py  --tweets "$TWEETS" --out-dir "$EMB" --device cpu
 python empirical/ladder.py --users "$USERS" --emb "$EMB/sbert_tweets.npz" --out "$OUT/ladder_matched.csv"
 python empirical/score.py  --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/bert_eval"
 python empirical/bias.py   --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"

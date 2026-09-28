@@ -15,7 +15,7 @@ results live outside the repo, in `~/data/social_twitter/`.
 
 One-time setup on a Big Red login node, from the repo root. The python module already
 has pandas, scikit-learn, networkx, umap and matplotlib, so the venv on top of it only
-adds torch (CUDA build) and sentence-transformers; the last line downloads both
+adds torch and sentence-transformers; the last line downloads both
 encoders so the job can run offline:
 
 ```bash
@@ -26,8 +26,8 @@ pip install torch sentence-transformers seaborn
 PYTHONPATH=src python -c "from utils.metrics import generate_sbert_model as g; g(mentalbert=False, device='cpu'); g(mentalbert=True, device='cpu'); print('ok')"
 ```
 
-Run: `sbatch -A <allocation> empirical/run_empirical.job` from the repo root (GPU
-partition), then the notebook (same venv). A resubmit reuses the embeddings; pass
+Run: `sbatch -A <allocation> empirical/run_empirical.job` from the repo root (CPU,
+`general` partition), then the notebook (same venv). A resubmit reuses the embeddings; pass
 `--force` to `embed.py` to re-encode.
 
 ## Inputs (`~/data/social_twitter/`)
