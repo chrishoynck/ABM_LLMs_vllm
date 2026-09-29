@@ -5,15 +5,14 @@ Same detector and tables as `checks/check_cds_tracks_phq9.py` on synthetic posts
 each user's share of CDS tweets against their PHQ-9 (Spearman), since a user's tweets
 are not independent. The figure is the synthetic one with the users added: (a) the
 Qwen and Gemma lines plus the empirical line, (b) the category x band heatmap for the
-users with Qwen in brackets. Regex only, seconds on any CPU.
+users with Qwen in brackets. Regex only, seconds on any CPU. `figures.ipynb` section 6
+calls `analyse` and `make_figure`.
 Run: PYTHONPATH=src:checks python empirical/cds.py --tweets <TAG>_tweets_phq.csv --out-dir <results>/cds
 """
 
 import argparse
 import os
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -24,6 +23,7 @@ from check_cds_tracks_phq9 import (BAND_ORDER, FIG_BAND_LABELS, GENERATORS, HEAT
 from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
 EMP_COLOUR, EMP_MARKER = "#222222", "s"          # empirical = near-black squares, as in figures.ipynb
+NGRAMS = "data/distorted_language_ngrams.tsv"
 
 
 def per_user(df: pd.DataFrame) -> pd.DataFrame:
@@ -34,85 +34,97 @@ def per_user(df: pd.DataFrame) -> pd.DataFrame:
     return users
 
 
-def make_figure(synth: dict, emp_score: pd.DataFrame, emp_band: pd.DataFrame, fig_path: str) -> None:
-    """The synthetic CDS figure with the users added.
+def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
+    """CDS tables for the users and for the synthetic corpora.
 
     Args:
-        synth: generator tag -> (per_score, cat_band) from the synthetic corpora.
-        emp_score: per-score CDS share of the users (`summarize`).
-        emp_band: category x band CDS share of the users, rows in display order.
-        fig_path: output .png.
+        tweets: CSV with agent_id, phq9, tweet.
+        ngrams: CDS n-gram TSV.
+
+    Returns:
+        dict with per_score, cat_band (rows by overall prevalence), users, by_band,
+        rho, p (per-user Spearman) and synth (generator tag -> (per_score, cat_band)).
     """
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.4, 3.2), gridspec_kw={"width_ratios": [1, 1.6]})
-
-    for tag, label, colour, _ in GENERATORS:
-        ps = synth[tag][0]
-        ax0.plot(ps["phq9"], ps["pct_cds"], "o-", color=colour, lw=2, ms=4, label=label)
-    ax0.plot(emp_score["phq9"], emp_score["pct_cds"], EMP_MARKER + "-", color=EMP_COLOUR,
-             lw=1.2, ms=3.5, label="Empirical")
-    ax0.set_xlabel("PHQ-9 sum-score")
-    ax0.set_ylabel("% of posts containing CDS")
-    ax0.grid(axis="y", linestyle=":", alpha=0.5)
-    ax0.legend(loc="best", frameon=False, fontsize=9)
-    ax0.text(0.5, -0.34, "(a) CDS vs PHQ-9", transform=ax0.transAxes, ha="center", va="top", fontsize=9.5)
-
-    ref = synth[GENERATORS[0][0]][1].reindex(index=emp_band.index)
-    data = emp_band[BAND_ORDER].values
-    im = ax1.imshow(data, aspect="auto", cmap=HEATMAP_CMAP, vmin=0, vmax=np.nanmax(data))
-    ax1.set_xticks(range(len(BAND_ORDER)))
-    ax1.set_xticklabels(FIG_BAND_LABELS, rotation=30, ha="right", fontsize=9)
-    ax1.set_yticks(range(len(emp_band)))
-    ax1.set_yticklabels(emp_band.index, fontsize=9)
-    thresh = np.nanmax(data) * 0.6
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            if not np.isnan(data[i, j]):
-                ax1.text(j, i, f"{data[i, j]:.1f} ({ref[BAND_ORDER].values[i, j]:.1f})", ha="center",
-                         va="center", fontsize=6.2, color="white" if data[i, j] > thresh else "black")
-    fig.colorbar(im, ax=ax1, fraction=0.045, pad=0.04).set_label("% of posts")
-    ax1.text(0.5, -0.34, f"(b) CDS category by PHQ-9 band, Empirical ({GENERATORS[0][1]})",
-             transform=ax1.transAxes, ha="center", va="top", fontsize=9.5)
-
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-def main() -> None:
-    """Score the tweets and the synthetic corpora, print the per-user test and tables, write CSVs + figure."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tweets", required=True, help="CSV with agent_id, phq9, tweet.")
-    parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--ngrams", default="data/distorted_language_ngrams.tsv")
-    args = parser.parse_args()
-
-    patterns = compile_category_patterns(load_ngrams_by_category(args.ngrams))
-    df, cat_cols = score_posts(args.tweets, patterns)
+    patterns = compile_category_patterns(load_ngrams_by_category(ngrams))
+    df, cat_cols = score_posts(tweets, patterns)
     per_score, cat_band, cat_overall = summarize(df, patterns, cat_cols)
-    cat_band = cat_band.loc[cat_overall.sort_values(ascending=False).index]
     users = per_user(df)
     rho, p = spearmanr(users["phq9"], users["pct_cds"])
-    by_band = users.groupby("severity")["pct_cds"].agg(["size", "mean", "sem"]).reindex(BAND_ORDER)
-
-    print(f"[cds] {len(df)} tweets, {len(users)} users, {100 * df['is_cds'].mean():.1f}% CDS overall")
-    print(f"[cds] per-user Spearman(PHQ-9, % CDS tweets) = {rho:+.3f} (p = {p:.3g}, n = {len(users)})")
-    print("\n% CDS tweets per user, by band (mean, SEM):")
-    print(by_band.round(2).to_string())
-    print("\n% of tweets per CDS category, by band:")
-    print(cat_band.round(1).to_string())
-
     synth = {}
     for tag, _, _, path in GENERATORS:
         sdf, scols = score_posts(path, patterns)
         synth[tag] = summarize(sdf, patterns, scols)[:2]
+    return {"n_tweets": len(df), "pct_all": 100 * df["is_cds"].mean(), "per_score": per_score,
+            "cat_band": cat_band.loc[cat_overall.sort_values(ascending=False).index],
+            "users": users, "rho": rho, "p": p, "synth": synth,
+            "by_band": users.groupby("severity")["pct_cds"].agg(["size", "mean", "sem"]).reindex(BAND_ORDER)}
 
+
+def make_figure(res: dict) -> plt.Figure:
+    """The synthetic CDS figure with the users added, from `analyse` output."""
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.4, 3.2), gridspec_kw={"width_ratios": [1, 1.6]})
+
+    for tag, label, colour, _ in GENERATORS:
+        ps = res["synth"][tag][0]
+        ax0.plot(ps["phq9"], ps["pct_cds"], "o-", color=colour, lw=2, ms=4, label=label)
+    emp = res["per_score"]
+    ax0.plot(emp["phq9"], emp["pct_cds"], EMP_MARKER + "-", color=EMP_COLOUR, lw=1.2, ms=3.5,
+             label="Empirical")
+    ax0.set_xlabel("PHQ-9 sum-score")
+    ax0.set_ylabel("% of posts containing CDS")
+    ax0.grid(axis="y", linestyle=":", alpha=0.5)
+    ax0.legend(loc="best", frameon=False, fontsize=8)
+    ax0.text(0.5, -0.34, "(a) CDS vs PHQ-9", transform=ax0.transAxes, ha="center", va="top", fontsize=9.5)
+
+    band = res["cat_band"]
+    ref = res["synth"][GENERATORS[0][0]][1].reindex(index=band.index)[BAND_ORDER].values
+    data = band[BAND_ORDER].values
+    im = ax1.imshow(data, aspect="auto", cmap=HEATMAP_CMAP, vmin=0, vmax=np.nanmax(data))
+    ax1.set_xticks(range(len(BAND_ORDER)))
+    ax1.set_xticklabels(FIG_BAND_LABELS, rotation=30, ha="right", fontsize=9)
+    ax1.set_yticks(range(len(band)))
+    ax1.set_yticklabels(band.index, fontsize=9)
+    thresh = np.nanmax(data) * 0.6
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            if not np.isnan(data[i, j]):
+                ax1.text(j, i, f"{data[i, j]:.1f} ({ref[i, j]:.1f})", ha="center", va="center",
+                         fontsize=6.2, color="white" if data[i, j] > thresh else "black")
+    fig.colorbar(im, ax=ax1, fraction=0.045, pad=0.04).set_label("% of posts")
+    ax1.text(0.5, -0.34, f"(b) CDS category by PHQ-9 band, Empirical ({GENERATORS[0][1]})",
+             transform=ax1.transAxes, ha="center", va="top", fontsize=9.5)
+    fig.tight_layout()
+    return fig
+
+
+def report(res: dict) -> None:
+    """Print the per-user test and the band / category tables."""
+    print(f"[cds] {res['n_tweets']} tweets, {len(res['users'])} users, {res['pct_all']:.1f}% CDS overall")
+    print(f"[cds] per-user Spearman(PHQ-9, % CDS tweets) = {res['rho']:+.3f} "
+          f"(p = {res['p']:.3g}, n = {len(res['users'])})")
+    print("\n% CDS tweets per user, by band (mean, SEM):")
+    print(res["by_band"].round(2).to_string())
+    print("\n% of tweets per CDS category, by band:")
+    print(res["cat_band"].round(1).to_string())
+
+
+def main() -> None:
+    """Score the tweets and the synthetic corpora, print the tables, write CSVs + figure."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--tweets", required=True, help="CSV with agent_id, phq9, tweet.")
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--ngrams", default=NGRAMS)
+    args = parser.parse_args()
+
+    res = analyse(args.tweets, args.ngrams)
+    report(res)
     os.makedirs(args.out_dir, exist_ok=True)
-    per_score.to_csv(os.path.join(args.out_dir, "cds_by_phq9.csv"), index=False)
-    users.to_csv(os.path.join(args.out_dir, "cds_by_user.csv"))
-    by_band.to_csv(os.path.join(args.out_dir, "cds_by_band_users.csv"))
-    cat_band.to_csv(os.path.join(args.out_dir, "cds_by_category_band.csv"))
+    res["per_score"].to_csv(os.path.join(args.out_dir, "cds_by_phq9.csv"), index=False)
+    res["users"].to_csv(os.path.join(args.out_dir, "cds_by_user.csv"))
+    res["by_band"].to_csv(os.path.join(args.out_dir, "cds_by_band_users.csv"))
+    res["cat_band"].to_csv(os.path.join(args.out_dir, "cds_by_category_band.csv"))
     fig_path = os.path.join(args.out_dir, "cds_vs_synthetic.png")
-    make_figure(synth, per_score, cat_band, fig_path)
+    make_figure(res).savefig(fig_path, dpi=300, bbox_inches="tight")
     print(f"[cds] -> {args.out_dir} (figure: {fig_path})")
 
 
