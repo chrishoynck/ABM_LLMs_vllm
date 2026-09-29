@@ -11,6 +11,7 @@ results live outside the repo, in `~/data/social_twitter/`.
 | `score.py` | every MentalBERT+MLP assessor (arm × seed) on the users, from the saved MentalBERT vectors; same centroid and rounding as `bert-eval`, same output columns |
 | `bias.py` | per-band signed bias and MAE per arm (mean ± SD over seeds) |
 | `finetune_cv.py` | the teacher regressors fine-tuned on the users as `run_finetune.sh` fine-tuned them on synthetic posts, but 5-fold CV by user instead of a fixed test set; plus the same MLP trained from scratch |
+| `cds.py` | the CDS check (`checks/check_cds_tracks_phq9.py`) on the users: % of tweets with CDS per PHQ-9 score and category × band, plus per-user Spearman of % CDS tweets vs PHQ-9; regex only, run anywhere with `PYTHONPATH=src:checks` |
 | `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias → fine-tune → bias |
 | `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b) plus the within-band reference, how far predictions track the true score, the fine-tuned bias against the synthetic arms, and depressed vs not (PHQ-9 ≥ 10: AUC, sensitivity, specificity, ROC) for the human-optimized arm; PNG + CSV to `results/figures/` |
 
