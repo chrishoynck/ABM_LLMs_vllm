@@ -42,6 +42,6 @@ Built in a notebook from the MariaDB pull:
 - **Survey side:** complete PHQ-9 only. Items are coded 1–4, so the total is the item sum − 9.
 - **Tweet filters:** English, no retweets, deduplicated by tweet id.
 - **Tweet timing:** from the tweet id (`created_at` in `timelines` is empty).
-- **Tweet selection:** `260923`: the 10 most recent tweets in the 90 days before `RecordedDate`, users with fewer than 5 dropped (337 users). `260928`: no time window, 10 tweets drawn at random (seed 42) from users with at least 10. `260928w5`: as `260928`, but only tweets of at least 5 words (not counting `@user`) are eligible.
+- **Tweet selection:** `260923`: the 10 most recent tweets in the 90 days before `RecordedDate`, users with fewer than 5 dropped (337 users). `260928`: no time window, 10 tweets drawn at random (seed 42) from users with at least 10. `260928w5`: as `260928`, but only tweets of at least 5 words (not counting `@user`) are eligible. `260923all`: every tweet of every user (no window, no sampling, no length filter); used only for the CDS section.
 - **Cleaning:** URLs removed, `@handles` replaced with `@user`, HTML entities decoded.
 

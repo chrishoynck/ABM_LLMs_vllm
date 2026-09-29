@@ -3,10 +3,12 @@
 Same detector and tables as `checks/check_cds_tracks_phq9.py` on synthetic posts
 (share of posts with any CDS per PHQ-9 score, category x band), plus a per-user test:
 each user's share of CDS tweets against their PHQ-9 (Spearman), since a user's tweets
-are not independent. The figure is the synthetic one with the users added: (a) the
-Qwen and Gemma lines plus the empirical line, (b) the category x band heatmap for the
-users with Qwen in brackets. Regex only, seconds on any CPU. `figures.ipynb` section 6
-calls `analyse` and `make_figure`.
+are not independent. The empirical line is the mean over users of their % of CDS
+tweets per score, so heavy tweeters do not dominate when users have different numbers
+of tweets (with equal numbers it equals the % of posts). The figure is the synthetic
+one with the users added: (a) the Qwen and Gemma lines plus the empirical line, (b) the
+category x band heatmap for the users (% of tweets) with Qwen in brackets. Regex only,
+seconds on any CPU. `figures.ipynb` section 6 calls `analyse` and `make_figure`.
 Run: PYTHONPATH=src:checks python empirical/cds.py --tweets <TAG>_tweets_phq.csv --out-dir <results>/cds
 """
 
@@ -49,6 +51,8 @@ def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
     df, cat_cols = score_posts(tweets, patterns)
     per_score, cat_band, cat_overall = summarize(df, patterns, cat_cols)
     users = per_user(df)
+    per_score = users.groupby("phq9").agg(n_users=("pct_cds", "size"), n_posts=("n", "sum"),
+                                          pct_cds=("pct_cds", "mean")).reset_index()
     rho, p = spearmanr(users["phq9"], users["pct_cds"])
     synth = {}
     for tag, _, _, path in GENERATORS:
@@ -61,7 +65,7 @@ def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
 
 
 def make_figure(res: dict) -> plt.Figure:
-    """The synthetic CDS figure with the users added, from `analyse` output."""
+    """The synthetic CDS figure with the users added (per-user mean per score), from `analyse` output."""
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.4, 3.2), gridspec_kw={"width_ratios": [1, 1.6]})
 
     for tag, label, colour, _ in GENERATORS:
@@ -99,7 +103,8 @@ def make_figure(res: dict) -> plt.Figure:
 
 def report(res: dict) -> None:
     """Print the per-user test and the band / category tables."""
-    print(f"[cds] {res['n_tweets']} tweets, {len(res['users'])} users, {res['pct_all']:.1f}% CDS overall")
+    print(f"[cds] {res['n_tweets']} tweets, {len(res['users'])} users "
+          f"(median {res['users']['n'].median():.0f} tweets/user), {res['pct_all']:.1f}% CDS overall")
     print(f"[cds] per-user Spearman(PHQ-9, % CDS tweets) = {res['rho']:+.3f} "
           f"(p = {res['p']:.3g}, n = {len(res['users'])})")
     print("\n% CDS tweets per user, by band (mean, SEM):")
