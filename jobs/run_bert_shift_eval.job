@@ -1,0 +1,36 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=bert_shift
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=01:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Cross-corpus evals of the fine-tuned MentalBERT+MLP regressors for the distribution-shift
+# table and figure (visualization.write_shift_table / plot_shift_bias): each prompt arm on the
+# other prompt's 300 held-out posts, and Qwen's minimal arm on Gemma's minimal posts.
+# Qwen human-opt -> {Qwen minimal, Gemma human-opt} already exist (run_finetune.sh transfer cells).
+# Outputs: data/assessors/bert/<arm>/eval/on_<corpus>/
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+
+srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
+
+# $1 assessor arm, $2 HF id naming its <model>_seed<NN> dirs, $3 test corpus, $4 its posts CSV
+run() {
+    srun python -m utils.prompt_optimizer --mode bert-eval --model "$2" --seeds 34 35 36 37 38 \
+        --posts-file "$4" --regressor-dir "data/assessors/bert/$1/models" \
+        --bert-eval-out-dir "data/assessors/bert/$1/eval/on_$3"
+}
+run gemma4_optimized google/gemma-4-31B-it gemma4_minimal   data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv
+run qwen27_minimal   Qwen/Qwen3.5-27B      qwen27_optimized data/finetune/qwen/test_posts_qwen.csv
+run gemma4_minimal   google/gemma-4-31B-it gemma4_optimized data/finetune/gemma4/test_posts_gemma4.csv
+run qwen27_minimal   Qwen/Qwen3.5-27B      gemma4_minimal   data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv
+
+python -m utils.visualization shift

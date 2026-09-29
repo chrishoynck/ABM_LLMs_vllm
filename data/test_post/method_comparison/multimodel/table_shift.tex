@@ -1,0 +1,29 @@
+\begin{tabular}{lcccc}
+\toprule
+Assessor & Base MAE & $\Delta$MAE & Base Bias & $\Delta$Bias \\
+\midrule
+\multicolumn{5}{l}{\textit{Prompt shift, Qwen3.5-27B: human-optimized $\rightarrow$ minimal}} \\
+MentalBERT+MLP & 2.88 & $+0.32$ & $-1.10$ & $+1.42$ \\
+LLM (minimal) & 4.60 & $+0.55$ & $-0.12$ & $+3.61$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Prompt shift, Qwen3.5-27B: minimal $\rightarrow$ human-optimized}} \\
+MentalBERT+MLP & 2.84 & $+1.26$ & $-1.00$ & $-2.10$ \\
+LLM (minimal) & 5.15 & $-0.55$ & $+3.49$ & $-3.61$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Prompt shift, Gemma-4-31B-it: human-optimized $\rightarrow$ minimal}} \\
+MentalBERT+MLP & 2.36 & $+0.85$ & $-1.11$ & $+2.82$ \\
+LLM (minimal) & 6.15 & $-1.81$ & $-5.97$ & $+7.89$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Prompt shift, Gemma-4-31B-it: minimal $\rightarrow$ human-optimized}} \\
+MentalBERT+MLP & 2.48 & $+2.94$ & $-0.93$ & $-4.08$ \\
+LLM (minimal) & 4.34 & $+1.81$ & $+1.92$ & $-7.89$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Model shift, human-optimized prompt: Qwen3.5-27B $\rightarrow$ Gemma-4-31B-it}} \\
+MentalBERT+MLP & 2.88 & $+4.60$ & $-1.10$ & $-6.31$ \\
+LLM (minimal) & 4.60 & $+1.56$ & $-0.12$ & $-5.84$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Model shift, minimal prompt: Qwen3.5-27B $\rightarrow$ Gemma-4-31B-it}} \\
+MentalBERT+MLP & 2.84 & $+1.11$ & $-1.00$ & $-2.34$ \\
+LLM (minimal) & 5.15 & $-0.81$ & $+3.49$ & $-1.57$ \\
+\bottomrule
+\end{tabular}

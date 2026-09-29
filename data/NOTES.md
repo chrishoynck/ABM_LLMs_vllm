@@ -77,7 +77,7 @@ nothing here can break a LaTeX build. Per-figure detail: `sensitivity/NOTES.md`.
   Three of them kept their computation because a CSV is still consumed:
   `decoding_settings_summary.csv` + `decoding_phq9_separability.csv`
   (`checks/check_decoding_alignment.py`) and `sbert_cosine_conditioning_seed35.csv`
-  (panel (c) of `confusion_depression_classes.png`, and the PNAS `figure_scripts/`).
+  (panel (c) of `confusion_depression_classes.png`, and `utils/tools/plot_confusion_row.py s8`).
   `run_eval_comparison.sh` kept too: it still prints the Tables 1-2 numbers.
 - Removed orphan data: `personas_10k.csv`, `grok_posts/posts_with_phq9.txt`,
   `sensitivity/plots_sbert/{axes_comparison_fixed.png,phq9_within_cross_by_band.csv}`,

@@ -1,0 +1,9 @@
+generator,prompt,step,cosine,std,n_reps,n_posts
+Qwen3.5-27B,phq9,Minimal → Mild,0.3702236114427158,0.015106376531116347,3,600
+Qwen3.5-27B,phq9,Mild → Moderate,0.3615144121595491,0.007189205024259336,3,600
+Qwen3.5-27B,phq9,Moderate → Mod. Severe,0.39259473512656967,0.006003204579241082,3,600
+Qwen3.5-27B,phq9,Mod. Severe → Severe,0.387688015231475,0.007312923296465995,3,600
+Qwen3.5-27B,phq9_minimal_prompt,Minimal → Mild,0.38236192849560485,0.0,1,600
+Qwen3.5-27B,phq9_minimal_prompt,Mild → Moderate,0.3957060952012758,0.0,1,600
+Qwen3.5-27B,phq9_minimal_prompt,Moderate → Mod. Severe,0.4014001856111834,0.0,1,600
+Qwen3.5-27B,phq9_minimal_prompt,Mod. Severe → Severe,0.3977765437213394,0.0,1,600

@@ -15,3 +15,4 @@ strip unoriginal phrasing like saw, or depressive phrases like noise and static.
 ## Scores (fill in by hand)
 training_score: 7
 test_score: 6.8, 6.5, 7.5, 6.5, 8.8, 6.4, 7.5
+val_score: 6.20 ± 1.63  (teacher, 20 held-out personas, val20/)

@@ -15,3 +15,4 @@ specific examples?
 ## Scores (fill in by hand)
 training_score: 6.6
 test_score: 6, 7, 7.8, 6.8, 6.2, 6.5, 6.2
+val_score: none (prompt.txt was never saved)

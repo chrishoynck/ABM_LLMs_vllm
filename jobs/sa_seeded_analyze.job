@@ -26,7 +26,8 @@ srun python -m utils.sensitivity.sa_embed --root data/sensitivity/seeded --devic
 srun python -m utils.sensitivity.sa_embed --root data/sensitivity/seeded --device cuda --sbert
 for TAG in qwen gemma4; do
     ROOT=data/sensitivity/seeded/${TAG}
-    srun python -m utils.sensitivity.sa_analyze --root ${ROOT} --emb-name embeddings_sbert.npz
+    srun python -m utils.sensitivity.sa_analyze --root ${ROOT} --emb-name embeddings_sbert.npz \
+        --map-posts data/finetune/${TAG}/train_posts_${TAG}.csv
     if [[ "${TAG}" == "gemma4" ]]; then
         REG=data/assessors/bert/gemma4_optimized/models/gemma-4-31B-it_seed35/regressor.pt
     else

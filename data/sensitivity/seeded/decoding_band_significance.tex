@@ -1,0 +1,22 @@
+\begin{table}[ht]
+\centering
+\caption{Is increasing the PHQ-9 band significant in the decoding runs? The decoding runs keep each persona's own PHQ-9 score, so every class holds different personas. \emph{Within} is the cosine between a persona and the other personas of its own class; \emph{Adjacent} is the cosine between that persona and the personas of the next class up. Posts are paired by round within a run. A negative $\Delta$ means the next class is further away than another persona of the same class, a positive $\Delta$ that it is closer. Paired $t$-test over the $n$ personas of the class. S-BERT embeddings, per-agent-seeded runs, one decoding setting (temperature, top-$p$) per model.}
+\label{tab:decoding_band_significance}
+\begin{tabular}{llrrrrr}
+\hline
+Model & Class & $n$ & Within & Adjacent & $\Delta$ & $p$ \\
+\hline
+Qwen3.5-27B (0.7, 0.9) & Minimal & 9 & 0.150 & 0.138 & -0.012 & 0.03 \\
+ & Mild & 6 & 0.143 & 0.146 & +0.003 & 0.32 \\
+ & Moderate & 13 & 0.156 & 0.157 & +0.001 & 0.66 \\
+ & Mod. Severe & 8 & 0.161 & 0.166 & +0.005 & 0.03 \\
+ & Severe & 24 & 0.171 & -- & -- & -- \\
+\hline
+Gemma-4-31B-it (1.0, 0.975) & Minimal & 9 & 0.197 & 0.141 & -0.056 & $1.0\times10^{-7}$ \\
+ & Mild & 6 & 0.114 & 0.113 & -0.001 & 0.84 \\
+ & Moderate & 13 & 0.133 & 0.146 & +0.013 & $7.2\times10^{-3}$ \\
+ & Mod. Severe & 8 & 0.173 & 0.176 & +0.003 & 0.54 \\
+ & Severe & 24 & 0.195 & -- & -- & -- \\
+\hline
+\end{tabular}
+\end{table}

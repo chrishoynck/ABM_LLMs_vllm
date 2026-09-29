@@ -59,8 +59,12 @@ it lazily to avoid an import cycle).
   detector `cds.py` (used by `network_evolution` and
   `checks/check_cds_tracks_phq9.py`), the bias table `phq9_bias.py`, the
   regressor test-set replayer `build_bert_testset.py`, and the hand-run plot
-  scripts `plot_assessment_diagnostics.py`, `plot_phq9_mobility.py`,
-  `velocity_table.py` and `plot_network_evolution.py`.
+  scripts `plot_assessment_diagnostics.py`, `plot_confusion_row.py` (the one-row
+  confusion figures: SI Fig S8 and the human-opt row), `plot_phq9_mobility.py`,
+  `velocity_table.py`, `plot_network_evolution.py` and
+  `plot_optimization_trajectories.py` (train/val curves of the regressor MAE, of
+  the post-prompt optimization, TextGrad vs human, and of the TextGrad PHQ-9
+  prompt on the human-optimized corpus).
 - **create_data/**: `build_personas.py` (the persona CSV builders as subcommands
   `eval` / `finetune` / `test-extra`), `test_phq9_llms.py` (the `TestLLMs`
   generation harness every pipeline uses; not a test), `generate_test_data.py`
@@ -73,7 +77,8 @@ it lazily to avoid an import cycle).
   axes in regressor space; the prompt axis via `sa_analyze --prompt-reps`).
   `sa_network.py` is separate: Sobol SA and calibration of the SDA/SDC topology
   (CPU). `plot_network_targets{,_sdc}.py` plot simulated configs against the
-  calibration target bands.
+  calibration target bands. `plot_phq9_conditioning_panels.py` draws the Qwen vs
+  Gemma PHQ-9 conditioning heatmaps side by side.
 - **analyses/lexical_entrainment/**: `global/plot_lexical_entrainment.py`
   (per-seed MentalBERT entrainment trajectories; the `global` package name is a
   Python keyword, so it only runs via `python -m`, never import it) and
@@ -94,10 +99,13 @@ No `.sh`/`.job` wrapper; run from the repo root with the venv python.
 | Module | Run | Output |
 |---|---|---|
 | `utils.tools.plot_assessment_diagnostics` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_assessment_diagnostics all` (first encode ~15 min CPU, cached) | `data/test_post/method_comparison/confusion_depression_classes.{png,csv}` + `sbert_cosine_conditioning_seed35.csv` (the cosine matrix; its standalone heatmap was retired 2026-09-22, panel (c) of the confusion figure draws it) |
+| `utils.tools.plot_confusion_row` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_confusion_row humanopt`; SI Fig S8: `… plot_confusion_row s8 ../LLM_agent_Depression__PNAS_Nexus/Fig/confusion_matrix_vs_cosim.png` (needs `sbert_cosine_conditioning_seed35.csv` from the row above) | `data/test_post/method_comparison/multimodel/confusion_row_humanopt_{qwen,gemma}.png` (confusion matrices only) |
 | `utils.tools.plot_phq9_mobility` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_phq9_mobility` | `data/networks_post/basis/plots/phq9_mobility_*.png`, `mobility_phq9.csv` |
 | `utils.tools.velocity_table` | `PYTHONPATH=src ./.venv_vllm/bin/python src/utils/tools/velocity_table.py` | console table + `plots/velocity_table.tex` |
 | `utils.sensitivity.plot_network_targets` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.sensitivity.plot_network_targets` | `data/sensitivity/network_target_ranges.png` |
 | `utils.sensitivity.plot_network_targets_sdc` | same, `…plot_network_targets_sdc` | `data/sensitivity/network_target_ranges_sdc.png` |
+| `utils.sensitivity.plot_phq9_conditioning_panels` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.sensitivity.plot_phq9_conditioning_panels` (needs the seeded `sa_analyze` matrices) | `data/sensitivity/seeded/plots_sbert/phq9_conditioning_panels.png` |
+| `utils.tools.plot_optimization_trajectories` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.tools.plot_optimization_trajectories` (writes all figures) | `data/assessors/bert/plots/train_val_bert_{qwen,gemma}.png` + `data/test_post/optimized_tweets/train_val_post_opt.png` + `data/test_post/optimized_phq9_human/train_val_phq9_opt.png` |
 | `utils.sensitivity.sa_phq9` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.sensitivity.sa_phq9` (needs the `sa_embed` embeddings) | `data/sensitivity/plots_phq9/` |
 | `utils.analyses.lexical_entrainment.local.cds_entrainment` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.analyses.lexical_entrainment.local.cds_entrainment` | `plots/lexical_entrainment/local/entrainment_*.{csv,png}` |
 | `utils.create_data.build_personas` | `PYTHONPATH=src ./.venv_vllm/bin/python -m utils.create_data.build_personas eval --out data/personas_eval_1000_phq9.csv` (built ONCE; no-op if it exists). `finetune` and `test-extra` are called by `scripts/assessment/run_finetune.sh` | `data/personas_eval_1000_phq9.csv` |

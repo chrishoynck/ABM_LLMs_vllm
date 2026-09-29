@@ -14,4 +14,5 @@ ground posts in less cliche phrasing/ shift focus from themselves to others.
 
 ## Scores (fill in by hand)
 training_score: 6.9
-scores: 7, 6, 6.5, 7, 7.8, 7.5, 
+scores: 7, 6, 6.5, 7, 7.8, 7.5,
+val_score: 6.35 ± 1.82  (teacher, 20 held-out personas, val20/)

@@ -14,3 +14,4 @@ still some repetive structures, too much grounding in personality, too limited e
 ## Scores (fill in by hand)
 training_score: 6.9
 scores: 6, 6.5, 6.5, 7.5, 6.8, 7.2, 6.8
+val_score: 5.90 ± 1.37  (teacher, 20 held-out personas, val20/)

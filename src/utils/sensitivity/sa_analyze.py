@@ -1101,7 +1101,10 @@ def _phq9_band_map(runs: dict, setting="baseline"):
     projected points, whereas the unit-length version would sit outside its own
     cloud. Unsupervised PCA / UMAP of the posts themselves put severity nowhere
     near the leading axes (the top-2 post PCs carry ~3 % of the variance each
-    and show no gradient), so they would only draw topic noise. SBERT only.
+    and show no gradient), so they would only draw topic noise. Fitting on the
+    per-score centroids (0-27) instead is no better: each score is only 1-6
+    personas, so those centroids mostly track persona topic (Qwen: plane-vs-score
+    |rho| 0.35 against 0.82 for the band fit; Gemma: equal at 0.94). SBERT only.
 
     Args:
         runs (dict): `{(setting, rep): {...}}` from `load_axis_runs`.
@@ -1205,17 +1208,35 @@ def _decoding_tuple_label(s) -> str:
     return f"({tp[0]}, {tp[1]})" if tp else str(s)
 
 
-def comparison_decoding_linearity(runs: dict, out_path: str,
-                                  n_bootstrap: int = 1000, seed: int = 0):
-    """Three-panel decoding figure: embedding MAP (left), PHQ-9 severity LINEARITY
-    (middle) and across-replicate DIVERSITY forest (right). All read SBERT
-    embeddings (cosine-appropriate).
+def load_corpus_runs(posts_csv: str) -> dict:
+    """SBERT embeddings of a full posts corpus (e.g. the 3,000-block fine-tune train set)
+    in the `{(setting, rep): {...}}` shape `_phq9_band_map` reads, keyed ("corpus", 1).
+    Encodes once and caches `<csv stem>_sbert.npz` next to the CSV (~5 min on CPU for
+    30,000 posts)."""
+    cache = os.path.splitext(posts_csv)[0] + "_sbert.npz"
+    if not os.path.exists(cache):
+        from utils.metrics import generate_sbert_model
+        from utils.sensitivity.sa_embed import encode_run
+        print(f"[map] encoding {posts_csv} with SBERT -> {cache}")
+        np.savez_compressed(cache, **encode_run(generate_sbert_model(), posts_csv))
+    d = np.load(cache, allow_pickle=True)
+    return {("corpus", 1): {k: d[k] for k in ("embeddings", "agent_ids", "rounds", "phq9")}}
 
-    (a) Map, the baseline setting's posts projected onto the plane of its five
-        PHQ-9 band centroids (see `_phq9_band_map`), coloured by band, with the
-        centroids themselves overplotted as ringed markers. It shows the quantity
-        (b) measures: the spacing of consecutive band centroids and the posts'
-        spread around them.
+
+def comparison_decoding_linearity(runs: dict, out_path: str,
+                                  n_bootstrap: int = 1000, seed: int = 0,
+                                  map_runs: dict | None = None):
+    """Three-panel decoding figure: embedding MAP (left, full height), PHQ-9
+    severity LINEARITY (top right) and across-replicate DIVERSITY forest (bottom
+    right). All read SBERT embeddings (cosine-appropriate).
+
+    (a) Map, posts projected onto the plane of their five PHQ-9 band centroids
+        (see `_phq9_band_map`), coloured by band, with the centroids themselves
+        overplotted as ringed markers. By default the baseline setting's posts;
+        with `map_runs` (from `load_corpus_runs`) a full corpus instead, whose
+        bands hold hundreds of personas each rather than the 6-24 of the decoding
+        runs. The plane and centroids use every post; at most 2,000 random posts
+        are drawn as dots so the cloud stays readable.
     (b) Linearity, for each setting, the cosine between adjacent PHQ-9 class
         centroids walked along the severity ladder (see `_phq9_band_linearity`).
         Grouped bars: one group per severity step, one bar per decoding setting
@@ -1239,11 +1260,17 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
     div = _decoding_diversity_stats(runs, n_bootstrap=n_bootstrap, seed=seed)
     print(f"[decoding-linearity] settings={order_lin}; "
           f"severity steps={pair_labels}")
-    map_setting = "baseline" if "baseline" in order_lin else order_lin[0]
-    bmap = _phq9_band_map(runs, setting=map_setting)
+    if map_runs is not None:
+        map_setting = "corpus"
+        bmap = _phq9_band_map(map_runs, setting=map_setting)
+    else:
+        map_setting = "baseline" if "baseline" in order_lin else order_lin[0]
+        bmap = _phq9_band_map(runs, setting=map_setting)
 
-    fig, (ax_map, ax_lin, ax_for) = plt.subplots(
-        1, 3, figsize=(8.6, 3.1), gridspec_kw={"width_ratios": [1.6, 2.1, 1.25]})
+    # (a) spans both rows on the left; (b) above (c) in the right column.
+    fig, axd = plt.subplot_mosaic([["a", "b"], ["a", "c"]], figsize=(8.0, 4.5),
+                                  gridspec_kw={"width_ratios": [1.3, 1.0]})
+    ax_map, ax_lin, ax_for = axd["a"], axd["b"], axd["c"]
 
     # --- (a) Map: posts of one setting on the band-centroid PCA plane. -------
     band_col = {b[2]: b[3] for b in PHQ9_BANDS}
@@ -1251,31 +1278,34 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
         Z, y_band, Zc, bands, expl = bmap
         print(f"[decoding-linearity] map setting={map_setting}, "
               f"{Z.shape[0]} posts, centroid-plane explained var={expl.round(3)}")
+        shown = np.zeros(len(Z), bool)
+        shown[np.random.default_rng(seed).permutation(len(Z))[:2000]] = True
         for b in bands:
-            m = y_band == b
-            ax_map.scatter(Z[m, 0], Z[m, 1], s=7, alpha=0.45, color=band_col[b],
+            m = (y_band == b) & shown
+            ax_map.scatter(Z[m, 0], Z[m, 1], s=11, alpha=0.45, color=band_col[b],
                            edgecolors="none", zorder=2)
         for b, c in zip(bands, Zc):
-            ax_map.scatter(c[0], c[1], s=44, color=band_col[b], edgecolors="black",
-                           linewidths=0.8, zorder=5)
+            ax_map.scatter(c[0], c[1], s=90, color=band_col[b], edgecolors="black",
+                           linewidths=1.1, zorder=5)
         handles = [plt.Line2D([], [], marker="o", linestyle="none", markersize=5,
                               markerfacecolor=band_col[b], markeredgecolor="black",
                               markeredgewidth=0.6,
                               label=b.replace("Mod. Severe", "Mod. Sev."))
                    for b in bands]
-        ax_map.legend(handles=handles, loc="lower left", fontsize=6.5, frameon=True,
+        ax_map.legend(handles=handles, loc="best", fontsize=8, frameon=True,
                       framealpha=0.8, handletextpad=0.25, borderpad=0.35,
-                      labelspacing=0.25, title="PHQ-9 band", title_fontsize=6.5)
-        ax_map.set_xlabel("PC 1 (band centroids)")
-        ax_map.set_ylabel("PC 2 (band centroids)")
-        ax_map.tick_params(labelsize=8)
+                      labelspacing=0.25, title="PHQ-9 band", title_fontsize=8)
+        ax_map.set_xlabel("PC 1")
+        ax_map.set_ylabel("PC 2")
         # datalim (not box) keeps the axes box the size gridspec gave it, so (a)'s
-        # caption stays on the same baseline as (b)'s and (c)'s; the extra left
-        # pad is the legend's room, so it sits beside the cloud and not on it.
+        # caption stays on the same baseline as (c)'s. Limits zoom onto the central
+        # 96 % of posts per axis, so the centroids are not lost in a few outliers.
         ax_map.set_aspect("equal", adjustable="datalim")
         ax_map.grid(linestyle=":", alpha=0.5)
-        span = Z[:, 0].max() - Z[:, 0].min()
-        ax_map.set_xlim(Z[:, 0].min() - 0.22 * span, Z[:, 0].max() + 0.05 * span)
+        lo, hi = np.percentile(Z, [2, 98], axis=0)
+        pad = 0.05 * (hi - lo)
+        ax_map.set_xlim(lo[0] - pad[0], hi[0] + pad[0])
+        ax_map.set_ylim(lo[1] - pad[1], hi[1] + pad[1])
     else:
         ax_map.set_axis_off()
 
@@ -1331,13 +1361,12 @@ def comparison_decoding_linearity(runs: dict, out_path: str,
         ax_for.grid(axis="x", linestyle=":", alpha=0.5)
         ax_for.set_ylim(yy.min() - 0.55, yy.max() + 0.55)
 
-    _py = -0.36
-    ax_map.text(0.5, _py, f"(a) Post embeddings, {_decoding_tuple_label(map_setting)}",
-                transform=ax_map.transAxes, ha="center", va="top", fontsize=11)
-    ax_lin.text(0.5, _py, "(b) PHQ-9 severity linearity",
-                transform=ax_lin.transAxes, ha="center", va="top", fontsize=11)
-    ax_for.text(0.5, _py, "(c) Replicate diversity",
-                transform=ax_for.transAxes, ha="center", va="top", fontsize=11)
+    # Captions below each panel, offset in points so (a) and (c) share a baseline.
+    for ax, cap, dy in [(ax_map, "(a) Post embeddings", -38),
+                        (ax_lin, "(b) PHQ-9 severity linearity", -50),
+                        (ax_for, "(c) Replicate diversity", -38)]:
+        ax.annotate(cap, xy=(0.5, 0), xycoords="axes fraction", xytext=(0, dy),
+                    textcoords="offset points", ha="center", va="top", fontsize=11)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -1372,7 +1401,8 @@ def phq9_adjacent_band_ladder(root: str, emb_name: str = "embeddings_sbert.npz",
     Args:
         root (str): sensitivity root, e.g. data/sensitivity.
         emb_name (str): embedding file to read (SBERT by default).
-        subdir (str): "phq9" (optimized prompt, 3 reps) or "phq9_minimal_prompt" (1 rep, SD 0).
+        subdir (str): "phq9" (optimized prompt, 3 reps) or "phq9_minimal_prompt" (1 rep, SD 0, in
+            the unseeded trees; 3 reps in data/sensitivity/seeded).
 
     Returns:
         pd.DataFrame | None: one row per severity step, or None if fewer than 2 bands
@@ -1448,7 +1478,7 @@ def plot_agent_phq9_combined(ladder: pd.DataFrame, phq9_matrix: pd.DataFrame,
 
     `baseline` (optional) is a second adjacent-band ladder, the minimal /
     un-optimised prompt (`phq9_adjacent_band_ladder(..., subdir="phq9_minimal_prompt")`,
-    1 rep so no SD), drawn as a dashed reference line on panel (a). It is aligned
+    SD not drawn), drawn as a dashed reference line on panel (a). It is aligned
     to the main ladder's steps by (from_band, to_band), so the two curves stay
     rung-matched even if a band is missing on one side.
     """
@@ -1475,7 +1505,7 @@ def plot_agent_phq9_combined(ladder: pd.DataFrame, phq9_matrix: pd.DataFrame,
     los = [float((y - yerr).min())]
     his = [float((y + yerr).max())]
 
-    # Optional baseline (minimal prompt, 1 rep -> no SD): a dashed reference line.
+    # Optional baseline (minimal prompt, SD not drawn): a dashed reference line.
     # Align to the main ladder's rungs by (from_band, to_band) so the two curves
     # stay step-matched even if a band is missing on one side.
     if baseline is not None and not baseline.empty:
@@ -2231,6 +2261,10 @@ def main():
     parser.add_argument("--emb-name", default="embeddings.npz",
                         help="Which encoder's .npz to read: embeddings.npz (MentalBERT, default) "
                              "or embeddings_sbert.npz (SBERT, content/topic axis).")
+    parser.add_argument("--map-posts", default=None,
+                        help="Posts CSV for panel (a) of decoding_phq9_linearity.png, e.g. "
+                             "data/finetune/qwen/train_posts_qwen.csv (default: the decoding "
+                             "baseline setting's own posts).")
     args = parser.parse_args()
 
     # Keep SBERT (content) outputs from clobbering the MentalBERT outputs.
@@ -2341,7 +2375,8 @@ def main():
                 print("\n=== Decoding settings (PHQ-9 severity linearity) ===")
                 lin_summary = comparison_decoding_linearity(
                     dec_runs,
-                    os.path.join(args.out_dir, "decoding_phq9_linearity.png"))
+                    os.path.join(args.out_dir, "decoding_phq9_linearity.png"),
+                    map_runs=load_corpus_runs(args.map_posts) if args.map_posts else None)
                 if lin_summary is not None:
                     lin_summary.to_csv(
                         os.path.join(args.out_dir, "decoding_phq9_linearity.csv"),
@@ -2375,7 +2410,7 @@ def main():
             print("  adjacent-band same-persona cosine (conditioning super-diagonal):")
             print(ladder.round(4).to_string(index=False))
 
-            # Minimal-prompt baseline (un-optimised prompt, 1 rep -> no SD): the
+            # Minimal-prompt baseline (un-optimised prompt, SD not drawn): the
             # same adjacent-band ladder over data/sensitivity/phq9_minimal_prompt,
             # drawn as a dashed reference line on the left panel. Skipped (with a
             # note) if that tree wasn't embedded with the active encoder.

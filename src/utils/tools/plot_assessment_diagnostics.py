@@ -146,7 +146,7 @@ def run_sbert_cosine(device: str = "cpu", batch_size: int = 128, refresh: bool =
 
     The standalone heatmap (sbert_cosine_conditioning_seed35.png) was retired
     2026-09-22. The CSV stays: `run_confusion` draws it as panel (c) of
-    confusion_depression_classes.png, and the PNAS figure_scripts/ read it.
+    confusion_depression_classes.png, and plot_confusion_row.py s8 reads it.
 
     Args:
         device (str): torch device for the encoder.

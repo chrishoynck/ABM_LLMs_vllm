@@ -2217,7 +2217,7 @@ def grade_posts_csv(posts_file: str, out_csv: str, model_name: str = QWEN_27,
     _, teacher_engine = _build_engines(model_name, tp, 0.90, max_model_len=max_model_len,
                                        enable_prefix_caching=enable_prefix_caching, **vllm_kwargs)
     prompts = [_make_loss_prompt_tweet_set(b, p, int(a)) for b, p, a in zip(blocks, personas, answers)]
-    responses = _batch_teacher_rate(teacher_engine, prompts, max_tokens=4096)
+    responses = _batch_teacher_rate(teacher_engine, prompts, max_tokens=12288)  # 4096 truncated 10-26% of blocks
 
     rows = []
     for aid, persona, phq9, block, resp in zip(agent_ids, personas, answers, blocks, responses):

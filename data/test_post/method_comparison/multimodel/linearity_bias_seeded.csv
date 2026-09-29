@@ -3,15 +3,15 @@ Qwen3.5-27B,phq9,Minimal → Mild,0.37143608827902774,0.014650410433929173,3,600
 Qwen3.5-27B,phq9,Mild → Moderate,0.3616323516345872,0.007216897811671457,3,600
 Qwen3.5-27B,phq9,Moderate → Mod. Severe,0.39260259401422815,0.005992817201251016,3,600
 Qwen3.5-27B,phq9,Mod. Severe → Severe,0.3876880603861257,0.007312923571558571,3,600
-Qwen3.5-27B,phq9_minimal_prompt,Minimal → Mild,0.3890518544782807,0.0,1,600
-Qwen3.5-27B,phq9_minimal_prompt,Mild → Moderate,0.3995864479913694,0.0,1,600
-Qwen3.5-27B,phq9_minimal_prompt,Moderate → Mod. Severe,0.4032154446228854,0.0,1,600
-Qwen3.5-27B,phq9_minimal_prompt,Mod. Severe → Severe,0.39901349569280653,0.0,1,600
+Qwen3.5-27B,phq9_minimal_prompt,Minimal → Mild,0.39511659154233286,0.007829985286959782,3,600
+Qwen3.5-27B,phq9_minimal_prompt,Mild → Moderate,0.39753345343363367,0.0035716121687990265,3,600
+Qwen3.5-27B,phq9_minimal_prompt,Moderate → Mod. Severe,0.40390419516886134,0.004148675997085953,3,600
+Qwen3.5-27B,phq9_minimal_prompt,Mod. Severe → Severe,0.40386025515955465,0.00514836090102388,3,600
 Gemma-4-31B-it,phq9,Minimal → Mild,0.30908936640678847,0.006652523632084817,3,600
 Gemma-4-31B-it,phq9,Mild → Moderate,0.20790080049219029,0.006034340267191113,3,600
 Gemma-4-31B-it,phq9,Moderate → Mod. Severe,0.27288054248479954,0.0076292777881001505,3,600
 Gemma-4-31B-it,phq9,Mod. Severe → Severe,0.3198234815138249,0.00805263017029846,3,600
-Gemma-4-31B-it,phq9_minimal_prompt,Minimal → Mild,0.33755211115924594,0.0,1,600
-Gemma-4-31B-it,phq9_minimal_prompt,Mild → Moderate,0.31312518526645083,0.0,1,600
-Gemma-4-31B-it,phq9_minimal_prompt,Moderate → Mod. Severe,0.34811231972077433,0.0,1,600
-Gemma-4-31B-it,phq9_minimal_prompt,Mod. Severe → Severe,0.3636844911903049,0.0,1,600
+Gemma-4-31B-it,phq9_minimal_prompt,Minimal → Mild,0.3441868649266759,0.005902491688769166,3,600
+Gemma-4-31B-it,phq9_minimal_prompt,Mild → Moderate,0.3170926850214123,0.0036931809612047507,3,600
+Gemma-4-31B-it,phq9_minimal_prompt,Moderate → Mod. Severe,0.3458718335155992,0.005871641907303537,3,600
+Gemma-4-31B-it,phq9_minimal_prompt,Mod. Severe → Severe,0.3678338162157619,0.009723457134230819,3,600

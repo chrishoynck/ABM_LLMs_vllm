@@ -17,8 +17,11 @@
 # Output roots (the paper's unseeded trees are untouched):
 #   data/sensitivity/seeded/qwen/{phq9,phq9_minimal_prompt,decoding}
 #   data/sensitivity/seeded/gemma4/{phq9,phq9_minimal_prompt,decoding}
-#   task 0: Qwen  PHQ-9 axis, iter_10 x 3 reps + iter_0 x 1 rep   (20 runs)
-#   task 1: Gemma PHQ-9 axis, same                                  (20 runs)
+#   task 0: Qwen  PHQ-9 axis, iter_10 x 3 reps + iter_0 x 3 reps  (30 runs)
+#   task 1: Gemma PHQ-9 axis, same                                  (30 runs)
+# iter_0 (minimal prompt) had 1 rep until 2026-09-28; reps 2-3 were added so panel (a)
+# of the linearity figures has a between-rep SD for it too:
+#   sbatch --array=0-1 --time=02:30:00 jobs/sa_seeded.job
 #   task 2: Qwen  decoding grid, 7 settings x 3 reps                (21 runs)
 #   task 3: Gemma decoding grid, 7 settings x 3 reps                (21 runs)
 # Gemma grid: temp 0.7/1.0/1.3, top_p 0.95 (vendor default) / 0.975 (operating
@@ -45,7 +48,7 @@ if [[ "${SLURM_ARRAY_TASK_ID}" -le 1 ]]; then
     SA_PROMPT=data/sensitivity/inputs/prompt_iter_10.txt NUM_PHQ9_REPS=3 OUT_SUBDIR=phq9 \
       srun bash scripts/sensitivity/sa_phq9_minimal_run.sh
     SA_MODEL=${MODEL} SA_ROOT=${ROOT} PYTHON=${PY} SA_SEED_MODE=agent SA_BASE_SEED=1000 \
-    SA_PROMPT=data/sensitivity/inputs/prompt_iter_0.txt NUM_PHQ9_REPS=1 OUT_SUBDIR=phq9_minimal_prompt \
+    SA_PROMPT=data/sensitivity/inputs/prompt_iter_0.txt NUM_PHQ9_REPS=3 OUT_SUBDIR=phq9_minimal_prompt \
       srun bash scripts/sensitivity/sa_phq9_minimal_run.sh
 else
     if [[ "${TAG}" == "gemma4" ]]; then

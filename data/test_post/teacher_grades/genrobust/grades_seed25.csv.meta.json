@@ -1,0 +1,20 @@
+{
+  "posts_file": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/data/test_post/teacher_grades/genrobust/posts_seed25.csv",
+  "grader_model": "Qwen/Qwen3.5-27B",
+  "rubric_md5": "204a73c8e97156c3eaaacac8cbee5ee5",
+  "rubric_criteria": 6,
+  "enable_prefix_caching": false,
+  "tensor_parallel_size": 2,
+  "vllm_version": "0.17.1",
+  "temperature": 0.2,
+  "top_p": 0.99,
+  "llm_seed": null,
+  "python": "/gpfs/home2/choynck/thesis/ABM_based_LLMS/.venv_vllm/bin/python",
+  "session": {
+    "slurm_job_id": "27300087",
+    "slurm_step_id": "7",
+    "host": "gcn12.local.snellius.surf.nl",
+    "pid": 1532872
+  },
+  "timestamp": "2026-09-28T17:39:30"
+}

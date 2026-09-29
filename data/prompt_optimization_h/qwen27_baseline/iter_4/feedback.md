@@ -15,3 +15,4 @@ posts too long, make extreme mood mor extreme, create a better structure
 ## Scores (fill in by hand)
 training_score: 6.8
 scores: 7, 6.8, 6.7, 6.8, 7.2, 6.5, 6.6
+val_score: 6.15 ± 1.53  (teacher, 20 held-out personas, val20/)

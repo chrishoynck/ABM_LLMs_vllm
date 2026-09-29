@@ -1,0 +1,13 @@
+shift,source,target,assessor,n_runs_base,n_runs_shift,base_mae,d_mae,base_bias,d_bias
+"Prompt shift, Qwen3.5-27B: human-optimized → minimal",qwen27_optimized,qwen27_minimal,MentalBERT+MLP,5,5,2.8840000000000003,0.321333333333333,-1.1039999999999999,1.4186666666666665
+"Prompt shift, Qwen3.5-27B: human-optimized → minimal",qwen27_optimized,qwen27_minimal,LLM (minimal),1,5,4.596666666666667,0.5526666666666671,-0.12333333333333334,3.611333333333334
+"Prompt shift, Qwen3.5-27B: minimal → human-optimized",qwen27_minimal,qwen27_optimized,MentalBERT+MLP,5,5,2.838,1.2599999999999998,-0.9966666666666667,-2.1026666666666665
+"Prompt shift, Qwen3.5-27B: minimal → human-optimized",qwen27_minimal,qwen27_optimized,LLM (minimal),5,1,5.149333333333334,-0.5526666666666671,3.4880000000000004,-3.611333333333334
+"Prompt shift, Gemma-4-31B-it: human-optimized → minimal",gemma4_optimized,gemma4_minimal,MentalBERT+MLP,5,5,2.3553333333333333,0.8500000000000001,-1.1086666666666667,2.818
+"Prompt shift, Gemma-4-31B-it: human-optimized → minimal",gemma4_optimized,gemma4_minimal,LLM (minimal),5,5,6.153333333333333,-1.8120000000000003,-5.968,7.889333333333333
+"Prompt shift, Gemma-4-31B-it: minimal → human-optimized",gemma4_minimal,gemma4_optimized,MentalBERT+MLP,5,5,2.478666666666667,2.9393333333333334,-0.9253333333333333,-4.077999999999999
+"Prompt shift, Gemma-4-31B-it: minimal → human-optimized",gemma4_minimal,gemma4_optimized,LLM (minimal),5,5,4.341333333333333,1.8120000000000003,1.9213333333333336,-7.889333333333333
+"Model shift, human-optimized prompt: Qwen3.5-27B → Gemma-4-31B-it",qwen27_optimized,gemma4_optimized,MentalBERT+MLP,5,5,2.8840000000000003,4.597333333333333,-1.1039999999999999,-6.308000000000001
+"Model shift, human-optimized prompt: Qwen3.5-27B → Gemma-4-31B-it",qwen27_optimized,gemma4_optimized,LLM (minimal),1,5,4.596666666666667,1.5566666666666666,-0.12333333333333334,-5.844666666666667
+"Model shift, minimal prompt: Qwen3.5-27B → Gemma-4-31B-it",qwen27_minimal,gemma4_minimal,MentalBERT+MLP,5,5,2.838,1.1053333333333328,-0.9966666666666667,-2.3413333333333335
+"Model shift, minimal prompt: Qwen3.5-27B → Gemma-4-31B-it",qwen27_minimal,gemma4_minimal,LLM (minimal),5,5,5.149333333333334,-0.8080000000000007,3.4880000000000004,-1.5666666666666669

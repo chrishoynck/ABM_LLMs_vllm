@@ -1,0 +1,9 @@
+timestamp:        2026-09-28T12:30:47
+model:            Qwen/Qwen3.5-27B
+opt_seed:         25
+instruction:      data/test_post/optimized_phq9/Qwen3.5-27B_seed25/minimal_instruction.txt
+posts_file:       data/finetune/qwen_minimal/test_posts_qwen_minimal.csv
+n_blocks:         300
+
+test_mae:         5.1733
+test_std:         3.7233

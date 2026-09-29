@@ -1899,6 +1899,14 @@ MODEL_FIG_LLM_ASSESSORS = MULTIMODEL_LLM_ASSESSORS + [
     ("Gemma-4-31B-it", "human-opt.", "minimal",
      "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}/minimal_gemma4300/test_raw_scores.csv",
      [23, 24, 25, 32, 33], "data/finetune/gemma4/test_posts_gemma4.csv", "mean"),
+    # The same minimal assessment prompt on each generator's MINIMAL-generation-prompt
+    # 300-block set (jobs/run_llm_assessor_minimal.job), so the LLM row has both arms.
+    ("Qwen3.5-27B", "minimal", "minimal",
+     "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}/minimal_qwen_minimal300/test_raw_scores.csv",
+     [23, 24, 25, 32, 33], "data/finetune/qwen_minimal/test_posts_qwen_minimal.csv", "mean"),
+    ("Gemma-4-31B-it", "minimal", "minimal",
+     "data/test_post/optimized_phq9/Qwen3.5-27B_seed{seed}/minimal_gemma4_minimal300/test_raw_scores.csv",
+     [23, 24, 25, 32, 33], "data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv", "mean"),
 ]
 # Dropped from the main figure on 2026-09-21: the TextGrad-optimized assessment prompt
 # ("TextGrad best", `optimized_phq9_human/Qwen3.5-27B_seed{seed}/test_raw_scores.csv`,
@@ -2040,7 +2048,8 @@ def plot_multimodel_linearity_bias(out_path: str, n_bootstrap: int = 1000, seed:
     between consecutive PHQ-9 bands from the PHQ-9 conditioning runs
     (`sa_analyze.phq9_adjacent_band_ladder` on `MULTIMODEL_SA_ROOTS[<generator>]`),
     for the human-optimized prompt (3 reps, error bar = SD across reps) and the
-    minimal prompt (1 rep, no bar), `MULTIMODEL_SA_PROMPTS`. Personas, their per-band
+    minimal prompt (3 reps in the seeded trees, 1 rep and no bar in the unseeded ones),
+    `MULTIMODEL_SA_PROMPTS`. Personas, their per-band
     scores and the neighbour posts are pinned across bands, reps, prompts and
     generators, so only the conditioned band (and the generator) moves. (b) and (c)
     use the paired 300-block held-out sets / 100 test personas generated with the
@@ -2566,6 +2575,186 @@ def plot_model_linearity_bias(label: str, out_path: str, exclude_prompt_iter_per
     return out_path
 
 
+# Distribution shift: a fine-tuned regressor scored on the corpus it was trained on (base)
+# and on a shifted corpus, next to the LLM assessor (minimal assessment prompt) on the same
+# two corpora. (source, target) pairs of assessor-tree corpus names; the regressor is the one
+# fine-tuned on `source`. Prompt shifts go both ways, the model shift one way only (the
+# Qwen-trained regressor on Gemma posts). Cells not scored yet are skipped; the BERT
+# cross-cells come from jobs/run_bert_shift_eval.job.
+SHIFTS = [
+    ("qwen27_optimized", "qwen27_minimal"),
+    ("qwen27_minimal", "qwen27_optimized"),
+    ("gemma4_optimized", "gemma4_minimal"),
+    ("gemma4_minimal", "gemma4_optimized"),
+    ("qwen27_optimized", "gemma4_optimized"),
+    ("qwen27_minimal", "gemma4_minimal"),
+]
+_ARM_PROMPT_KEY = {"optimized": "human-opt.", "minimal": "minimal"}  # assessors prompt -> MULTIMODEL_PROMPT_* key
+# Line per assessor in the shift figure: (line style, marker, legend label).
+SHIFT_STYLES = {
+    "own": ("-", "o", "MentalBERT+MLP, FT on these posts"),
+    "prompt": ("--", "s", "MentalBERT+MLP, FT on other prompt"),
+    "model": ("-.", "D", "MentalBERT+MLP, FT on Qwen posts"),
+    "llm": (":", "^", "LLM (minimal prompt)"),
+}
+
+
+def _bert_shift_files(arm, corpus):
+    """Per-seed prediction CSVs of `arm`'s regressors scored on `corpus`."""
+    return [f for f in sorted(glob.glob(os.path.join(assessors.eval_dir(arm, corpus), "seed*.csv")))
+            if "summary" not in f]
+
+
+def _llm_shift_files(corpus):
+    """Per-seed prediction CSVs of the LLM assessor (minimal assessment prompt) on `corpus`."""
+    spec = assessors.ARMS[corpus]
+    want = (spec["generator_label"], _ARM_PROMPT_KEY[spec["prompt"]], "minimal")
+    for gen, prompt_key, assess_key, pattern, seeds, _, _ in MODEL_FIG_LLM_ASSESSORS:
+        if (gen, prompt_key, assess_key) == want:
+            return [p for p in (pattern.format(seed=s) for s in seeds) if os.path.isfile(p)]
+    return []
+
+
+def _mae_bias(paths):
+    """(MAE, bias) per prediction CSV; shape (n_files, 2)."""
+    rows = []
+    for p in paths:
+        d = pd.read_csv(p)
+        err = d["pred_phq9"] - d["true_phq9"]
+        rows.append((err.abs().mean(), err.mean()))
+    return np.array(rows, float).reshape(-1, 2)
+
+
+def _shift_title(src, dst, arrow="→"):
+    """'Prompt shift, Qwen3.5-27B: human-optimized → minimal' or 'Model shift, ...: Qwen → Gemma'."""
+    a, b = assessors.ARMS[src], assessors.ARMS[dst]
+    pa, pb = (MULTIMODEL_PROMPT_LABELS[_ARM_PROMPT_KEY[s["prompt"]]] for s in (a, b))
+    if a["generator"] == b["generator"]:
+        return f"Prompt shift, {a['generator_label']}: {pa} {arrow} {pb}"
+    return f"Model shift, {pa} prompt: {a['generator_label']} {arrow} {b['generator_label']}"
+
+
+def write_shift_table(out_dir):
+    """Distribution-shift table (shift.csv + table_shift.tex): base MAE/bias on the source corpus, change on the target.
+
+    One block per `SHIFTS` pair, two rows each: the MentalBERT+MLP regressor fine-tuned on
+    the source corpus, and the LLM assessor with the minimal assessment prompt (trained on
+    neither, so its row shows how much harder the target posts are to read without
+    tuning). Values are means over runs (regressor seeds 34-38; LLM runs 23-33, a single
+    run on Qwen's human-optimized posts) of the per-run MAE and bias (pred - true) on the
+    shared 300 held-out personas. Those personas and their PHQ-9 are identical in all four
+    corpora, so every delta is paired. Positive dMAE = worse on the shifted posts.
+    """
+    rows = []
+    for src, dst in SHIFTS:
+        for name, base_files, shift_files in (
+                ("MentalBERT+MLP", _bert_shift_files(src, src), _bert_shift_files(src, dst)),
+                ("LLM (minimal)", _llm_shift_files(src), _llm_shift_files(dst))):
+            if not base_files or not shift_files:
+                print(f"[shift] skip {_shift_title(src, dst)} / {name}: not scored yet")
+                continue
+            base, shifted = _mae_bias(base_files), _mae_bias(shift_files)
+            rows.append({"shift": _shift_title(src, dst), "source": src, "target": dst, "assessor": name,
+                         "n_runs_base": len(base), "n_runs_shift": len(shifted),
+                         "base_mae": base[:, 0].mean(), "d_mae": shifted[:, 0].mean() - base[:, 0].mean(),
+                         "base_bias": base[:, 1].mean(), "d_bias": shifted[:, 1].mean() - base[:, 1].mean()})
+    table = pd.DataFrame(rows)
+    table.to_csv(os.path.join(out_dir, "shift.csv"), index=False)
+    if table.empty:
+        return table
+    print(table.drop(columns=["source", "target"]).round(2).to_string(index=False))
+
+    lines = ["\\begin{tabular}{lcccc}", "\\toprule",
+             "Assessor & Base MAE & $\\Delta$MAE & Base Bias & $\\Delta$Bias \\\\"]
+    for (src, dst), g in table.groupby(["source", "target"], sort=False):
+        title = _shift_title(src, dst, "$\\rightarrow$")
+        lines += ["\\midrule", f"\\multicolumn{{5}}{{l}}{{\\textit{{{title}}}}} \\\\"]
+        lines += [f"{r.assessor} & {r.base_mae:.2f} & ${r.d_mae:+.2f}$ & ${r.base_bias:+.2f}$ & ${r.d_bias:+.2f}$ \\\\"
+                  for r in g.itertuples()]
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    with open(os.path.join(out_dir, "table_shift.tex"), "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return table
+
+
+def plot_shift_bias(out_path):
+    """Per-band bias of every assessor on every 300-block corpus, one panel per generator.
+
+    Colour = the generation prompt of the scored posts (`MULTIMODEL_PROMPT_COLOURS`, as in
+    the linearity/bias figures); line = assessor (`SHIFT_STYLES`): the regressor fine-tuned
+    on these posts (solid), on the same generator's other-prompt posts (dashed), on Qwen's
+    posts under the same prompt (dash-dot, Gemma panel only), and the LLM with the minimal
+    assessment prompt (dotted). Mean +/- SD over runs. The panels share the y-axis so the
+    size of each shift reads directly. Writes the numbers to `<stem>.csv`.
+    """
+    from matplotlib.lines import Line2D
+    x = np.arange(len(_MM_BANDS))
+    fig, axes = plt.subplots(1, 2, figsize=(6.4, 2.5), sharey=True)
+    rows, used_kinds = [], set()
+    for ax, gen, letter in zip(axes, ["Qwen3.5-27B", "Gemma-4-31B-it"], "ab"):
+        corpora = [c for c in assessors.CORPORA if assessors.ARMS.get(c, {}).get("generator_label") == gen]
+        for corpus in corpora:
+            colour = MULTIMODEL_PROMPT_COLOURS[_ARM_PROMPT_KEY[assessors.ARMS[corpus]["prompt"]]]
+            lines = [("own", corpus, _bert_shift_files(corpus, corpus))]
+            for src, dst in SHIFTS:
+                if dst == corpus:
+                    same_gen = assessors.ARMS[src]["generator"] == assessors.ARMS[dst]["generator"]
+                    lines.append(("prompt" if same_gen else "model", src, _bert_shift_files(src, corpus)))
+            lines.append(("llm", "", _llm_shift_files(corpus)))
+            for kind, trained_on, files in lines:
+                if not files:
+                    continue
+                bias = _band_bias_per_seed(files)
+                style, marker, _ = SHIFT_STYLES[kind]
+                used_kinds.add(kind)
+                if len(bias) > 1:
+                    ax.fill_between(x, bias.mean(0) - bias.std(0), bias.mean(0) + bias.std(0),
+                                    color=colour, alpha=0.15, linewidth=0)
+                ax.plot(x, bias.mean(0), linestyle=style, marker=marker, color=colour, linewidth=1.4,
+                        markersize=4.5, markeredgecolor="black", markeredgewidth=0.5, zorder=3)
+                rows += [{"posts": corpus, "assessor": kind, "trained_on": trained_on, "band": name,
+                          "bias": m, "sd": s, "n_runs": len(bias)}
+                         for (_, _, name), m, s in zip(_MM_BANDS, bias.mean(0), bias.std(0))]
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(_MM_BAND_SHORT, rotation=30, ha="right", fontsize=8)
+        ax.tick_params(axis="y", labelsize=8.5)
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        ax.set_axisbelow(True)
+        ax.set_xlabel(f"({letter}) {MULTIMODEL_TEST_POSTS[gen][0]} posts", fontsize=9.5)
+    axes[0].set_ylabel("Bias = mean(pred − true)", fontsize=9.5)
+    fig.subplots_adjust(wspace=0.08)
+
+    # Two legends above the panels: colour = generation prompt, line = assessor.
+    prompt_handles = [Line2D([], [], color=MULTIMODEL_PROMPT_COLOURS[k], linewidth=2.6,
+                             label=MULTIMODEL_PROMPT_LABELS[k]) for k in ("human-opt.", "minimal")]
+    assess_handles = [Line2D([], [], color="0.35", linestyle=style, marker=marker, linewidth=1.4,
+                             markersize=4.5, markeredgecolor="black", markeredgewidth=0.5, label=label)
+                      for kind, (style, marker, label) in SHIFT_STYLES.items() if kind in used_kinds]
+    for handles, title, loc, x0 in ((prompt_handles, "Posts' generation prompt", "lower right", 0.33),
+                                    (assess_handles, "Assessor", "lower left", 0.35)):
+        leg = fig.legend(handles=handles, title=title, ncol=1 if len(handles) <= 2 else 2, loc=loc,
+                         bbox_to_anchor=(x0, 0.9), fontsize=7, framealpha=0.9, handlelength=2.6,
+                         handletextpad=0.5, borderpad=0.4, columnspacing=1.0, labelspacing=0.3)
+        leg.get_title().set_fontsize(7)
+        leg.get_title().set_fontweight("bold")
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    pd.DataFrame(rows).to_csv(os.path.splitext(out_path)[0] + ".csv", index=False)
+    print(f"Distribution-shift bias plot → {out_path}")
+    return out_path
+
+
+def run_shift_summary(argv=None):
+    """CLI entry: distribution-shift table (shift.csv, table_shift.tex) and figure (shift_bias.png)."""
+    ap = argparse.ArgumentParser(description="Prompt/model distribution-shift table and per-band bias figure.")
+    ap.add_argument("--out-dir", default="data/test_post/method_comparison/multimodel")
+    args = ap.parse_args(argv)
+    os.makedirs(args.out_dir, exist_ok=True)
+    write_shift_table(args.out_dir)
+    plot_shift_bias(os.path.join(args.out_dir, "shift_bias.png"))
+
+
 def write_multimodel_post_samples(out_path: str, n_per_band: int = 1, seed: int = 0):
     """Markdown file with the same personas' posts from every generator, `n_per_band` blocks per severity band.
 
@@ -2950,7 +3139,8 @@ if __name__ == "__main__":
     import sys
     import matplotlib
     matplotlib.use("Agg")  # CLI only; never set a backend at import time (the notebook imports this module)
-    _CMDS = {"eval-comparison": run_eval_comparison, "multimodel": run_multimodel_summary}
+    _CMDS = {"eval-comparison": run_eval_comparison, "multimodel": run_multimodel_summary,
+             "shift": run_shift_summary}
     if len(sys.argv) < 2 or sys.argv[1] not in _CMDS:
         sys.exit(f"usage: python -m utils.visualization {{{'|'.join(_CMDS)}}} [flags]  (--help per command)")
     _CMDS[sys.argv[1]](sys.argv[2:])

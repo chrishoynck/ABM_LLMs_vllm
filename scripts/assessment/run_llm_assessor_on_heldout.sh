@@ -12,6 +12,7 @@
 #   bash scripts/assessment/run_llm_assessor_on_heldout.sh gemma4
 #   bash scripts/assessment/run_llm_assessor_on_heldout.sh mistral
 #   POSTS=path/to/other.csv bash scripts/assessment/run_llm_assessor_on_heldout.sh <tag>
+#   SKIP_OPT=1 bash scripts/assessment/run_llm_assessor_on_heldout.sh qwen_minimal   (minimal prompt only)
 #
 # Outputs (existing minimal_human300/ and eval_on_human300/ are untouched):
 #   data/test_post/optimized_phq9/Qwen3.5-27B_seed<s>/minimal_<tag>300/test_raw_scores.csv
@@ -28,6 +29,7 @@ POSTS="${POSTS:-data/finetune/${TAG}/test_posts_${TAG}.csv}"
 OPT_DIR="data/test_post/optimized_phq9"
 MIN_SUBDIR="minimal_${TAG}300"
 OPT_SUBDIR="eval_on_${TAG}300"
+SKIP_OPT="${SKIP_OPT:-0}"                            # 1 = score with the minimal prompt only
 
 [[ -f "${POSTS}" ]] || { echo "posts file not found: ${POSTS}" >&2; exit 1; }
 # The minimal prompt is seed-independent (data/prompts_post_minimal.json); write it
@@ -55,18 +57,20 @@ PYTHONPATH=src "${PYTHON}" -m utils.prompt_optimizer --mode phq9-rerun-test \
     --posts-file "${POSTS}" \
     --result-subdir "${MIN_SUBDIR}"
 
+if [[ "${SKIP_OPT}" != 1 ]]; then
 echo "[2] OPTIMIZED (TextGrad) prompt on ${POSTS} -> ${OPT_SUBDIR}/"
 PYTHONPATH=src "${PYTHON}" -m utils.prompt_optimizer --mode phq9-rerun-test \
     --model "${MODEL}" --seeds ${PROMPT_SEEDS} \
     --instruction-filename optimized_instruction.txt \
     --posts-file "${POSTS}" \
     --result-subdir "${OPT_SUBDIR}"
+fi
 
 echo ""
 echo "DONE. Per-seed scores under:"
 for s in ${PROMPT_SEEDS}; do
   echo "  ${OPT_DIR}/Qwen3.5-27B_seed${s}/${MIN_SUBDIR}/test_raw_scores.csv"
-  echo "  ${OPT_DIR}/Qwen3.5-27B_seed${s}/${OPT_SUBDIR}/test_raw_scores.csv"
+  [[ "${SKIP_OPT}" == 1 ]] || echo "  ${OPT_DIR}/Qwen3.5-27B_seed${s}/${OPT_SUBDIR}/test_raw_scores.csv"
 done
 
 # === 3. Generator x estimator table + figures (CPU; missing inputs are skipped) =

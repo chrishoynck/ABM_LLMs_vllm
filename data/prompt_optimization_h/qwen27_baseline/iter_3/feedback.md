@@ -15,3 +15,4 @@ adjust ranges for emotional register and give examples of topics besides it. res
 ## Scores (fill in by hand)
 training_score: 6.5 
 scores: 6, 5.5, 7, 6.8, 7.5, 6.5, 6.2
+val_score: 6.30 ± 1.71  (teacher, 20 held-out personas, val20/)

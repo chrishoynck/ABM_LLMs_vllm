@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=assess_minimal
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=01:30:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Qwen3.5-27B LLM assessor, MINIMAL assessment prompt only, 5 prompt seeds, on the two
+# minimal-generation-prompt 300-block sets (qwen_minimal, gemma4_minimal). Gives the
+# minimal line in the LLM row of panel (b) of linearity_bias_{qwen,gemma}.png.
+# Outputs: data/test_post/optimized_phq9/Qwen3.5-27B_seed<s>/minimal_<tag>300/
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+source .venv_vllm/bin/activate
+export PYTHONUNBUFFERED=1
+
+srun python -uc "import torch; print('GPU available?', torch.cuda.is_available())"
+
+for tag in qwen_minimal gemma4_minimal; do
+    SKIP_OPT=1 srun bash scripts/assessment/run_llm_assessor_on_heldout.sh "${tag}"
+done

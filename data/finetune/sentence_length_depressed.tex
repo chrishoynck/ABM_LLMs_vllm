@@ -1,0 +1,29 @@
+\begin{table}[ht]
+\centering
+\small
+\caption{Do depressed personas write and engage differently? Non-depressed (PHQ-9 $<10$, $n=1074$) vs depressed (PHQ-9 $\geq10$, $n=1926$) personas in the fine-tuning corpora (3,000 personas with 10 posts each; the same personas, scores and neighbor posts for every prompt and model). \emph{Words per sentence}: posts are split into sentences at \texttt{.}, \texttt{!} and \texttt{?}, and words are alphanumeric tokens (emoji excluded). \emph{Posts mentioning another user}: share of a persona's posts that mention (\texttt{@user\_<id>}) the author of at least one of the five neighbor posts shown in the prompt, a proxy for engagement with peers. \emph{CDS minus non-CDS}: share of the shown neighbor posts containing a cognitive distortion that the persona mentions, minus the same share for shown posts without one, a proxy for preferential engagement with distorted content. Values are means over personas of each persona's 10-post value. $\Delta$ is depressed minus non-depressed, $d$ is Cohen's $d$ and $p$ is a Welch $t$-test on persona means.}
+\label{tab:sentence_length_depressed}
+\begin{tabular}{llrrrrr}
+\hline
+Prompt & Model & PHQ-9 $<10$ & PHQ-9 $\geq10$ & $\Delta$ & $d$ & $p$ \\
+\hline
+\multicolumn{7}{l}{\textit{Words per sentence}} \\
+Human-optimized & Qwen3.5-27B & 11.99 & 12.05 & $+0.06$ & $+0.04$ & 0.34 \\
+ & Gemma-4-31B-it & 10.14 & 10.88 & $+0.74$ & $+0.50$ & $1.0\times10^{-37}$ \\
+Minimal & Qwen3.5-27B & 13.01 & 14.13 & $+1.12$ & $+0.66$ & $8.8\times10^{-60}$ \\
+ & Gemma-4-31B-it & 11.63 & 11.52 & $-0.10$ & $-0.06$ & 0.12 \\
+\hline
+\multicolumn{7}{l}{\textit{Posts mentioning another user (\%)}} \\
+Human-optimized & Qwen3.5-27B & 76.0 & 90.7 & $+14.7$ & $+0.86$ & $1.2\times10^{-81}$ \\
+ & Gemma-4-31B-it & 33.1 & 55.2 & $+22.1$ & $+0.87$ & $2.9\times10^{-116}$ \\
+Minimal & Qwen3.5-27B & 84.4 & 90.7 & $+6.3$ & $+0.31$ & $2.7\times10^{-14}$ \\
+ & Gemma-4-31B-it & 24.3 & 69.5 & $+45.2$ & $+1.65$ & $2.1\times10^{-285}$ \\
+\hline
+\multicolumn{7}{l}{\textit{CDS minus non-CDS posts mentioned (percentage points)}} \\
+Human-optimized & Qwen3.5-27B & $-0.2$ & 0.5 & $+0.7$ & $+0.07$ & 0.07 \\
+ & Gemma-4-31B-it & $-1.5$ & 0.4 & $+1.9$ & $+0.24$ & $2.3\times10^{-10}$ \\
+Minimal & Qwen3.5-27B & 1.9 & 2.0 & $+0.1$ & $+0.01$ & 0.88 \\
+ & Gemma-4-31B-it & 0.6 & 3.4 & $+2.8$ & $+0.33$ & $5.8\times10^{-20}$ \\
+\hline
+\end{tabular}
+\end{table}

@@ -14,4 +14,5 @@ specific examples?
 
 ## Scores (fill in by hand)
 training_score: 6.8
-scores: 7.2, 6.0, 7, 5.8, 7.4, 7.8, 6.4. 
+scores: 7.2, 6.0, 7, 5.8, 7.4, 7.8, 6.4.
+val_score: 5.40 ± 1.36  (teacher, 20 held-out personas, val20/)

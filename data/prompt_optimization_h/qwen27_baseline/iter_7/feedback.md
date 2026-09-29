@@ -15,3 +15,4 @@ this is the final prompt
 ## Scores (fill in by hand)
 training_score: 8.2 
 scores: 8, 8.5, 8.5, 8, 8, 8.4
+val_score: 5.70 ± 1.49  (teacher, 20 held-out personas, val20/)

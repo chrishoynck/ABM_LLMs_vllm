@@ -1,0 +1,68 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=genrobust
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=08:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# tab:si_genrobust on the 300 shared held-out personas (finetune/personas_test_300.csv):
+# minimal prompt, the five TextGrad post prompts (seeds 24/25/28/29/53 = runs 1-5) and the
+# human-optimized prompt, all graded in ONE grade-posts pass on the first 3 posts per block
+# (same protocol as grade_posts_panelc.job). Seed 29, minimal and human-opt already have
+# 300-block corpora; the other four seeds are generated here with the seed-29 settings
+# (qwen27 student decoding, --first-n, 10 rounds). All seven are regraded because the
+# stored 300-block grades predate the truncation guard and the 12288-token teacher budget.
+# Resumable: finished corpora chunks and grade files are skipped.
+#   sbatch jobs/grade_genrobust.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+QPY=.venv_vllm/bin/python
+OUT=data/test_post/teacher_grades/genrobust
+mkdir -p "${OUT}"
+
+srun "${QPY}" -uc "import torch; print('GPU available?', torch.cuda.is_available())"
+
+# 1. Generate the four missing TextGrad corpora.
+for S in 24 25 28 53; do
+    srun "${QPY}" -m utils.create_data.generate_test_data \
+        --instruction-file data/test_post/optimized_tweets/Qwen3.5-27B_seed${S}/optimized_instruction_tweet.txt \
+        --persona-phq9-file data/finetune/personas_test_300.csv \
+        --model qwen27 --num_agents 300 --check_point 10 --first-n --chunk-size 100 \
+        --output-csv data/finetune/qwen_textgrad_seed${S}/test_posts_qwen_textgrad_seed${S}.csv
+done
+
+# 2. First 3 posts per block for every arm.
+"${QPY}" - "${OUT}" <<'PY'
+import sys, pandas as pd
+out = sys.argv[1]
+arms = {"minimal": "data/finetune/qwen_minimal/test_posts_qwen_minimal.csv",
+        "seed29": "data/finetune/qwen_textgrad/test_posts_qwen_textgrad.csv",
+        "human": "data/finetune/qwen/test_posts_qwen.csv"}
+arms.update({f"seed{s}": f"data/finetune/qwen_textgrad_seed{s}/test_posts_qwen_textgrad_seed{s}.csv"
+             for s in (24, 25, 28, 53)})
+for arm, f in arms.items():
+    d = pd.read_csv(f)
+    d.groupby("agent_id", sort=False).head(3).to_csv(f"{out}/posts_{arm}.csv", index=False)
+    print(f"[first3] {arm}: {d['agent_id'].nunique()} blocks")
+PY
+
+# 3. Grade all seven arms.
+for ARM in minimal seed24 seed25 seed28 seed29 seed53 human; do
+    [[ -f "${OUT}/grades_${ARM}.csv" ]] && { echo "[skip] grades_${ARM}.csv exists"; continue; }
+    srun "${QPY}" -m utils.prompt_optimizer --mode grade-posts \
+        --posts-file "${OUT}/posts_${ARM}.csv" --out-csv "${OUT}/grades_${ARM}.csv"
+done
+
+# 4. Table numbers.
+"${QPY}" - "${OUT}" <<'PY'
+import sys, pandas as pd
+for arm in ["minimal", "seed24", "seed25", "seed28", "seed29", "seed53", "human"]:
+    s = pd.read_csv(f"{sys.argv[1]}/grades_{arm}.csv")["score"]
+    print(f"{arm:8s} n={s.count():3d}  unparsed={s.isna().sum():2d}  {s.mean():.2f} +/- {s.std():.2f}")
+PY
