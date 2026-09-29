@@ -15,12 +15,15 @@
 # CPU only: a few thousand tweets through MentalBERT take minutes. Each TAG gets its
 # own embeddings/ and results/, and the tweets are encoded ONCE per TAG (embed.py
 # skips an encoder whose .npz exists), so a resubmit only reruns the cheap steps.
+# Embedding is the only step that grows with the number of tweets: for a pull with
+# every tweet (e.g. TAG=260923all) raise the limit at submit time, e.g. --time=12:00:00.
 # Data, embeddings and results all stay in DATA_DIR, outside the repo.
 #   1. S-BERT + MentalBERT embedding of every tweet
 #   2. demographically matched severity ladder (adjacent-band cosine)
 #   3. every MentalBERT+MLP assessor (arm x seed) scored from the saved embeddings
 #   4. per-band bias / MAE table over arms
 #   5. teacher regressors fine-tuned on the users (k-fold CV) + from-scratch baseline
+#   6. CDS n-grams by PHQ-9 against the synthetic corpora (regex, no embeddings)
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
@@ -48,5 +51,6 @@ python empirical/score.py       --emb "$EMB/mentalbert_tweets.npz" --out-root "$
 python empirical/bias.py        --eval-root "$OUT/bert_eval" --out "$OUT/bias_by_band.csv"
 python empirical/finetune_cv.py --emb "$EMB/mentalbert_tweets.npz" --out-root "$OUT/finetune_cv"
 python empirical/bias.py        --eval-root "$OUT/finetune_cv" --out "$OUT/bias_by_band_finetuned.csv"
+PYTHONPATH=src:checks python empirical/cds.py --tweets "$TWEETS" --out-dir "$OUT/cds"
 
 echo "DONE -> $OUT"

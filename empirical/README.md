@@ -12,7 +12,7 @@ results live outside the repo, in `~/data/social_twitter/`.
 | `bias.py` | per-band signed bias and MAE per arm (mean ± SD over seeds) |
 | `finetune_cv.py` | the teacher regressors fine-tuned on the users as `run_finetune.sh` fine-tuned them on synthetic posts, but 5-fold CV by user instead of a fixed test set; plus the same MLP trained from scratch |
 | `cds.py` | the CDS check (`checks/check_cds_tracks_phq9.py`) on the users: % of tweets with CDS per PHQ-9 score and category × band, plus per-user Spearman of % CDS tweets vs PHQ-9, and the synthetic CDS figure with the empirical line added (`cds_vs_synthetic.png`); regex only, run anywhere with `PYTHONPATH=src:checks` |
-| `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias → fine-tune → bias |
+| `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias → fine-tune → bias → CDS |
 | `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b) plus the within-band reference, how far predictions track the true score, the fine-tuned bias against the synthetic arms, and depressed vs not (PHQ-9 ≥ 10: AUC, sensitivity, specificity, ROC) for the human-optimized arm, and the CDS-vs-PHQ-9 figure with the empirical line (via `cds.py`; reads `~/phq_analysis/<TAG>_tweets_phq.csv` or `$EMPIRICAL_TWEETS`); PNG + CSV to `results/figures/` |
 
 One-time setup on a Big Red login node, from the repo root. The python module already
@@ -42,6 +42,6 @@ Built in a notebook from the MariaDB pull:
 - **Survey side:** complete PHQ-9 only. Items are coded 1–4, so the total is the item sum − 9.
 - **Tweet filters:** English, no retweets, deduplicated by tweet id.
 - **Tweet timing:** from the tweet id (`created_at` in `timelines` is empty).
-- **Tweet selection:** `260923`: the 10 most recent tweets in the 90 days before `RecordedDate`, users with fewer than 5 dropped (337 users). `260928`: no time window, 10 tweets drawn at random (seed 42) from users with at least 10. `260928w5`: as `260928`, but only tweets of at least 5 words (not counting `@user`) are eligible. `260923all`: every tweet of every user (no window, no sampling, no length filter); used only for the CDS section.
+- **Tweet selection:** `260923`: the 10 most recent tweets in the 90 days before `RecordedDate`, users with fewer than 5 dropped (337 users). `260928`: no time window, 10 tweets drawn at random (seed 42) from users with at least 10. `260928w5`: as `260928`, but only tweets of at least 5 words (not counting `@user`) are eligible. `260923all`: every tweet of every user (no window, no sampling, no length filter); the pull the study uses.
 - **Cleaning:** URLs removed, `@handles` replaced with `@user`, HTML entities decoded.
 
