@@ -1,0 +1,35 @@
+source,step,cos,err,ci_lo,ci_hi,n
+synthetic Qwen3.5-27B human-opt.,Minimal → Mild,0.37143608827902774,0.014650410433929173,,,
+synthetic Qwen3.5-27B human-opt.,Mild → Mod.,0.3616323516345872,0.007216897811671457,,,
+synthetic Qwen3.5-27B human-opt.,Mod. → Mod. Sev,0.39260259401422815,0.005992817201251016,,,
+synthetic Qwen3.5-27B human-opt.,Mod. Sev → Sev,0.3876880603861257,0.007312923571558571,,,
+synthetic Qwen3.5-27B minimal,Minimal → Mild,0.3890518544782807,0.0,,,
+synthetic Qwen3.5-27B minimal,Mild → Mod.,0.3995864479913694,0.0,,,
+synthetic Qwen3.5-27B minimal,Mod. → Mod. Sev,0.4032154446228854,0.0,,,
+synthetic Qwen3.5-27B minimal,Mod. Sev → Sev,0.39901349569280653,0.0,,,
+synthetic Gemma-4-31B-it human-opt.,Minimal → Mild,0.30908936640678847,0.006652523632084817,,,
+synthetic Gemma-4-31B-it human-opt.,Mild → Mod.,0.20790080049219029,0.006034340267191113,,,
+synthetic Gemma-4-31B-it human-opt.,Mod. → Mod. Sev,0.27288054248479954,0.0076292777881001505,,,
+synthetic Gemma-4-31B-it human-opt.,Mod. Sev → Sev,0.3198234815138249,0.00805263017029846,,,
+synthetic Gemma-4-31B-it minimal,Minimal → Mild,0.33755211115924594,0.0,,,
+synthetic Gemma-4-31B-it minimal,Mild → Mod.,0.31312518526645083,0.0,,,
+synthetic Gemma-4-31B-it minimal,Mod. → Mod. Sev,0.34811231972077433,0.0,,,
+synthetic Gemma-4-31B-it minimal,Mod. Sev → Sev,0.3636844911903049,0.0,,,
+empirical matched,Minimal → Mild,0.6263732704207887,,0.5999383055560258,0.6498511633758461,229.0
+empirical matched,Mild → Mod.,0.702846723614317,,0.6766074028746648,0.7273795584566665,165.0
+empirical matched,Mod. → Mod. Sev,0.7003825628001925,,0.6681599707198395,0.7306758657360161,142.0
+empirical matched,Mod. Sev → Sev,0.652040159996645,,0.609069896682545,0.6953476117027027,81.0
+empirical random,Minimal → Mild,0.627669943992748,,,,
+empirical random,Mild → Mod.,0.6785018556045763,,,,
+empirical random,Mod. → Mod. Sev,0.6805611001983495,,,,
+empirical random,Mod. Sev → Sev,0.6713433138750218,,,,
+empirical within-band matched,Minimal,0.6506543586259348,,0.6265634215927045,0.6743883244121415,228.0
+empirical within-band matched,Mild,0.6720132592049513,,0.6436802339260325,0.7011570218205452,165.0
+empirical within-band matched,Moderate,0.7120906683340879,,0.6860577752630056,0.7395023751321812,142.0
+empirical within-band matched,Mod. Severe,0.6940619275893694,,0.6602713271883535,0.725344872125137,81.0
+empirical within-band matched,Severe,0.7202251904777118,,0.6796864202778254,0.7559487230543579,56.0
+empirical within-band random,Minimal,0.6069891985440463,,,,
+empirical within-band random,Mild,0.6611114080205108,,,,
+empirical within-band random,Moderate,0.6940703832767379,,,,
+empirical within-band random,Mod. Severe,0.6884215610262788,,,,
+empirical within-band random,Severe,0.6759581262511867,,,,
