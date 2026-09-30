@@ -3,12 +3,15 @@
 Mirrors how the synthetic fine-tuned arms were made (`run_finetune.sh`): start from the
 `teacher` regressor of each seed, AdamW at lr 2e-5, Huber loss (delta 6), 30 epochs,
 best epoch on a validation split, one seed driving both the split and the init. The
-synthetic arms had a separate 300-block test set; 300 of ~500 real users cannot be
-spared, so here every user is predicted once by a model fine-tuned on the other folds
-(stratified by PHQ-9 band; 10% of each training fold is the validation split).
-A from-scratch baseline (same MLP, random init, lr 1e-4, the repo's training default)
-shows what the synthetic pre-training adds. Writes `<out-root>/finetuned_teacher/` and
-`<out-root>/scratch/` with the same seed<NN>.csv columns as score.py, for bias.py.
+input is the 10-tweet blocks of `score.block_centroids`, as in the synthetic training
+data, but every split is by user: the synthetic arms had a separate 300-block test set,
+which ~700 real users cannot spare, so every user is predicted once by a model
+fine-tuned on the other folds (stratified by PHQ-9 band; 10% of each training fold's
+users are the validation split), trained on those users' blocks. A user's prediction
+is the mean over their blocks. A from-scratch baseline (same MLP, random init, lr 1e-4,
+the repo's training default) shows what the synthetic pre-training adds. Writes
+`<out-root>/finetuned_teacher/` and `<out-root>/scratch/` with the same seed<NN>.csv
+columns as score.py, for bias.py.
 Run: empirical/run_empirical.job (step 5).
 """
 
@@ -21,7 +24,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from score import neural_net_BERT, user_centroids  # noqa: F401  (neural_net_BERT: unpickling)
+from score import block_centroids, neural_net_BERT, user_means  # noqa: F401  (neural_net_BERT: unpickling)
 
 TEACHER = "data/assessors/bert/teacher/models/{model}_seed{seed}/regressor.pt"
 BAND_EDGES = [4, 9, 14, 19]            # PHQ-9 band upper edges, as sa_analyze.PHQ9_BANDS
@@ -94,20 +97,21 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen3.5-27B", help="Teacher regressor subfolder prefix.")
     args = parser.parse_args()
 
-    aids, true, X = user_centroids(args.emb)
-    y = torch.as_tensor(true, dtype=torch.float32)
-    print(f"[finetune] {len(aids)} users, {args.folds}-fold CV, seeds {args.seeds}")
+    aids, true, baids, X = block_centroids(args.emb)
+    user = pd.Index(aids).get_indexer(baids)           # user position of every block
+    y = torch.as_tensor(true[user], dtype=torch.float32)
+    print(f"[finetune] {len(aids)} users, {len(X)} blocks, {args.folds}-fold CV by user, seeds {args.seeds}")
 
     for seed in args.seeds:
         rng = np.random.default_rng(seed)
         torch.manual_seed(seed)
         fold = stratified_folds(true, args.folds, rng)
-        raw = {"finetuned_teacher": np.empty(len(true)), "scratch": np.empty(len(true))}
+        raw = {"finetuned_teacher": np.empty(len(X)), "scratch": np.empty(len(X))}
         for k in range(args.folds):
-            test = fold == k
-            train_idx = rng.permutation(np.where(~test)[0])
-            n_val = max(1, len(train_idx) // 10)
-            val, tr = train_idx[:n_val], train_idx[n_val:]
+            train_users = rng.permutation(np.where(fold != k)[0])
+            n_val = max(1, len(train_users) // 10)
+            val, tr = np.isin(user, train_users[:n_val]), np.isin(user, train_users[n_val:])
+            test = fold[user] == k
             for arm, lr in (("finetuned_teacher", 2e-5), ("scratch", 1e-4)):
                 if arm == "finetuned_teacher":
                     start = torch.load(TEACHER.format(model=args.model, seed=seed),
@@ -117,13 +121,14 @@ def main() -> None:
                 model = train(start, X[tr], y[tr], X[val], y[val], lr=lr)
                 with torch.no_grad():
                     raw[arm][test] = model(X[test]).squeeze(-1).numpy()
-        for arm, r in raw.items():
+        for arm, r_blocks in raw.items():
+            r, n_blocks = user_means(baids, r_blocks, aids)
             pred = np.clip(np.round(r).astype(int), 0, 27)
             err = pred - true
             out_dir = os.path.join(args.out_root, arm)
             os.makedirs(out_dir, exist_ok=True)
             pd.DataFrame({"agent_id": aids, "true_phq9": true, "pred_phq9": pred, "raw_pred": r,
-                          "abs_error": np.abs(err), "signed_bias": err}
+                          "abs_error": np.abs(err), "signed_bias": err, "n_blocks": n_blocks}
                          ).to_csv(os.path.join(out_dir, f"seed{seed}.csv"), index=False)
             print(f"[finetune] {arm} seed {seed}: MAE={np.abs(err).mean():.2f}  bias={err.mean():+.2f}  "
                   f"r={np.corrcoef(r, true)[0, 1]:+.2f}")
