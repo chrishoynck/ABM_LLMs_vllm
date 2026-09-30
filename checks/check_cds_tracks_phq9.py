@@ -7,7 +7,8 @@ each post with the category-aware CDS detector (`utils.tools.cds`, the same one
 overall and per category. If CDS are a real depression signal that share should
 go up with PHQ-9. Writes a two-panel figure (overall trend per generator +
 category x severity-band heatmap, Qwen value with Gemma in brackets) that the
-paper uses. Run: see checks/README.md.
+paper uses. `--arm minimal` runs the same check on the minimal-prompt (iter_0)
+corpora of the same personas. Run: see checks/README.md.
 """
 
 import argparse
@@ -21,15 +22,25 @@ import pandas as pd
 
 from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
-# (tag, label, colour, posts file). Both corpora were written with the iter_10
-# prompt over the same 3,000 (persona, PHQ-9) blocks; colours follow the
+# (tag, label, colour, posts file) per prompt arm. "human" is the iter_10 prompt,
+# "minimal" the iter_0 prompt, both over the same 3,000 (persona, PHQ-9) blocks
+# and neighbour draws, so all four corpora are paired; colours follow the
 # multi-model figures in `utils.visualization.MULTIMODEL_GENERATORS`. The first
 # entry is the primary one (heatmap colour, row order); the second goes in
 # brackets.
-GENERATORS = [
-    ("qwen", "Qwen", "#eb6834", "data/finetune/qwen/train_posts_qwen.csv"),
-    ("gemma4", "Gemma", "#2a78d6", "data/finetune/gemma4/train_posts_gemma4.csv"),
-]
+ARMS = {
+    "human": [
+        ("qwen", "Qwen", "#eb6834", "data/finetune/qwen/train_posts_qwen.csv"),
+        ("gemma4", "Gemma", "#2a78d6", "data/finetune/gemma4/train_posts_gemma4.csv"),
+    ],
+    "minimal": [
+        ("qwen_minimal", "Qwen", "#eb6834",
+         "data/finetune/qwen_minimal/train_posts_qwen_minimal.csv"),
+        ("gemma4_minimal", "Gemma", "#2a78d6",
+         "data/finetune/gemma4_minimal/train_posts_gemma4_minimal.csv"),
+    ],
+}
+ARM_LABELS = {"human": "Human-optimized", "minimal": "Minimal"}
 
 # Standard PHQ-9 severity bands (sum-score cut-offs).
 SEVERITY_BANDS = [
@@ -97,34 +108,38 @@ HEATMAP_CMAP = "Oranges"
 FIG_BAND_LABELS = ["Minimal", "Mild", "Moderate", "Mod. Severe", "Severe"]
 
 
-def make_figure(results: dict, fig_path: str):
+def make_figure(results: dict, generators: list, fig_path: str):
     """Write the two-panel figure: overall trend per generator (left) + category heatmap (right).
 
     The heatmap is coloured by the primary generator; each cell reads
     "primary (secondary)".
 
     Args:
-        results (dict): tag -> dict(per_score, cat_band, r_agg), in GENERATORS order.
+        results (dict): tag -> dict(per_score, cat_band, r_agg), in `generators` order.
+        generators (list): the arm's (tag, label, colour, path) entries.
         fig_path (str): output path (.png).
     """
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.4, 3.2),
                                    gridspec_kw={"width_ratios": [1, 1.6]})
 
     # ── Left: overall % CDS vs PHQ-9 score, one line per generator ──────────
-    for tag, label, colour, _ in GENERATORS:
+    for tag, label, colour, _ in generators:
         ps = results[tag]["per_score"]
         ax0.plot(ps["phq9"], ps["pct_cds"], "o-", color=colour, lw=2, ms=4,
                  label=label)
     ax0.set_xlabel("PHQ-9 sum-score")
     ax0.set_ylabel("% of posts containing CDS")
-    ax0.set_ylim(33, 78)
+    # paper range, widened only if an arm falls outside it
+    lo = min(results[g[0]]["per_score"]["pct_cds"].min() for g in generators)
+    hi = max(results[g[0]]["per_score"]["pct_cds"].max() for g in generators)
+    ax0.set_ylim(min(33, np.floor(lo) - 1), max(78, np.ceil(hi) + 1))
     ax0.grid(axis="y", linestyle=":", alpha=0.5)
     ax0.legend(loc="lower right", frameon=False, fontsize=9)
     ax0.text(0.5, -0.34, "(a) CDS vs PHQ-9", transform=ax0.transAxes,
              ha="center", va="top", fontsize=9.5)
 
     # ── Right: category x severity-band heatmap (Oranges), primary (secondary) ─
-    primary, secondary = GENERATORS[0][0], GENERATORS[1][0]
+    primary, secondary = generators[0][0], generators[1][0]
     cat_band = results[primary]["cat_band"]
     other = results[secondary]["cat_band"].reindex(index=cat_band.index)
     data = cat_band.values
@@ -156,28 +171,10 @@ def make_figure(results: dict, fig_path: str):
     print(f"\nWrote figure to {fig_path}")
 
 
-def main():
-    """Score both corpora, print the per-score and per-category tables, write the figure."""
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--ngrams", default="data/distorted_language_ngrams.tsv",
-                        help="TSV of distorted-language n-grams (categories|markers|variants).")
-    parser.add_argument("--fig", default="plots/cds_validation.png",
-                        help="Output path for the figure.")
-    parser.add_argument("--out", default=None,
-                        help="Optional path to write the per-PHQ-9 CDS table as CSV, long "
-                             "format with a `generator` column (a *_by_category.csv "
-                             "sibling is written alongside it).")
-    args = parser.parse_args()
-
-    print(f"Loading n-grams from {args.ngrams} ...")
-    by_cat = load_ngrams_by_category(args.ngrams)
-    patterns = compile_category_patterns(by_cat)
-    total_ngrams = sum(len(v) for v in by_cat.values())
-    print(f"Loaded {total_ngrams} n-grams across {len(patterns)} categories.\n")
-
+def run_arm(generators: list, patterns: dict, fig_path: str, out: str | None):
+    """Score one arm's corpora, print the per-score and per-category tables, write the figure."""
     results = {}
-    for tag, label, _, path in GENERATORS:
+    for tag, label, _, path in generators:
         print(f"Loading {label} posts from {path} ...")
         df, cat_cols = score_posts(path, patterns)
         per_score, cat_band, cat_overall = summarize(df, patterns, cat_cols)
@@ -194,13 +191,13 @@ def main():
     print()
 
     # rows sorted by the primary generator's overall prevalence (most common at top)
-    primary = GENERATORS[0][0]
+    primary = generators[0][0]
     order = results[primary]["cat_overall"].sort_values(ascending=False).index
     for tag in results:
         results[tag]["cat_band"] = results[tag]["cat_band"].reindex(index=order)
 
     # ── Per-score table, one % column per generator ──────────────────────────
-    tags = [g[0] for g in GENERATORS]
+    tags = [g[0] for g in generators]
     print("Average % CDS posts per PHQ-9 score (any category)")
     print("-" * 48)
     print(f"{'PHQ-9':>5}" + "".join(f"{results[t]['label']:>18}" for t in tags))
@@ -241,20 +238,54 @@ def main():
         print(f"    => CDS more probable for higher PHQ-9? {verdict}")
 
     # ── Figure ───────────────────────────────────────────────────────────────
-    make_figure(results, args.fig)
+    make_figure(results, generators, fig_path)
 
     # ── Optional CSVs (long format: one block per generator) ─────────────────
-    if args.out:
+    if out:
         per = pd.concat([results[t]["per_score"].assign(generator=t) for t in tags],
                         ignore_index=True)
-        per.to_csv(args.out, index=False)
-        cat_out = args.out.replace(".csv", "_by_category.csv")
-        if cat_out == args.out:
-            cat_out = args.out + ".by_category.csv"
+        per.to_csv(out, index=False)
+        cat_out = out.replace(".csv", "_by_category.csv")
+        if cat_out == out:
+            cat_out = out + ".by_category.csv"
         cat = pd.concat([results[t]["cat_band"].assign(generator=t) for t in tags])
         cat.to_csv(cat_out)
-        print(f"\nWrote per-PHQ-9 table to {args.out}")
+        print(f"\nWrote per-PHQ-9 table to {out}")
         print(f"Wrote per-category table to {cat_out}")
+
+
+
+def main():
+    """Run the check for each requested prompt arm."""
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--ngrams", default="data/distorted_language_ngrams.tsv",
+                        help="TSV of distorted-language n-grams (categories|markers|variants).")
+    parser.add_argument("--arm", nargs="+", choices=list(ARMS), default=["human"],
+                        help="Prompt arm(s): human (iter_10, the paper's corpora) and/or "
+                             "minimal (iter_0).")
+    parser.add_argument("--fig", default="plots/cds_validation.png",
+                        help="Output path for the figure (`_minimal` is appended for "
+                             "the minimal arm).")
+    parser.add_argument("--out", default=None,
+                        help="Optional path to write the per-PHQ-9 CDS table as CSV, long "
+                             "format with a `generator` column (a *_by_category.csv "
+                             "sibling is written alongside it; `_minimal` is appended for "
+                             "the minimal arm).")
+    args = parser.parse_args()
+
+    print(f"Loading n-grams from {args.ngrams} ...")
+    by_cat = load_ngrams_by_category(args.ngrams)
+    patterns = compile_category_patterns(by_cat)
+    total_ngrams = sum(len(v) for v in by_cat.values())
+    print(f"Loaded {total_ngrams} n-grams across {len(patterns)} categories.\n")
+
+    for arm in args.arm:
+        suffix = "" if arm == "human" else f"_{arm}"
+        print(f"=== {ARM_LABELS[arm]} prompt ===")
+        run_arm(ARMS[arm], patterns, args.fig.replace(".png", f"{suffix}.png"),
+                args.out.replace(".csv", f"{suffix}.csv") if args.out else None)
+        print()
 
 
 if __name__ == "__main__":

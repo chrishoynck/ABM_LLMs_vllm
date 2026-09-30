@@ -1,0 +1,72 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=2
+#SBATCH --job-name=genrobust_g4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=05:00:00
+#SBATCH --output=/gpfs/home2/choynck/thesis/ABM_based_LLMS/slurm_output_%A.out
+
+# Gemma column of tab:si_genrobust: same seven generation prompts as grade_genrobust.job
+# (minimal, TextGrad seeds 24/25/28/29/53, human-opt), written by Gemma-4-31B-it on the 300
+# shared held-out personas and graded by the Qwen teacher on the first 3 posts per block.
+# Minimal, seed 29 and human-opt already have Gemma corpora; the other four seeds are
+# generated here with the same settings (gemma4-31b student decoding, --first-n, 10 rounds).
+# All seven arms are graded in ONE grade-posts pass (agent ids offset by 1000 per arm):
+# each pass waits for its slowest teacher trace (~20 min), so one pass per arm is 7x slower.
+#   sbatch jobs/grade_genrobust_gemma.job
+
+module purge
+cd ~/thesis/ABM_based_LLMS/
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+OUT=data/test_post/teacher_grades/genrobust
+mkdir -p "${OUT}"
+
+# 1. Generate the four missing Gemma TextGrad corpora (Gemma venv + project-space weights).
+for S in 24 25 28 53; do
+    HF_HUB_CACHE=/gpfs/work5/0/prjs1820/hf_cache HF_HUB_OFFLINE=1 \
+    srun .venv_vllm_g4/bin/python -m utils.create_data.generate_test_data \
+        --instruction-file data/test_post/optimized_tweets/Qwen3.5-27B_seed${S}/optimized_instruction_tweet.txt \
+        --persona-phq9-file data/finetune/personas_test_300.csv \
+        --model gemma4-31b --num_agents 300 --check_point 10 --first-n --chunk-size 100 \
+        --output-csv data/finetune/gemma4_textgrad_seed${S}/test_posts_gemma4_textgrad_seed${S}.csv
+done
+
+QPY=.venv_vllm/bin/python
+ARMS="minimal seed24 seed25 seed28 seed29 seed53 human"
+
+# 2. First 3 posts per block, one file per arm plus one combined file.
+"${QPY}" - "${OUT}" ${ARMS} <<'PY'
+import sys, pandas as pd
+out, arms = sys.argv[1], sys.argv[2:]
+src = {"minimal": "data/finetune/gemma4_minimal/test_posts_gemma4_minimal.csv",
+       "seed29": "data/finetune/gemma4_textgrad/test_posts_gemma4_textgrad.csv",
+       "human": "data/finetune/gemma4/test_posts_gemma4.csv"}
+src.update({f"seed{s}": f"data/finetune/gemma4_textgrad_seed{s}/test_posts_gemma4_textgrad_seed{s}.csv"
+            for s in (24, 25, 28, 53)})
+parts = []
+for i, arm in enumerate(arms):
+    d = pd.read_csv(src[arm]).groupby("agent_id", sort=False).head(3)
+    d.to_csv(f"{out}/posts_gemma4_{arm}.csv", index=False)
+    parts.append(d.assign(agent_id=d["agent_id"] + 1000 * i))
+    print(f"[first3] {arm}: {d['agent_id'].nunique()} blocks")
+pd.concat(parts).to_csv(f"{out}/posts_gemma4_all.csv", index=False)
+PY
+
+# 3. Grade all arms in one pass.
+[[ -f "${OUT}/grades_gemma4_all.csv" ]] || srun "${QPY}" -m utils.prompt_optimizer --mode grade-posts \
+    --posts-file "${OUT}/posts_gemma4_all.csv" --out-csv "${OUT}/grades_gemma4_all.csv"
+
+# 4. Split back per arm and print the table numbers.
+"${QPY}" - "${OUT}" ${ARMS} <<'PY'
+import sys, pandas as pd
+out, arms = sys.argv[1], sys.argv[2:]
+g = pd.read_csv(f"{out}/grades_gemma4_all.csv")
+for i, arm in enumerate(arms):
+    d = g[g["agent_id"] // 1000 == i].assign(agent_id=lambda x: x["agent_id"] - 1000 * i)
+    d.to_csv(f"{out}/grades_gemma4_{arm}.csv", index=False)
+    s = d["score"]
+    print(f"{arm:8s} n={s.count():3d}  unparsed={s.isna().sum():2d}  {s.mean():.2f} +/- {s.std():.2f}")
+PY

@@ -6,6 +6,9 @@ class and the NEXT class up, and delta is adjacent minus that class's own within
 i.e. "starting from this class, does moving up one band change the text more than
 rerunning this class does?". Severe has no class above it, so it carries a within
 value only. The next class's own floor is visible on the following row.
+`cross` is the same round-matched cosine between two DIFFERENT personas of the
+same band (different replicates), i.e. how similar the class is across personas;
+printed only, not in the LaTeX table.
 
 Unit of analysis is the persona (60), not the anchor (600): the 10 rounds of one
 persona are correlated, so an anchor-level test overstates significance. Rounds
@@ -18,7 +21,7 @@ Usage:
 """
 import argparse, glob, os
 from collections import defaultdict
-from itertools import combinations
+from itertools import combinations, permutations
 
 import numpy as np
 import pandas as pd
@@ -51,8 +54,8 @@ def unit_rows(idx, emb, common):
     return X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
 
 
-def table(root):
-    by, common = load_bands(root)
+def table(root, subdir="phq9"):
+    by, common = load_bands(root, subdir)
     bands = [b for b in BAND_LABELS if b in by]
     reps = sorted(by[bands[0]])
     persona = np.array([a for a, _ in common])
@@ -62,9 +65,22 @@ def table(root):
                           for ra, rb in combinations(reps, 2)], axis=0)
               for b in bands}
 
+    # Cross-persona: anchors are sorted (persona, round), so reshape to
+    # (persona, round, dim) and compare round r of persona a with round r of c != a.
+    n_p = len(set(persona))
+    n_r = len(common) // n_p
+    cross = {}
+    for b in bands:
+        S = np.mean([np.einsum("atd,ctd->ac",
+                               unit_rows(*by[b][ra], common).reshape(n_p, n_r, -1),
+                               unit_rows(*by[b][rb], common).reshape(n_p, n_r, -1))
+                     for ra, rb in permutations(reps, 2)], axis=0) / n_r
+        cross[b] = S[~np.eye(n_p, dtype=bool)].reshape(n_p, -1).mean(axis=1)
+
     rows = []
     for i, b0 in enumerate(bands):
-        row = {"band": b0, "within": within[b0].mean(), "n": len(set(persona))}
+        row = {"band": b0, "within": within[b0].mean(), "cross": cross[b0].mean(),
+               "n": n_p}
         if i + 1 < len(bands):
             b1 = bands[i + 1]
             adjacent = np.mean([(unit_rows(*by[b0][r], common) *
@@ -94,12 +110,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--roots", nargs="+", required=True, help="tag=path pairs")
     ap.add_argument("--tex", default="")
+    ap.add_argument("--subdir", default="phq9", help="prompt arm: phq9 (human-opt.) or phq9_minimal_prompt")
     args = ap.parse_args()
 
     blocks = {}
     for spec in args.roots:
         tag, path = spec.split("=", 1)
-        blocks[DISPLAY.get(tag, tag)] = table(path)
+        blocks[DISPLAY.get(tag, tag)] = table(path, args.subdir)
         print(f"\n=== {DISPLAY.get(tag, tag)} ===")
         print(blocks[DISPLAY.get(tag, tag)].to_string(
             index=False, float_format=lambda v: f"{v:.4f}"))
