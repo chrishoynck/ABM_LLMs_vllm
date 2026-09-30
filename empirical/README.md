@@ -33,6 +33,13 @@ repo root (CPU, `general` partition), then the notebook with the same `TAG`. Eac
 gets `~/data/social_twitter/<TAG>/{embeddings,results}`; a resubmit reuses the
 embeddings, pass `--force` to `embed.py` to re-encode.
 
+## Figures for the paper
+
+The data and `results/` stay outside the repo, so the finished figures are committed
+instead: copy `results/figures/` (PNGs plus the aggregate `prediction_tracking.csv` and
+`cutoff_depressed.csv`) to `data/empirical/<TAG>/figures/`. Nothing else from `results/`:
+`bert_eval/`, `finetune_cv/` and `cds/cds_by_user.csv` hold one row per user.
+
 ## Inputs (`~/data/social_twitter/`)
 
 - `<TAG>_tweets_phq.csv`: `agent_id, phq9, tweet`, one row per tweet, rows grouped by user
