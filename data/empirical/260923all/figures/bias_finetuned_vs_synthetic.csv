@@ -1,0 +1,36 @@
+source,band,bias,sd
+synthetic qwen27_optimized,Minimal,0.8076923076923077,
+synthetic qwen27_optimized,Mild,-0.984,
+synthetic qwen27_optimized,Mod.,0.2966666666666667,
+synthetic qwen27_optimized,Mod. Sev,-1.3859649122807018,
+synthetic qwen27_optimized,Sev,-3.2444444444444445,
+synthetic qwen27_minimal,Minimal,1.7923076923076924,
+synthetic qwen27_minimal,Mild,-0.684,
+synthetic qwen27_minimal,Mod.,-0.6266666666666666,
+synthetic qwen27_minimal,Mod. Sev,-0.775438596491228,
+synthetic qwen27_minimal,Sev,-3.4098765432098768,
+synthetic gemma4_optimized,Minimal,0.5192307692307693,
+synthetic gemma4_optimized,Mild,-1.864,
+synthetic gemma4_optimized,Mod.,0.4833333333333333,
+synthetic gemma4_optimized,Mod. Sev,-1.4350877192982456,
+synthetic gemma4_optimized,Sev,-2.6370370370370373,
+synthetic gemma4_minimal,Minimal,0.9384615384615385,
+synthetic gemma4_minimal,Mild,-1.2799999999999998,
+synthetic gemma4_minimal,Mod.,-0.3,
+synthetic gemma4_minimal,Mod. Sev,0.09473684210526315,
+synthetic gemma4_minimal,Sev,-3.083950617283951,
+empirical fine-tuned on users (CV),Minimal,4.511836734693877,0.2768009071349908
+empirical fine-tuned on users (CV),Mild,-0.21444444444444444,0.24153828007324377
+empirical fine-tuned on users (CV),Mod.,-5.059872611464968,0.25977892653764223
+empirical fine-tuned on users (CV),Mod. Sev,-9.97391304347826,0.2278567851870237
+empirical fine-tuned on users (CV),Sev,-16.446666666666665,0.2976575213227443
+empirical from scratch on users (CV),Minimal,5.658775510204082,0.18762373398911555
+empirical from scratch on users (CV),Mild,0.7755555555555554,0.20247237275340815
+empirical from scratch on users (CV),Mod.,-3.9757961783439493,0.18866409767142348
+empirical from scratch on users (CV),Mod. Sev,-8.697826086956521,0.14426660889597456
+empirical from scratch on users (CV),Sev,-15.323333333333334,0.1078064108586414
+empirical zero-shot teacher,Minimal,3.091428571428571,0.774317450104301
+empirical zero-shot teacher,Mild,-1.3066666666666666,0.839888293571837
+empirical zero-shot teacher,Mod.,-6.235668789808917,0.7746333309611725
+empirical zero-shot teacher,Mod. Sev,-11.141304347826088,0.7863136937334495
+empirical zero-shot teacher,Sev,-17.619999999999997,0.7829715476595838
