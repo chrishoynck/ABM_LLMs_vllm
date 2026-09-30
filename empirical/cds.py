@@ -7,8 +7,10 @@ are not independent. The empirical line is the mean over users of their % of CDS
 tweets per score, so heavy tweeters do not dominate when users have different numbers
 of tweets (with equal numbers it equals the % of posts). The figure is the synthetic
 one with the users added: (a) the Qwen and Gemma lines plus the empirical line, (b) the
-category x band heatmap for the users (% of tweets) with Qwen in brackets. Regex only,
-seconds on any CPU. `figures.ipynb` section 6 calls `analyse` and `make_figure`.
+category x band heatmap for the users (% of tweets) with Qwen in brackets. A second
+figure has the same comparison by severity band: mean % of CDS posts per user (per
+10-post block for the synthetic corpora) in each band, +- SEM. Regex only, seconds on
+any CPU. `figures.ipynb` section 6 calls `analyse`, `make_figure` and `make_band_figure`.
 Run: PYTHONPATH=src:checks python empirical/cds.py --tweets <TAG>_tweets_phq.csv --out-dir <results>/cds
 """
 
@@ -36,6 +38,11 @@ def per_user(df: pd.DataFrame) -> pd.DataFrame:
     return users
 
 
+def band_means(units: pd.DataFrame) -> pd.DataFrame:
+    """Mean, SEM and count of `pct_cds` over units (users or blocks) per severity band."""
+    return units.groupby("severity")["pct_cds"].agg(["size", "mean", "sem"]).reindex(BAND_ORDER)
+
+
 def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
     """CDS tables for the users and for the synthetic corpora.
 
@@ -54,14 +61,15 @@ def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
     per_score = users.groupby("phq9").agg(n_users=("pct_cds", "size"), n_posts=("n", "sum"),
                                           pct_cds=("pct_cds", "mean")).reset_index()
     rho, p = spearmanr(users["phq9"], users["pct_cds"])
-    synth = {}
+    synth, synth_band = {}, {}
     for tag, _, _, path in GENERATORS:
         sdf, scols = score_posts(path, patterns)
         synth[tag] = summarize(sdf, patterns, scols)[:2]
+        synth_band[tag] = band_means(per_user(sdf))
     return {"n_tweets": len(df), "pct_all": 100 * df["is_cds"].mean(), "per_score": per_score,
             "cat_band": cat_band.loc[cat_overall.sort_values(ascending=False).index],
-            "users": users, "rho": rho, "p": p, "synth": synth,
-            "by_band": users.groupby("severity")["pct_cds"].agg(["size", "mean", "sem"]).reindex(BAND_ORDER)}
+            "users": users, "rho": rho, "p": p, "synth": synth, "synth_band": synth_band,
+            "by_band": band_means(users)}
 
 
 def make_figure(res: dict) -> plt.Figure:
@@ -101,6 +109,28 @@ def make_figure(res: dict) -> plt.Figure:
     return fig
 
 
+def make_band_figure(res: dict) -> plt.Figure:
+    """% of CDS posts by PHQ-9 severity band: Qwen and Gemma (per block) and the users, mean +- SEM."""
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    x = np.arange(len(BAND_ORDER))
+    for tag, label, colour, _ in GENERATORS:
+        b = res["synth_band"][tag]
+        ax.errorbar(x, b["mean"], yerr=b["sem"], fmt="o-", color=colour, lw=2, ms=4, capsize=2.5, label=label)
+    b = res["by_band"]
+    ax.errorbar(x, b["mean"], yerr=b["sem"], fmt=EMP_MARKER + "-", color=EMP_COLOUR, lw=1.2, ms=4,
+                capsize=2.5, label="Empirical")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{lab}\n(n={int(n)})" for lab, n in zip(FIG_BAND_LABELS, b["size"].fillna(0))],
+                       fontsize=8)
+    ax.set_xlabel("PHQ-9 severity band (n users)")
+    ax.set_ylabel("% of posts containing CDS")
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.legend(loc="best", frameon=False, fontsize=8)
+    ax.margins(x=0.08, y=0.12)
+    fig.tight_layout()
+    return fig
+
+
 def report(res: dict) -> None:
     """Print the per-user test and the band / category tables."""
     print(f"[cds] {res['n_tweets']} tweets, {len(res['users'])} users "
@@ -130,7 +160,9 @@ def main() -> None:
     res["cat_band"].to_csv(os.path.join(args.out_dir, "cds_by_category_band.csv"))
     fig_path = os.path.join(args.out_dir, "cds_vs_synthetic.png")
     make_figure(res).savefig(fig_path, dpi=300, bbox_inches="tight")
-    print(f"[cds] -> {args.out_dir} (figure: {fig_path})")
+    band_path = os.path.join(args.out_dir, "cds_by_band.png")
+    make_band_figure(res).savefig(band_path, dpi=300, bbox_inches="tight")
+    print(f"[cds] -> {args.out_dir} (figures: {fig_path}, {band_path})")
 
 
 if __name__ == "__main__":
