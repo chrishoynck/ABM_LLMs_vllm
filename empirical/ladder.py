@@ -9,7 +9,11 @@ embeddings (mean of their tweet embeddings, as in
 `plot_assessment_diagnostics.block_embeddings`), with a bootstrap 95% CI over pairs. A
 random partner from the same target band is the baseline for what the matching controls
 for. If adjacent-band pairs are as similar as within-band pairs, the bands are not
-separable in the language.
+separable in the language. Each adjacent step also carries a paired test in the style of
+`checks/phq9_band_significance.py` (test_* columns): every user in band b has an adjacent
+cosine (matched partner in b+1) and a within cosine (matched partner in b), and
+delta = adjacent - within gets a paired t-test over those users. Only the matched pairs
+are kept per user for it; the cosines, CIs and baselines are unchanged.
 Run: empirical/run_empirical.job (step 2).
 """
 
@@ -18,6 +22,7 @@ import os
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from utils.sensitivity.sa_analyze import BAND_LABELS, phq9_to_band
 
@@ -41,7 +46,7 @@ def block_embeddings(npz_path: str) -> pd.DataFrame:
 
 
 def match_cell(src: pd.DataFrame, dst: pd.DataFrame, blocks: pd.DataFrame,
-               rng: np.random.Generator) -> dict:
+               rng: np.random.Generator) -> tuple[dict, pd.Series]:
     """Pair every user in `src` with their nearest same-gender, closest-age other user in `dst`.
 
     Args:
@@ -51,9 +56,10 @@ def match_cell(src: pd.DataFrame, dst: pd.DataFrame, blocks: pd.DataFrame,
         rng: generator for tie-breaking, the random partner and the bootstrap.
 
     Returns:
-        dict with n_pairs, n_unmatched, cos, ci_lo, ci_hi, cos_random, mean_age_gap.
+        (summary, per_user): summary has n_pairs, n_unmatched, cos, ci_lo, ci_hi,
+        cos_random, mean_age_gap; per_user is each matched src user's cosine, by agent_id.
     """
-    cos, cos_rand, gaps, unmatched = [], [], [], 0
+    cos, cos_rand, gaps, matched, unmatched = [], [], [], [], 0
     for aid, u in src.iterrows():
         others = dst.drop(index=aid, errors="ignore")
         cand = others[others["gender"] == u["gender"]]
@@ -65,17 +71,31 @@ def match_cell(src: pd.DataFrame, dst: pd.DataFrame, blocks: pd.DataFrame,
         cos.append(float(blocks.loc[aid] @ blocks.loc[j]))
         cos_rand.append(float(blocks.loc[aid] @ blocks.loc[rng.choice(others.index)]))
         gaps.append(gap.min())
+        matched.append(aid)
     cos = np.asarray(cos)
     boot = [rng.choice(cos, cos.size).mean() for _ in range(N_BOOT)] if cos.size else [np.nan]
-    return {"n_pairs": int(cos.size), "n_unmatched": unmatched,
-            "cos": cos.mean() if cos.size else np.nan,
-            "ci_lo": np.percentile(boot, 2.5), "ci_hi": np.percentile(boot, 97.5),
-            "cos_random": np.mean(cos_rand) if cos_rand else np.nan,
-            "mean_age_gap": np.mean(gaps) if gaps else np.nan}
+    return ({"n_pairs": int(cos.size), "n_unmatched": unmatched,
+             "cos": cos.mean() if cos.size else np.nan,
+             "ci_lo": np.percentile(boot, 2.5), "ci_hi": np.percentile(boot, 97.5),
+             "cos_random": np.mean(cos_rand) if cos_rand else np.nan,
+             "mean_age_gap": np.mean(gaps) if gaps else np.nan},
+            pd.Series(cos, index=matched, dtype=float))
+
+
+def paired_test(adj: pd.Series, within: pd.Series) -> dict:
+    """Within (this band) vs adjacent (next band) cosine over the users that have both: paired t-test."""
+    both = pd.concat({"adj": adj, "within": within}, axis=1).dropna()
+    if len(both) < 3:
+        return {"n_paired": len(both), "within": np.nan, "adjacent": np.nan, "delta": np.nan,
+                "t": np.nan, "p": np.nan, "dz": np.nan}
+    d = both["adj"] - both["within"]
+    t, p = stats.ttest_rel(both["adj"], both["within"])
+    return {"n_paired": len(both), "within": both["within"].mean(), "adjacent": both["adj"].mean(),
+            "delta": d.mean(), "t": t, "p": p, "dz": d.mean() / d.std(ddof=1)}
 
 
 def ladders(users: pd.DataFrame, blocks: pd.DataFrame, seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Adjacent-band ladder (one row per step) and within-band reference (one row per band).
+    """Adjacent-band ladder (one row per step, with the paired test) and within-band reference.
 
     Args:
         users: indexed by agent_id with phq9, age (numeric) and gender columns.
@@ -88,12 +108,17 @@ def ladders(users: pd.DataFrame, blocks: pd.DataFrame, seed: int = 0) -> tuple[p
     rng = np.random.default_rng(seed)
     users = users.assign(band=users["phq9"].map(phq9_to_band))
     by_band = {b: users[users["band"] == b] for b in BAND_LABELS}
-    adjacent = pd.DataFrame([{"step": f"{b0} -> {b1}", "n_from": len(by_band[b0]), "n_to": len(by_band[b1]),
-                              **match_cell(by_band[b0], by_band[b1], blocks, rng)}
-                             for b0, b1 in zip(BAND_LABELS[:-1], BAND_LABELS[1:])])
-    within = pd.DataFrame([{"band": b, "n_users": len(by_band[b]),
-                            **match_cell(by_band[b], by_band[b], blocks, rng)} for b in BAND_LABELS])
-    return adjacent, within
+    adj_rows, adj_users = [], {}
+    for b0, b1 in zip(BAND_LABELS[:-1], BAND_LABELS[1:]):
+        summary, adj_users[b0] = match_cell(by_band[b0], by_band[b1], blocks, rng)
+        adj_rows.append({"step": f"{b0} -> {b1}", "n_from": len(by_band[b0]), "n_to": len(by_band[b1]), **summary})
+    within_rows, within_users = [], {}
+    for b in BAND_LABELS:
+        summary, within_users[b] = match_cell(by_band[b], by_band[b], blocks, rng)
+        within_rows.append({"band": b, "n_users": len(by_band[b]), **summary})
+    for row, b0 in zip(adj_rows, BAND_LABELS[:-1]):
+        row.update({f"test_{k}": v for k, v in paired_test(adj_users[b0], within_users[b0]).items()})
+    return pd.DataFrame(adj_rows), pd.DataFrame(within_rows)
 
 
 def main() -> None:
