@@ -112,24 +112,48 @@ def make_figure(res: dict) -> plt.Figure:
     return fig
 
 
-def make_band_figure(res: dict) -> plt.Figure:
-    """% of CDS posts by PHQ-9 severity band: Qwen and Gemma (per block) and the users, mean +- SEM."""
-    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+def make_band_figure(res: dict, emp: dict = None) -> plt.Figure:
+    """% of CDS posts by PHQ-9 severity band: Qwen and Gemma (per block) and the users, mean +- SEM.
+
+    Args:
+        res: `analyse` output.
+        emp: label -> `analyse` output (e.g. tweet windows). Without it, one panel with
+            the users per band on the x-axis; with it, synthetic and empirical in separate
+            panels on their own y-scales, one empirical line per entry, each legend entry
+            carrying the per-user Spearman and n users.
+    """
     x = np.arange(len(BAND_ORDER))
+    if emp is None:
+        fig, ax = plt.subplots(figsize=(4.2, 3.2))
+        ax_s = ax_e = ax
+    else:
+        fig, (ax_s, ax_e) = plt.subplots(2, 1, figsize=(4.4, 5.4), sharex=True)
     for tag, label, colour, _ in GENERATORS:
         b = res["synth_band"][tag]
-        ax.errorbar(x, b["mean"], yerr=b["sem"], fmt="o-", color=colour, lw=2, ms=4, capsize=2.5, label=label)
-    b = res["by_band"]
-    ax.errorbar(x, b["mean"], yerr=b["sem"], fmt=EMP_MARKER + "-", color=EMP_COLOUR, lw=1.2, ms=4,
-                capsize=2.5, label="Empirical")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{lab}\n(n={int(n)})" for lab, n in zip(FIG_BAND_LABELS, b["size"].fillna(0))],
-                       fontsize=8)
-    ax.set_xlabel("PHQ-9 severity band (n users)")
-    ax.set_ylabel("% of posts containing CDS")
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.legend(loc="best", frameon=False, fontsize=8)
-    ax.margins(x=0.08, y=0.12)
+        ax_s.errorbar(x, b["mean"], yerr=b["sem"], fmt="o-", color=colour, lw=2, ms=4, capsize=2.5, label=label)
+    if emp is None:
+        b = res["by_band"]
+        ax.errorbar(x, b["mean"], yerr=b["sem"], fmt=EMP_MARKER + "-", color=EMP_COLOUR, lw=1.2, ms=4,
+                    capsize=2.5, label="Empirical")
+        ticks = [f"{lab}\n(n={int(n)})" for lab, n in zip(FIG_BAND_LABELS, b["size"].fillna(0))]
+        ax.set_xlabel("PHQ-9 severity band (n users)")
+    else:
+        offsets = np.linspace(-0.06, 0.06, len(emp)) if len(emp) > 1 else [0.0]
+        for (label, r), (colour, marker), dx in zip(emp.items(), EMP_STYLES, offsets):
+            b = r["by_band"]
+            ax_e.errorbar(x + dx, b["mean"], yerr=b["sem"], fmt=marker + "-", color=colour, lw=1.2, ms=4,
+                          capsize=2.5, label=f"{label} (ρ = {r['rho']:+.2f}, n = {len(r['users'])})")
+        ticks = FIG_BAND_LABELS
+        ax_s.set_title("(a) Synthetic posts", fontsize=9.5)
+        ax_e.set_title("(b) Real users (own scale)", fontsize=9.5)
+        ax_e.set_xlabel("PHQ-9 severity band")
+    ax_e.set_xticks(x)
+    ax_e.set_xticklabels(ticks, fontsize=8)
+    for a in dict.fromkeys((ax_s, ax_e)):
+        a.set_ylabel("% of posts containing CDS")
+        a.grid(axis="y", linestyle=":", alpha=0.5)
+        a.legend(loc="best", frameon=False, fontsize=7.5 if emp else 8)
+        a.margins(x=0.08, y=0.12)
     fig.tight_layout()
     return fig
 
