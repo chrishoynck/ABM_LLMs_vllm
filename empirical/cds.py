@@ -9,8 +9,10 @@ of tweets (with equal numbers it equals the % of posts). The figure is the synth
 one with the users added: (a) the Qwen and Gemma lines plus the empirical line, (b) the
 category x band heatmap for the users (% of tweets) with Qwen in brackets. A second
 figure has the same comparison by severity band: mean % of CDS posts per user (per
-10-post block for the synthetic corpora) in each band, +- SEM. Regex only, seconds on
-any CPU. `figures.ipynb` section 6 calls `analyse`, `make_figure` and `make_band_figure`.
+10-post block for the synthetic corpora) in each band, +- SEM. A third puts synthetic and
+empirical in separate panels so each has its own y-scale; the notebook also uses it to
+compare tweet windows before the survey. Regex only, seconds on any CPU.
+`figures.ipynb` section 6 calls `analyse` and the three figure functions.
 Run: PYTHONPATH=src:checks python empirical/cds.py --tweets <TAG>_tweets_phq.csv --out-dir <results>/cds
 """
 
@@ -132,6 +134,37 @@ def make_band_figure(res: dict) -> plt.Figure:
     return fig
 
 
+EMP_STYLES = [("#222222", "s"), ("#6e6e6e", "^"), ("#a8a8a8", "D")]   # empirical lines in the split figure
+
+
+def make_split_figure(res: dict, emp: dict = None) -> plt.Figure:
+    """CDS vs PHQ-9 with the synthetic and empirical lines in separate panels, each on its own y-scale.
+
+    Args:
+        res: `analyse` output; its synthetic lines go in the top panel.
+        emp: label -> `analyse` output for the bottom panel (e.g. tweet windows);
+            default: `res` alone. Each legend entry carries the per-user Spearman.
+    """
+    emp = emp or {"Empirical": res}
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(4.4, 5.4), sharex=True)
+    for tag, label, colour, _ in GENERATORS:
+        ps = res["synth"][tag][0]
+        ax0.plot(ps["phq9"], ps["pct_cds"], "o-", color=colour, lw=2, ms=4, label=label)
+    ax0.set_title("(a) Synthetic posts", fontsize=9.5)
+    for (label, r), (colour, marker) in zip(emp.items(), EMP_STYLES):
+        ps = r["per_score"]
+        ax1.plot(ps["phq9"], ps["pct_cds"], marker + "-", color=colour, lw=1.2, ms=3.5,
+                 label=f"{label} (ρ = {r['rho']:+.2f}, n = {len(r['users'])})")
+    ax1.set_title("(b) Real users (own scale)", fontsize=9.5)
+    ax1.set_xlabel("PHQ-9 sum-score")
+    for ax in (ax0, ax1):
+        ax.set_ylabel("% of posts containing CDS")
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        ax.legend(loc="best", frameon=False, fontsize=7.5)
+    fig.tight_layout()
+    return fig
+
+
 def report(res: dict) -> None:
     """Print the per-user test and the band / category tables."""
     print(f"[cds] {res['n_tweets']} tweets, {len(res['users'])} users "
@@ -163,7 +196,9 @@ def main() -> None:
     make_figure(res).savefig(fig_path, dpi=300, bbox_inches="tight")
     band_path = os.path.join(args.out_dir, "cds_by_band.png")
     make_band_figure(res).savefig(band_path, dpi=300, bbox_inches="tight")
-    print(f"[cds] -> {args.out_dir} (figures: {fig_path}, {band_path})")
+    split_path = os.path.join(args.out_dir, "cds_split.png")
+    make_split_figure(res).savefig(split_path, dpi=300, bbox_inches="tight")
+    print(f"[cds] -> {args.out_dir} (figures: {fig_path}, {band_path}, {split_path})")
 
 
 if __name__ == "__main__":
