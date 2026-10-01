@@ -22,10 +22,11 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from check_cds_tracks_phq9 import (BAND_ORDER, FIG_BAND_LABELS, GENERATORS, HEATMAP_CMAP,
+from check_cds_tracks_phq9 import (ARMS, BAND_ORDER, FIG_BAND_LABELS, HEATMAP_CMAP,
                                    score_posts, summarize)
 from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 
+GENERATORS = ARMS["human"]                       # the paper's CDS figure: human-optimized Qwen and Gemma
 EMP_COLOUR, EMP_MARKER = "#222222", "s"          # empirical = near-black squares, as in figures.ipynb
 NGRAMS = "data/distorted_language_ngrams.tsv"
 
