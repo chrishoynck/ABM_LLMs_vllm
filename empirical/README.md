@@ -13,7 +13,7 @@ results live outside the repo, in `~/data/social_twitter/`.
 | `finetune_cv.py` | the teacher regressors fine-tuned on the users as `run_finetune.sh` fine-tuned them on synthetic posts, but 5-fold CV by user instead of a fixed test set; plus the same MLP trained from scratch |
 | `cds.py` | the CDS check (`checks/check_cds_tracks_phq9.py`) on the users: % of tweets with CDS per PHQ-9 score and category × band, plus per-user Spearman of % CDS tweets vs PHQ-9, and the synthetic CDS figure with the empirical line added (`cds_vs_synthetic.png`); regex only, run anywhere with `PYTHONPATH=src:checks` |
 | `run_empirical.job` | SLURM (Big Red 200, CPU only): embed → ladder → score → bias → fine-tune → bias → CDS |
-| `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b) plus the within-band reference, how far predictions track the true score, the fine-tuned bias against the synthetic arms, and depressed vs not (PHQ-9 ≥ 10: AUC, sensitivity, specificity, ROC) for the human-optimized arm, and the CDS-vs-PHQ-9 figure with the empirical line (via `cds.py`; reads `~/phq_analysis/<TAG>_tweets_phq.csv` or `$EMPIRICAL_TWEETS`); PNG + CSV to `results/figures/` |
+| `figures.ipynb` | synthetic vs empirical figures in the style of `visualization.plot_model_linearity_bias` (a) and (b) plus the within-band reference, how far predictions track the true score, the fine-tuned bias against the synthetic arms, and depressed vs not (PHQ-9 ≥ 10: AUC, sensitivity, specificity, ROC) for the human-optimized arm, and the CDS-vs-PHQ-9 figure with the empirical line (via `cds.py`; reads `~/phq_analysis/<TAG>_tweets_phq.csv` or `$EMPIRICAL_TWEETS`); PNG + CSV to `data/empirical/<TAG>/figures/` |
 
 One-time setup on a Big Red login node, from the repo root. The python module already
 has pandas, scikit-learn, networkx, umap and matplotlib, so the venv on top of it only
@@ -35,10 +35,9 @@ embeddings, pass `--force` to `embed.py` to re-encode.
 
 ## Figures for the paper
 
-The data and `results/` stay outside the repo, so the finished figures are committed
-instead: copy `results/figures/` (PNGs plus the aggregate `prediction_tracking.csv` and
-`cutoff_depressed.csv`) to `data/empirical/<TAG>/figures/`. Nothing else from `results/`:
-`bert_eval/`, `finetune_cv/` and `cds/cds_by_user.csv` hold one row per user.
+The data and `results/` stay outside the repo; `figures.ipynb` writes its figures and their
+aggregate tables straight into `data/empirical/<TAG>/figures/` to commit. Nothing per-user goes
+there: `bert_eval/`, `finetune_cv/` and `cds/cds_by_user.csv` stay in `results/`.
 
 ## Inputs (`~/data/social_twitter/`)
 
