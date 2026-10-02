@@ -19,18 +19,18 @@ synthetic gemma4_minimal,Mild,-1.2799999999999998,
 synthetic gemma4_minimal,Mod.,-0.3,
 synthetic gemma4_minimal,Mod. Sev,0.09473684210526315,
 synthetic gemma4_minimal,Sev,-3.083950617283951,
-empirical fine-tuned on users (CV),Minimal,4.511836734693877,0.2768009071349908
-empirical fine-tuned on users (CV),Mild,-0.21444444444444444,0.24153828007324377
-empirical fine-tuned on users (CV),Mod.,-5.059872611464968,0.25977892653764223
-empirical fine-tuned on users (CV),Mod. Sev,-9.97391304347826,0.2278567851870237
-empirical fine-tuned on users (CV),Sev,-16.446666666666665,0.2976575213227443
-empirical from scratch on users (CV),Minimal,5.658775510204082,0.18762373398911555
-empirical from scratch on users (CV),Mild,0.7755555555555554,0.20247237275340815
-empirical from scratch on users (CV),Mod.,-3.9757961783439493,0.18866409767142348
-empirical from scratch on users (CV),Mod. Sev,-8.697826086956521,0.14426660889597456
-empirical from scratch on users (CV),Sev,-15.323333333333334,0.1078064108586414
-empirical zero-shot teacher,Minimal,3.091428571428571,0.774317450104301
-empirical zero-shot teacher,Mild,-1.3066666666666666,0.839888293571837
-empirical zero-shot teacher,Mod.,-6.235668789808917,0.7746333309611725
-empirical zero-shot teacher,Mod. Sev,-11.141304347826088,0.7863136937334495
-empirical zero-shot teacher,Sev,-17.619999999999997,0.7829715476595838
+empirical fine-tuned on users (CV),Minimal,4.611428571428571,0.10697927259371982
+empirical fine-tuned on users (CV),Mild,-0.07222222222222223,0.16333711257910435
+empirical fine-tuned on users (CV),Mod.,-4.867515923566879,0.11993480046817662
+empirical fine-tuned on users (CV),Mod. Sev,-9.523913043478261,0.14894080985183178
+empirical fine-tuned on users (CV),Sev,-16.023333333333333,0.12762793146051032
+empirical from scratch on users (CV),Minimal,5.183673469387754,0.26671525310538025
+empirical from scratch on users (CV),Mild,0.6144444444444443,0.29860994831814947
+empirical from scratch on users (CV),Mod.,-4.175796178343949,0.29444668767096155
+empirical from scratch on users (CV),Mod. Sev,-8.715217391304348,0.31136324436787527
+empirical from scratch on users (CV),Sev,-15.166666666666666,0.3202429633193453
+empirical zero-shot teacher,Minimal,4.498775510204082,0.18285349850595814
+empirical zero-shot teacher,Mild,0.2977777777777778,0.1723691129846386
+empirical zero-shot teacher,Mod.,-4.631847133757961,0.19266436775590606
+empirical zero-shot teacher,Mod. Sev,-9.36086956521739,0.20106051530038035
+empirical zero-shot teacher,Sev,-16.03,0.1959024700655351
