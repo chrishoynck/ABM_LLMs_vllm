@@ -18,6 +18,7 @@ Run: PYTHONPATH=src:checks python empirical/cds.py --tweets <TAG>_tweets_phq.csv
 
 import argparse
 import os
+import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -31,6 +32,7 @@ from utils.tools.cds import compile_category_patterns, load_ngrams_by_category
 GENERATORS = ARMS["human"]                       # the paper's CDS figure: human-optimized Qwen and Gemma
 EMP_COLOUR, EMP_MARKER = "#222222", "s"          # empirical = near-black squares, as in figures.ipynb
 NGRAMS = "data/distorted_language_ngrams.tsv"
+CACHE_VERSION = 1                                # bump when `analyse` output changes
 
 
 def per_user(df: pd.DataFrame) -> pd.DataFrame:
@@ -46,17 +48,31 @@ def band_means(units: pd.DataFrame) -> pd.DataFrame:
     return units.groupby("severity")["pct_cds"].agg(["size", "mean", "sem"]).reindex(BAND_ORDER)
 
 
-def analyse(tweets: str, ngrams: str = NGRAMS) -> dict:
+def analyse(tweets: str, ngrams: str = NGRAMS, cache_dir: str = None) -> dict:
     """CDS tables for the users and for the synthetic corpora.
 
     Args:
         tweets: CSV with agent_id, phq9, tweet.
         ngrams: CDS n-gram TSV.
+        cache_dir: if given, the result is pickled there once and reused while the
+            tweets file, the n-gram file and CACHE_VERSION are unchanged.
 
     Returns:
         dict with per_score, cat_band (rows by overall prevalence), users, by_band,
         rho, p (per-user Spearman) and synth (generator tag -> (per_score, cat_band)).
     """
+    if cache_dir:
+        st, sn = os.stat(tweets), os.stat(ngrams)
+        key = f"{os.path.basename(tweets)}_{st.st_size}_{int(st.st_mtime)}_{int(sn.st_mtime)}_v{CACHE_VERSION}.pkl"
+        path = os.path.join(cache_dir, key)
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                return pickle.load(fh)
+        res = analyse(tweets, ngrams)
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(path, "wb") as fh:
+            pickle.dump(res, fh)
+        return res
     patterns = compile_category_patterns(load_ngrams_by_category(ngrams))
     df, cat_cols = score_posts(tweets, patterns)
     per_score, cat_band, cat_overall = summarize(df, patterns, cat_cols)
