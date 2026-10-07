@@ -397,3 +397,6 @@ logs/
 # Recoverable discard bin (cleanup 2026-08) + stray slurm logs
 bin/
 slurm_output_*.out
+
+# Simulation checkpoints (large, regenerable)
+data/**/checkpoint.json
